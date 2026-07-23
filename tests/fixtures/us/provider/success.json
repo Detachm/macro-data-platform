@@ -1,0 +1,190 @@
+{
+  "status": "ok",
+  "fetched_at": "2026-07-23T08:00:00Z",
+  "source_watermark": "us-vertical-slice-2026-07-23",
+  "pages": {
+    "instruments": {
+      "next_cursor": null,
+      "items": [
+        {
+          "record_id": "nasdaq-aapl",
+          "source_name": "Nasdaq Trader Symbol Directory",
+          "source_url": "https://example.test/us/instruments/aapl",
+          "retrieved_at": "2026-07-23T08:00:00Z",
+          "provider_updated_at": "2026-07-23T07:50:00Z",
+          "symbol": "aapl",
+          "exchange": "NASDAQ",
+          "issuer_key": "cik0000320193",
+          "first_canonical_symbol": "XNAS:AAPL",
+          "first_valid_from": "1980-12-12",
+          "name": "Apple Inc.",
+          "asset_class": "equity",
+          "currency": "USD",
+          "timezone": "America/New_York",
+          "status": "active",
+          "listed_on": "1980-12-12",
+          "lot_size": "100",
+          "valid_from": "1980-12-12"
+        }
+      ]
+    },
+    "bars": {
+      "next_cursor": null,
+      "items": [
+        {
+          "record_id": "polygon-aapl-2026-07-22",
+          "source_name": "Polygon/Massive Aggregate Fixture",
+          "source_url": "https://example.test/us/bars/aapl/2026-07-22",
+          "retrieved_at": "2026-07-23T08:00:00Z",
+          "provider_updated_at": "2026-07-22T20:05:00Z",
+          "symbol": "aapl",
+          "exchange": "NASDAQ",
+          "issuer_key": "cik0000320193",
+          "first_canonical_symbol": "XNAS:AAPL",
+          "first_valid_from": "1980-12-12",
+          "valid_from": "1980-12-12",
+          "interval": "1d",
+          "bar_start": "2026-07-22T13:30:00Z",
+          "bar_end": "2026-07-22T20:00:00Z",
+          "trading_date": "2026-07-22",
+          "open": "210.10",
+          "high": "214.20",
+          "low": "209.80",
+          "close": "213.50",
+          "volume": "52000000",
+          "turnover": "11102000000",
+          "currency": "USD",
+          "adjustment": "raw",
+          "available_at": "2026-07-22T20:05:00Z",
+          "availability_basis": "provider_disseminated",
+          "quality_flags": ["synthetic"]
+        }
+      ]
+    },
+    "market_observations": {
+      "next_cursor": null,
+      "items": [
+        {
+          "record_id": "h15-fed-funds-2026-07-22",
+          "source_name": "Federal Reserve H.15",
+          "source_url": "https://example.test/us/h15/fed-funds/2026-07-22",
+          "retrieved_at": "2026-07-23T08:00:00Z",
+          "provider_updated_at": "2026-07-22T21:00:00Z",
+          "scope_type": "market",
+          "scope_id": "US",
+          "metric_code": "rate.fed_funds.effective",
+          "value": "5.33",
+          "unit": "percent",
+          "period_start": "2026-07-22T00:00:00Z",
+          "period_end": "2026-07-23T00:00:00Z",
+          "observed_at": "2026-07-22T21:00:00Z",
+          "available_at": "2026-07-22T21:01:00Z",
+          "availability_basis": "provider_disseminated",
+          "dimensions": {"release": "H.15"},
+          "quality_flags": ["synthetic"]
+        }
+      ]
+    },
+    "macro_series": {
+      "next_cursor": null,
+      "items": [
+        {
+          "record_id": "bls-cpi-all-items",
+          "source_name": "BLS Public Data API",
+          "source_url": "https://example.test/us/bls/CPI_ALL_ITEMS",
+          "retrieved_at": "2026-07-23T08:00:00Z",
+          "provider_updated_at": "2026-07-10T12:30:00Z",
+          "series_id": "macro:US:BLS:CPI_ALL_ITEMS",
+          "authority": "BLS",
+          "code": "CPI_ALL_ITEMS",
+          "name": "Consumer Price Index for All Urban Consumers",
+          "description": "Synthetic BLS CPI series metadata.",
+          "frequency": "monthly",
+          "unit": "percent",
+          "transformation": "yoy",
+          "seasonal_adjustment": "not_adjusted"
+        }
+      ]
+    },
+    "macro_observations": {
+      "next_cursor": null,
+      "items": [
+        {
+          "record_id": "bls-cpi-all-items-2026-06",
+          "source_name": "BLS Public Data API",
+          "source_url": "https://example.test/us/bls/CPI_ALL_ITEMS/2026-06",
+          "retrieved_at": "2026-07-23T08:00:00Z",
+          "provider_updated_at": "2026-07-10T12:31:00Z",
+          "series_id": "macro:US:BLS:CPI_ALL_ITEMS",
+          "period_start": "2026-06-01",
+          "period_end": "2026-06-30",
+          "value": "2.7",
+          "unit": "percent",
+          "transformation": "yoy",
+          "released_at": "2026-07-10T12:30:00Z",
+          "available_at": "2026-07-10T12:31:00Z",
+          "availability_basis": "provider_disseminated",
+          "vintage_id": "2026-07-10T12:30:00Z",
+          "revision_no": 0,
+          "value_status": "preliminary",
+          "quality_flags": ["synthetic"]
+        }
+      ]
+    },
+    "macro_releases": {
+      "next_cursor": null,
+      "items": [
+        {
+          "record_id": "bls-cpi-release-2026-06",
+          "source_name": "BLS Release Calendar",
+          "source_url": "https://example.test/us/bls/releases/cpi-2026-06",
+          "retrieved_at": "2026-07-23T08:00:00Z",
+          "provider_updated_at": "2026-07-10T12:31:00Z",
+          "series_id": "macro:US:BLS:CPI_ALL_ITEMS",
+          "release_name": "Consumer Price Index",
+          "scheduled_at": "2026-07-10T12:30:00Z",
+          "released_at": "2026-07-10T12:30:00Z",
+          "available_at": "2026-07-10T12:31:00Z",
+          "period_start": "2026-06-01",
+          "period_end": "2026-06-30",
+          "actual": "2.7",
+          "consensus": "2.8",
+          "previous": "2.4",
+          "unit": "percent",
+          "status": "released"
+        }
+      ]
+    },
+    "news": {
+      "next_cursor": null,
+      "items": [
+        {
+          "record_id": "sec-0000320193-26-000001",
+          "source_name": "SEC EDGAR",
+          "source_url": "https://example.test/us/sec/0000320193-26-000001",
+          "retrieved_at": "2026-07-23T08:00:00Z",
+          "provider_updated_at": "2026-07-22T20:15:00Z",
+          "accession_number": "0000320193-26-000001",
+          "title": "Apple Inc. files Form 10-Q",
+          "summary": "Synthetic filing metadata only; no filing body is retained.",
+          "language": "en",
+          "source_tier": "official",
+          "canonical_url": "https://example.test/us/sec/0000320193-26-000001?utm_source=fixture",
+          "published_at": "2026-07-22T20:15:00Z",
+          "first_seen_at": "2026-07-22T20:16:00Z",
+          "available_at": "2026-07-22T20:16:00Z",
+          "availability_basis": "first_seen",
+          "topics": ["filing"],
+          "rights": {
+            "storage_allowed": true,
+            "internal_analysis_allowed": true,
+            "external_llm_allowed": false,
+            "embedding_allowed": false,
+            "redistribution_allowed": false
+          },
+          "quality_flags": ["synthetic", "metadata_only"]
+        }
+      ]
+    }
+  }
+}
