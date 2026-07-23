@@ -10,10 +10,6 @@ from macro_platform.providers.registry import ProviderRegistry
 
 HK_PROVIDER_ID = "hk.contract-fixture.v1"
 HK_ROLE_BINDINGS = {
-    "hk.instruments.primary": HK_PROVIDER_ID,
-    "hk.bars.primary": HK_PROVIDER_ID,
-    "hk.macro.primary": HK_PROVIDER_ID,
-    "hk.news.primary": HK_PROVIDER_ID,
     "hk.contract_fixture.instruments": HK_PROVIDER_ID,
     "hk.contract_fixture.bars": HK_PROVIDER_ID,
     "hk.contract_fixture.market_observations": HK_PROVIDER_ID,
