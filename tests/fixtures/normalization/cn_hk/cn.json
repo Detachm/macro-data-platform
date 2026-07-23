@@ -1,0 +1,75 @@
+{
+  "region": "CN",
+  "scenarios": {
+    "success": {
+      "symbols": [
+        {
+          "case_id": "SYM-001",
+          "provider_id": "sse_public_list",
+          "venue_mic": "XSHG",
+          "local_symbol": "600519",
+          "valid_from": "2001-08-27"
+        },
+        {
+          "case_id": "SYM-002",
+          "provider_id": "szse_public_list",
+          "venue_mic": "XSHE",
+          "local_symbol": "000001",
+          "valid_from": "1991-04-03"
+        }
+      ],
+      "timestamps": [
+        {
+          "case_id": "TIME-001",
+          "value": "2026-07-23T15:00:00+08:00",
+          "trading_date": "2026-07-23"
+        },
+        {
+          "case_id": "TIME-004",
+          "value": "2026-07-23T23:30:00+08:00",
+          "trading_date": "2026-07-23"
+        }
+      ],
+      "units": [
+        {
+          "case_id": "UNIT-001",
+          "value": "12.3400",
+          "source_unit": "亿元",
+          "expected_value": "1234000000.0000",
+          "expected_unit": "CNY"
+        },
+        {
+          "case_id": "UNIT-003",
+          "value": "5.2",
+          "source_unit": "%",
+          "expected_value": "5.2",
+          "expected_unit": "percent"
+        }
+      ]
+    },
+    "empty": {
+      "rows": []
+    },
+    "missing_fields": {
+      "pending_contract_mapping": "Reject before contracts when required #1-reviewed fields are absent.",
+      "row": {
+        "venue_mic": "XSHG"
+      }
+    },
+    "auth_failure": {
+      "pending_provider_mapping": "Provider must map auth failures before parser output."
+    },
+    "rate_limited": {
+      "pending_provider_mapping": "Provider must map 429 and retry metadata before parser output."
+    },
+    "timeout": {
+      "pending_provider_mapping": "Provider must map timeout before parser output."
+    },
+    "schema_changed": {
+      "pending_provider_mapping": "Unknown fields must route to schema-drift errors before contracts."
+    },
+    "duplicate_page": {
+      "pending_provider_mapping": "Duplicate cursors/pages must stop pagination."
+    }
+  }
+}
