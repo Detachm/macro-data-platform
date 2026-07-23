@@ -8,7 +8,7 @@ from uuid import UUID
 import pytest
 
 from macro_platform.contracts.common import Region
-from macro_platform.contracts.market import InstrumentQuery
+from macro_platform.contracts.market import Adjustment, BarQuery, InstrumentQuery, Interval
 from macro_platform.contracts.provider import Dataset, FetchContext
 from macro_platform.providers.base import (
     ProviderAuthenticationError,
@@ -97,7 +97,7 @@ async def test_empty_fixture_returns_complete_empty_page(
         ("timeout", ProviderTimeoutError),
         ("missing_fields", ProviderSchemaError),
         ("schema_changed", ProviderSchemaError),
-        ("html_login", ProviderSchemaError),
+        ("html_login", ProviderAuthorizationError),
         ("duplicate_page", ProviderCursorError),
     ],
 )
@@ -176,6 +176,39 @@ async def test_cn_hk_normalization_mapping_errors_surface_as_schema_errors(
     provider = HkSyntheticProvider(changed_fixture)
     with pytest.raises(ProviderSchemaError, match="one to five digits"):
         await provider.fetch_instruments(InstrumentQuery(regions={Region.HK}), context)
+
+
+@pytest.mark.asyncio
+async def test_provider_record_id_uses_normalized_canonical_symbol(
+    tmp_path: Path,
+    context: FetchContext,
+) -> None:
+    source_fixture = FIXTURE_ROOT / "hk" / "synthetic" / "success.json"
+    changed_fixture = tmp_path / "success_hk_symbol_without_padding.json"
+    payload = json.loads(source_fixture.read_text(encoding="utf-8"))
+    payload["pages"]["instruments"]["items"][0]["symbol"] = "700"
+    payload["pages"]["bars"]["items"][0]["symbol"] = "700"
+    changed_fixture.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    provider = HkSyntheticProvider(changed_fixture)
+    instruments = await provider.fetch_instruments(InstrumentQuery(regions={Region.HK}), context)
+    assert instruments.items[0].source.provider_record_id.startswith(
+        "hk.contract-fixture.v1:XHKG:00700:"
+    )
+    bars = await provider.fetch_bars(
+        BarQuery(
+            instrument_ids=[instruments.items[0].instrument_id],
+            interval=Interval.D1,
+            start=datetime(2026, 7, 22, tzinfo=UTC),
+            end=datetime(2026, 7, 23, tzinfo=UTC),
+            adjustment=Adjustment.RAW,
+            as_of=context.as_of,
+        ),
+        context,
+    )
+    assert bars.items[0].source.provider_record_id.startswith(
+        "hk.contract-fixture.v1:XHKG:00700:2026-07-22:1d:raw:"
+    )
 
 
 def test_news_normalization_and_checksum_entrypoints() -> None:
