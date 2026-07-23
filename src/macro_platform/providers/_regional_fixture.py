@@ -885,17 +885,23 @@ class RegionalFixtureProvider:
             available_at = _optional_datetime(raw, "available_at") or _datetime(
                 raw["retrieved_at"], "source.retrieved_at"
             )
+            normalized = self._normalized_symbol(mic, symbol)
             trading_date = _str(raw["trading_date"], "source.trading_date")
             interval = _str(raw["interval"], "source.interval")
             adjustment = _str(raw["adjustment"], "source.adjustment")
             available_date = _date_from_datetime(available_at)
             return (
-                f"{self.provider_id}:{mic}:{symbol}:"
+                f"{self.provider_id}:{normalized.canonical_symbol}:"
                 f"{trading_date}:{interval}:{adjustment}:{available_date}"
             )
         if symbol is not None and mic is not None and raw.get("valid_from") is not None:
+            normalized = self._normalized_symbol(
+                mic,
+                symbol,
+                _date(raw["valid_from"], "source.valid_from"),
+            )
             valid_from = _str(raw["valid_from"], "source.valid_from")
-            return f"{self.provider_id}:{mic}:{symbol}:{valid_from}"
+            return f"{self.provider_id}:{normalized.canonical_symbol}:{valid_from}"
         return _str(raw["record_id"], "source.record_id")
 
     def _usage_rights(self, raw: Mapping[str, Any]) -> UsageRights:
@@ -951,9 +957,7 @@ class RegionalFixtureProvider:
     def _normalized_symbol(
         self, mic: str, symbol: str, listed_on: date | None = None
     ) -> NormalizedInstrumentSymbol:
-        instrument_listed_on = listed_on or self.instrument_listed_on_by_symbol.get(
-            f"{mic}:{symbol}"
-        )
+        instrument_listed_on = listed_on or self._listed_on_for_symbol(mic, symbol)
         if instrument_listed_on is None:
             raise ProviderSchemaError(
                 f"instrument listed_on is required to derive instrument_id for {mic}:{symbol}"
@@ -968,6 +972,35 @@ class RegionalFixtureProvider:
             )
         except CnHkNormalizationError as exc:
             raise ProviderSchemaError(str(exc)) from exc
+
+    def _listed_on_for_symbol(self, mic: str, symbol: str) -> date | None:
+        direct = self.instrument_listed_on_by_symbol.get(f"{mic}:{symbol}")
+        if direct is not None:
+            return direct
+        for canonical_seed, listed_on in self.instrument_listed_on_by_symbol.items():
+            seed_mic, _, seed_symbol = canonical_seed.partition(":")
+            if seed_mic != mic:
+                continue
+            try:
+                requested = normalize_instrument_symbol(
+                    region=self.region,
+                    venue_mic=mic,
+                    local_symbol=symbol,
+                    valid_from=listed_on,
+                    provider_id=self.provider_id,
+                )
+                candidate = normalize_instrument_symbol(
+                    region=self.region,
+                    venue_mic=seed_mic,
+                    local_symbol=seed_symbol,
+                    valid_from=listed_on,
+                    provider_id=self.provider_id,
+                )
+            except CnHkNormalizationError:
+                continue
+            if requested.canonical_symbol == candidate.canonical_symbol:
+                return listed_on
+        return None
 
     def _normalized_datetime(self, value: Any, path: str) -> datetime:
         try:
