@@ -20,6 +20,7 @@ from macro_platform.normalization.us.errors import (
     UsNormalizationError,
 )
 from macro_platform.normalization.us.symbols import (
+    UsInstrumentIdentity,
     normalize_us_alias,
     normalize_us_symbol,
     resolve_us_alias_for_date,
@@ -37,6 +38,7 @@ __all__ = [
     "UnitNormalizationError",
     "UnsupportedExchangeError",
     "UsCalendarUnavailableError",
+    "UsInstrumentIdentity",
     "UsMarketClosedError",
     "UsNormalizationError",
     "normalize_us_alias",

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -19,6 +18,7 @@ from macro_platform.normalization.us import (
     UnitNormalizationError,
     UnsupportedExchangeError,
     UsCalendarUnavailableError,
+    UsInstrumentIdentity,
     UsMarketClosedError,
     normalize_us_alias,
     normalize_us_symbol,
@@ -117,29 +117,27 @@ def test_sym_010_canonical_symbol_parts_normalization_is_idempotent(_case_id: st
 def test_sym_008_old_and_new_alias_can_share_one_stable_instrument_id(_case_id: str) -> None:
     first_valid_from = date(2012, 5, 18)
     first_canonical_symbol = "XNAS:FB"
+    identity = UsInstrumentIdentity(
+        issuer_key="cik0001326801",
+        first_canonical_symbol=first_canonical_symbol,
+        first_valid_from=first_valid_from,
+    )
     old_alias = normalize_us_alias(
         source_symbol="FB",
         exchange="NASDAQ",
-        issuer_key="cik0001326801",
         valid_from=first_valid_from,
         valid_to=date(2022, 6, 9),
-        instrument_canonical_symbol=first_canonical_symbol,
-        instrument_valid_from=first_valid_from,
+        instrument_identity=identity,
     )
     new_alias = normalize_us_alias(
         source_symbol="META",
         exchange="NASDAQ",
-        issuer_key="cik0001326801",
         valid_from=date(2022, 6, 9),
-        instrument_canonical_symbol=first_canonical_symbol,
-        instrument_valid_from=first_valid_from,
+        instrument_identity=identity,
     )
 
     assert old_alias.instrument_id == new_alias.instrument_id
-    assert old_alias.instrument_id == us_instrument_id(
-        first_canonical_symbol,
-        valid_from=first_valid_from,
-    )
+    assert old_alias.instrument_id == us_instrument_id(identity)
     assert old_alias.canonical_symbol == "XNAS:FB"
     assert new_alias.canonical_symbol == "XNAS:META"
     assert old_alias.issuer_key == new_alias.issuer_key == "cik0001326801"
@@ -164,42 +162,71 @@ def test_sym_008_old_and_new_alias_can_share_one_stable_instrument_id(_case_id: 
     )
 
 
-def test_us_alias_defaults_instrument_id_to_current_canonical_symbol_and_valid_from() -> None:
+def test_us_instrument_identity_uses_issuer_and_first_alias_as_immutable_id_seed() -> None:
+    identity = UsInstrumentIdentity(
+        issuer_key="cik0000320193",
+        first_canonical_symbol="XNAS:AAPL",
+        first_valid_from=date(2026, 1, 1),
+    )
     alias = normalize_us_alias(
         source_symbol="AAPL",
         exchange="NASDAQ",
-        issuer_key="cik0000320193",
         valid_from=date(2026, 1, 1),
+        instrument_identity=identity,
     )
 
-    expected_digest = hashlib.sha256(b"XNAS:AAPL2026-01-01").hexdigest()[:16]
-    assert alias.instrument_id == us_instrument_id("XNAS:AAPL", valid_from=date(2026, 1, 1))
-    assert alias.instrument_id == f"ins_us_{expected_digest}"
+    assert alias.instrument_id == us_instrument_id(identity)
+    assert alias.instrument_id.startswith("ins_us_")
+
+
+def test_us_instrument_identity_keeps_share_classes_of_one_issuer_distinct() -> None:
+    common = UsInstrumentIdentity(
+        issuer_key="cik0001652044",
+        first_canonical_symbol="XNAS:GOOG",
+        first_valid_from=date(2014, 4, 3),
+    )
+    class_a = UsInstrumentIdentity(
+        issuer_key="cik0001652044",
+        first_canonical_symbol="XNAS:GOOGL",
+        first_valid_from=date(2014, 4, 3),
+    )
+
+    assert us_instrument_id(common) != us_instrument_id(class_a)
 
 
 def test_us_alias_rejects_inverted_effective_dates() -> None:
+    identity = UsInstrumentIdentity(
+        issuer_key="cik0000320193",
+        first_canonical_symbol="XNAS:AAPL",
+        first_valid_from=date(2026, 1, 1),
+    )
     with pytest.raises(SymbolNormalizationError):
         normalize_us_alias(
             source_symbol="AAPL",
             exchange="NASDAQ",
-            issuer_key="cik0000320193",
             valid_from=date(2026, 1, 2),
             valid_to=date(2026, 1, 1),
+            instrument_identity=identity,
         )
 
 
 def test_same_instrument_alias_overlap_is_not_ambiguous() -> None:
+    identity = UsInstrumentIdentity(
+        issuer_key="cik0000320193",
+        first_canonical_symbol="XNAS:AAPL",
+        first_valid_from=date(2026, 1, 1),
+    )
     first = normalize_us_alias(
         source_symbol="AAPL",
         exchange="NASDAQ",
-        issuer_key="cik0000320193",
         valid_from=date(2026, 1, 1),
+        instrument_identity=identity,
     )
     second = normalize_us_alias(
         source_symbol="AAPL",
         exchange="NASDAQ",
-        issuer_key="cik0000320193",
         valid_from=date(2026, 1, 1),
+        instrument_identity=identity,
     )
 
     validate_us_aliases([first, second])
@@ -207,19 +234,27 @@ def test_same_instrument_alias_overlap_is_not_ambiguous() -> None:
 
 @pytest.mark.parametrize("_case_id", [pytest.param("SYM-009", id="SYM-009")])
 def test_sym_009_same_alias_date_cannot_point_to_two_instruments(_case_id: str) -> None:
+    first_identity = UsInstrumentIdentity(
+        issuer_key="issuer-a",
+        first_canonical_symbol="XNAS:TEST",
+        first_valid_from=date(2026, 1, 1),
+    )
+    second_identity = UsInstrumentIdentity(
+        issuer_key="issuer-b",
+        first_canonical_symbol="XNAS:TEST",
+        first_valid_from=date(2025, 12, 31),
+    )
     first = normalize_us_alias(
         source_symbol="TEST",
         exchange="NASDAQ",
-        issuer_key="issuer-a",
         valid_from=date(2026, 1, 1),
+        instrument_identity=first_identity,
     )
     second = normalize_us_alias(
         source_symbol="TEST",
         exchange="NASDAQ",
-        issuer_key="issuer-b",
         valid_from=date(2026, 1, 1),
-        instrument_canonical_symbol="XNAS:TEST",
-        instrument_valid_from=date(2025, 12, 31),
+        instrument_identity=second_identity,
     )
 
     with pytest.raises(AmbiguousSymbolAliasError, match="AMBIGUOUS_SYMBOL_ALIAS"):
@@ -235,11 +270,16 @@ def test_sym_009_same_alias_date_cannot_point_to_two_instruments(_case_id: str) 
 
 
 def test_us_alias_lookup_rejects_symbols_outside_the_effective_mapping() -> None:
+    identity = UsInstrumentIdentity(
+        issuer_key="cik0000320193",
+        first_canonical_symbol="XNAS:AAPL",
+        first_valid_from=date(2026, 1, 1),
+    )
     alias = normalize_us_alias(
         source_symbol="AAPL",
         exchange="NASDAQ",
-        issuer_key="cik0000320193",
         valid_from=date(2026, 1, 1),
+        instrument_identity=identity,
     )
 
     with pytest.raises(SymbolNormalizationError, match="SYMBOL_UNRESOLVED"):

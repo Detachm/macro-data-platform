@@ -47,6 +47,15 @@ class _NormalizedUsSymbol:
 
 
 @dataclass(frozen=True)
+class UsInstrumentIdentity:
+    """Immutable root identity established when an instrument is first onboarded."""
+
+    issuer_key: str
+    first_canonical_symbol: str
+    first_valid_from: date
+
+
+@dataclass(frozen=True)
 class _UsAlias:
     source_symbol: str
     local_symbol: str
@@ -90,30 +99,24 @@ def normalize_us_alias(
     *,
     source_symbol: str,
     exchange: str,
-    issuer_key: str | None,
     valid_from: date,
+    instrument_identity: UsInstrumentIdentity,
     valid_to: date | None = None,
-    instrument_canonical_symbol: str | None = None,
-    instrument_valid_from: date | None = None,
 ) -> _UsAlias:
     if valid_to is not None and valid_to < valid_from:
         raise SymbolNormalizationError("valid_to must not be earlier than valid_from")
 
     symbol = normalize_us_symbol(source_symbol, exchange=exchange)
-    id_canonical_symbol = _normalize_id_canonical_symbol(
-        instrument_canonical_symbol or symbol.canonical_symbol
-    )
-    id_valid_from = instrument_valid_from or valid_from
 
     return _UsAlias(
         source_symbol=source_symbol,
         local_symbol=symbol.local_symbol,
         venue_mic=symbol.venue_mic,
         canonical_symbol=symbol.canonical_symbol,
-        instrument_id=us_instrument_id(id_canonical_symbol, valid_from=id_valid_from),
+        instrument_id=us_instrument_id(instrument_identity),
         valid_from=valid_from,
         valid_to=valid_to,
-        issuer_key=issuer_key,
+        issuer_key=_normalize_issuer_key(instrument_identity.issuer_key),
     )
 
 
@@ -161,9 +164,19 @@ def resolve_us_alias_for_date(
     return max(matches, key=lambda alias: alias.valid_from)
 
 
-def us_instrument_id(canonical_symbol: str, *, valid_from: date) -> str:
-    normalized = _normalize_id_canonical_symbol(canonical_symbol)
-    return _short_stable_id("ins_us", f"{normalized}{valid_from.isoformat()}")
+def us_instrument_id(identity: UsInstrumentIdentity) -> str:
+    """Create an immutable ID from an instrument's first-known identity.
+
+    The current alias must never participate in this seed: a rename changes an
+    alias, not the underlying instrument. `first_canonical_symbol` keeps share
+    classes of the same issuer distinct while `issuer_key` ties provider aliases
+    back to the issuer identity used during onboarding.
+    """
+
+    issuer_key = _normalize_issuer_key(identity.issuer_key)
+    canonical_symbol = _normalize_id_canonical_symbol(identity.first_canonical_symbol)
+    seed = "\x1f".join((issuer_key, canonical_symbol, identity.first_valid_from.isoformat()))
+    return _short_stable_id("ins_us", seed)
 
 
 def _normalize_canonical_symbol_parts(
@@ -212,6 +225,13 @@ def _normalize_id_canonical_symbol(canonical_symbol: str) -> str:
         canonical_symbol,
         allowed_mics=_KNOWN_US_MICS,
     ).canonical_symbol
+
+
+def _normalize_issuer_key(issuer_key: str) -> str:
+    normalized = issuer_key.strip()
+    if not normalized:
+        raise SymbolNormalizationError("issuer key is required for stable instrument identity")
+    return normalized
 
 
 def _short_stable_id(namespace: str, seed: str) -> str:
