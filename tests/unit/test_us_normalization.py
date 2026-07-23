@@ -18,6 +18,7 @@ from macro_platform.normalization.us import (
     UnitNormalizationError,
     UnsupportedExchangeError,
     UsCalendarUnavailableError,
+    UsEquityCalendarSnapshot,
     UsInstrumentIdentity,
     UsMarketClosedError,
     normalize_us_alias,
@@ -161,7 +162,7 @@ def test_sym_008_old_and_new_alias_can_share_one_stable_instrument_id(_case_id: 
     )
 
 
-def test_us_instrument_identity_uses_issuer_and_first_alias_as_immutable_id_seed() -> None:
+def test_us_instrument_identity_uses_first_alias_as_immutable_id_seed() -> None:
     identity = UsInstrumentIdentity(
         issuer_key="cik0000320193",
         first_canonical_symbol="XNAS:AAPL",
@@ -176,6 +177,43 @@ def test_us_instrument_identity_uses_issuer_and_first_alias_as_immutable_id_seed
 
     assert alias.instrument_id == us_instrument_id(identity)
     assert alias.instrument_id.startswith("ins_us_")
+    assert us_instrument_id(identity) == us_instrument_id(
+        UsInstrumentIdentity(
+            issuer_key="different-enrichment-key",
+            first_canonical_symbol="XNAS:AAPL",
+            first_valid_from=date(2026, 1, 1),
+        )
+    )
+
+
+@pytest.mark.parametrize("case", load_fixture("instrument_id_cases.json"), ids=fixture_case_id)
+def test_us_instrument_id_matches_frozen_cross_pr_golden(case: JsonFixtureCase) -> None:
+    issuer_key = case["issuer_key"] if isinstance(case["issuer_key"], str) else None
+    identity = UsInstrumentIdentity(
+        issuer_key=issuer_key,
+        first_canonical_symbol=str(case["first_canonical_symbol"]),
+        first_valid_from=date.fromisoformat(str(case["first_valid_from"])),
+    )
+
+    assert us_instrument_id(identity) == case["expected_instrument_id"]
+
+
+def test_us_instrument_identity_allows_missing_issuer_enrichment() -> None:
+    identity = UsInstrumentIdentity(
+        issuer_key=None,
+        first_canonical_symbol="XNAS:SPY",
+        first_valid_from=date(1993, 1, 29),
+    )
+    alias = normalize_us_alias(
+        source_symbol="SPY",
+        exchange="NASDAQ",
+        valid_from=date(1993, 1, 29),
+        instrument_identity=identity,
+    )
+
+    assert alias.issuer_key is None
+    assert alias.quality_flags == frozenset({"issuer_enrichment_missing"})
+    assert alias.instrument_id == "ins_us_1506273ac6c0abcd"
 
 
 def test_us_instrument_identity_keeps_share_classes_of_one_issuer_distinct() -> None:
@@ -205,6 +243,38 @@ def test_us_alias_rejects_inverted_effective_dates() -> None:
             exchange="NASDAQ",
             valid_from=date(2026, 1, 2),
             valid_to=date(2026, 1, 1),
+            instrument_identity=identity,
+        )
+
+
+def test_us_alias_rejects_effective_dates_before_its_root_identity() -> None:
+    identity = UsInstrumentIdentity(
+        issuer_key=None,
+        first_canonical_symbol="XNAS:AAPL",
+        first_valid_from=date(2026, 1, 1),
+    )
+
+    with pytest.raises(SymbolNormalizationError, match="first_valid_from"):
+        normalize_us_alias(
+            source_symbol="AAPL",
+            exchange="NASDAQ",
+            valid_from=date(2025, 12, 31),
+            instrument_identity=identity,
+        )
+
+
+def test_us_alias_requires_its_first_effective_symbol_to_match_root_identity() -> None:
+    identity = UsInstrumentIdentity(
+        issuer_key=None,
+        first_canonical_symbol="XNAS:FB",
+        first_valid_from=date(2012, 5, 18),
+    )
+
+    with pytest.raises(SymbolNormalizationError, match="first_canonical_symbol"):
+        normalize_us_alias(
+            source_symbol="META",
+            exchange="NASDAQ",
+            valid_from=date(2012, 5, 18),
             instrument_identity=identity,
         )
 
@@ -393,9 +463,32 @@ def test_us_closed_market_day_has_no_session() -> None:
         us_equity_session_window(date(2026, 7, 3))
 
 
+def test_us_calendar_uses_versioned_snapshots_for_adjacent_years() -> None:
+    assert us_equity_calendar_day(date(2025, 7, 3)).status == "early_close"
+    assert us_equity_calendar_day(date(2027, 3, 26)).status == "closed"
+    assert us_equity_calendar_day(date(2027, 11, 26)).status == "early_close"
+
+
+def test_us_calendar_accepts_injected_versioned_snapshot() -> None:
+    snapshot = UsEquityCalendarSnapshot(
+        calendar_version="test-2030-v1",
+        closed_days=frozenset({date(2030, 1, 1)}),
+        early_close_days=frozenset({date(2030, 7, 3)}),
+    )
+    snapshots = {2030: snapshot}
+
+    calendar_day = us_equity_calendar_day(date(2030, 7, 3), snapshots=snapshots)
+    session = us_equity_session_window(date(2030, 7, 3), snapshots=snapshots)
+
+    assert calendar_day.status == "early_close"
+    assert calendar_day.calendar_version == "test-2030-v1"
+    assert session.close_at == datetime(2030, 7, 3, 17, 0, tzinfo=UTC)
+    assert session.calendar_version == "test-2030-v1"
+
+
 def test_us_calendar_rejects_years_without_a_versioned_snapshot() -> None:
     with pytest.raises(UsCalendarUnavailableError, match="CALENDAR_UNAVAILABLE"):
-        us_equity_calendar_day(date(2027, 1, 4))
+        us_equity_calendar_day(date(2028, 1, 4))
 
 
 @pytest.mark.parametrize("case", load_fixture("value_cases.json"), ids=fixture_case_id)

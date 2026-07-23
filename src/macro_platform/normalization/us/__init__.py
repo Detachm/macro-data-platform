@@ -5,7 +5,9 @@ public contracts. They are not public API DTO definitions.
 """
 
 from macro_platform.normalization.us.calendar import (
+    US_EQUITY_CALENDAR_SNAPSHOTS,
     US_EQUITY_CALENDAR_VERSION,
+    UsEquityCalendarSnapshot,
     us_equity_calendar_day,
     us_equity_session_window,
 )
@@ -34,10 +36,12 @@ __all__ = [
     "AmbiguousSymbolAliasError",
     "NonexistentLocalTimeError",
     "SymbolNormalizationError",
+    "US_EQUITY_CALENDAR_SNAPSHOTS",
     "US_EQUITY_CALENDAR_VERSION",
     "UnitNormalizationError",
     "UnsupportedExchangeError",
     "UsCalendarUnavailableError",
+    "UsEquityCalendarSnapshot",
     "UsInstrumentIdentity",
     "UsMarketClosedError",
     "UsNormalizationError",

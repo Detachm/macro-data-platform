@@ -50,7 +50,7 @@ class _NormalizedUsSymbol:
 class UsInstrumentIdentity:
     """Immutable root identity established when an instrument is first onboarded."""
 
-    issuer_key: str
+    issuer_key: str | None
     first_canonical_symbol: str
     first_valid_from: date
 
@@ -65,6 +65,7 @@ class _UsAlias:
     valid_from: date
     valid_to: date | None
     issuer_key: str | None
+    quality_flags: frozenset[str] = field(default_factory=frozenset)
 
 
 def normalize_us_symbol(source_symbol: str, exchange: str | None = None) -> _NormalizedUsSymbol:
@@ -107,6 +108,21 @@ def normalize_us_alias(
         raise SymbolNormalizationError("valid_to must be later than valid_from")
 
     symbol = normalize_us_symbol(source_symbol, exchange=exchange)
+    first_canonical_symbol = _normalize_id_canonical_symbol(
+        instrument_identity.first_canonical_symbol
+    )
+    if valid_from < instrument_identity.first_valid_from:
+        raise SymbolNormalizationError(
+            "alias valid_from cannot precede instrument first_valid_from"
+        )
+    if valid_from == instrument_identity.first_valid_from and (
+        symbol.canonical_symbol != first_canonical_symbol
+    ):
+        raise SymbolNormalizationError(
+            "first effective alias must match instrument first_canonical_symbol"
+        )
+
+    issuer_key = _normalize_issuer_key(instrument_identity.issuer_key)
 
     return _UsAlias(
         source_symbol=source_symbol,
@@ -116,7 +132,8 @@ def normalize_us_alias(
         instrument_id=us_instrument_id(instrument_identity),
         valid_from=valid_from,
         valid_to=valid_to,
-        issuer_key=_normalize_issuer_key(instrument_identity.issuer_key),
+        issuer_key=issuer_key,
+        quality_flags=_issuer_quality_flags(issuer_key),
     )
 
 
@@ -169,13 +186,13 @@ def us_instrument_id(identity: UsInstrumentIdentity) -> str:
 
     The current alias must never participate in this seed: a rename changes an
     alias, not the underlying instrument. `first_canonical_symbol` keeps share
-    classes of the same issuer distinct while `issuer_key` ties provider aliases
-    back to the issuer identity used during onboarding.
+    classes distinct. `issuer_key` is optional enrichment and intentionally does
+    not affect the ID: missing SEC CIK data must not prevent onboarding or alter
+    the frozen cross-provider ID rule.
     """
 
-    issuer_key = _normalize_issuer_key(identity.issuer_key)
     canonical_symbol = _normalize_id_canonical_symbol(identity.first_canonical_symbol)
-    seed = "\x1f".join((issuer_key, canonical_symbol, identity.first_valid_from.isoformat()))
+    seed = f"{canonical_symbol}{identity.first_valid_from.isoformat()}"
     return _short_stable_id("ins_us", seed)
 
 
@@ -227,11 +244,19 @@ def _normalize_id_canonical_symbol(canonical_symbol: str) -> str:
     ).canonical_symbol
 
 
-def _normalize_issuer_key(issuer_key: str) -> str:
+def _normalize_issuer_key(issuer_key: str | None) -> str | None:
+    if issuer_key is None:
+        return None
     normalized = issuer_key.strip()
     if not normalized:
-        raise SymbolNormalizationError("issuer key is required for stable instrument identity")
+        return None
     return normalized
+
+
+def _issuer_quality_flags(issuer_key: str | None) -> frozenset[str]:
+    if issuer_key is None:
+        return frozenset({"issuer_enrichment_missing"})
+    return frozenset()
 
 
 def _short_stable_id(namespace: str, seed: str) -> str:
