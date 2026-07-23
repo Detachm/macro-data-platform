@@ -373,13 +373,13 @@ Provider roles: `cn.instruments.primary`, `cn.bars.primary`, `cn.macro.primary`,
 | HKEXnews title search | Yes, title/url fixture only | Yes, internal review | No | No | No | HKEXnews/HKEX Terms；IIS 才是授权 feed |
 | HKEX IIS | No until contract | No until contract | No | No | No | 未取得 IIS 客户资格、传输规格和许可 |
 | DATA.GOV.HK/C&SD API | Yes | Yes | Yes, with attribution | Yes, with attribution | Yes, with attribution | DATA.GOV.HK Terms 允许免费浏览、下载、分发、复制、打印，含商业和非商业用途，需注明来源和遵守条款 |
-| HKMA Open API | Yes | Yes | Yes for factual metadata/snippets with attribution | Yes for numeric/metadata | No | HKMA API 无需申请/注册/认证且免费；使用受 HKMA Terms and Conditions；redistribution 未在本 issue 冻结为允许 |
+| HKMA Open API | Yes | Yes | Pending owner/legal confirmation; No until approved | Pending owner/legal confirmation; No until approved | No | HKMA API 无需申请/注册/认证且免费；使用受 HKMA Terms and Conditions；署名、终端用户遵守条款、停止使用和销毁副本义务均需纳入撤销控制；external LLM/embedding 未在本 issue 冻结为允许 |
 | HKMA Press Releases API | Yes, title/link/summary only | Yes | Yes for title/link/permitted summary; no full body in MVP | Yes for metadata only | No | HKMA API docs/terms；MVP 不保存全文；redistribution 未在本 issue 冻结为允许 |
 
 `UsageRights` 落库规则:
 
 - 对 fixture-only 或 gap 来源，若产生 fixture 记录，`usage_rights.storage_allowed=true` 仅限合成/脱敏 fixture；真实上游正文不得保存。
-- 对 open-data numeric/metadata 来源，`storage_allowed=true`, `internal_analysis_allowed=true`, `external_llm_allowed=true`, `embedding_allowed=true`; `redistribution_allowed` 只能在上表明确为 Yes 时为 true。
+- 对 open-data numeric/metadata 来源，`storage_allowed=true`, `internal_analysis_allowed=true`; `external_llm_allowed` 和 `embedding_allowed` 只有在上表明确为 Yes 且有可验证授权依据时才为 true。HKMA Open API 在负责人/法务确认前均为 false；`redistribution_allowed` 只能在上表明确为 Yes 时为 true。
 - 对未采购市场数据，全部 false；不得生成 live provider capabilities。
 - 新闻 `body` 只有在书面合同明确允许 storage、external LLM 和 embedding 时才能非空。
 
@@ -442,7 +442,7 @@ Adapter authors must register capabilities according to this matrix:
 | 403/授权不足 | `ProviderAuthorizationError` | 不重试 | 标 `not_configured`; 需要采购/授权 ADR |
 | 429/限流 | `ProviderRateLimitError` + `retry_after_seconds` | 按 Retry-After 或指数退避 | 当前页不入库，保留 cursor |
 | 超时/网络错误 | `ProviderTimeoutError` | 最多 2 次退避重试 | 仍失败则 job `retry_wait` |
-| 登录页伪 200/验证码/风控页 | `ProviderAuthorizationError` | 不重试 | 立即阻断 provider，禁止解析 HTML 内容 |
+| 登录页伪 200/验证码/风控页 | `ProviderSchemaError` | 不重试 | 按 PRV-019 立即阻断 provider，禁止解析 HTML 内容，不能当空数据 |
 | schema drift/必填字段改名 | `ProviderSchemaError` | 不重试 | 阻断该 adapter，生成 `schema_drift_status` |
 | 空页循环/重复页 | `ProviderCursorError` | 不重试当前 cursor | 停止分页并报告 duplicate cursor/page checksum |
 | cursor 过期 | `ProviderCursorError` | 以原 query 从第一页重建一次 | 仍失败则 job `retry_wait` |
