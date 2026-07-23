@@ -52,10 +52,16 @@ Source URL：SEC archive URL / data.sec.gov endpoint。
 ## 失败与降级
 
 - Missing User-Agent/contact：health=`not_configured`。
+- 401 / invalid request identity：`ProviderAuthenticationError`，不重试。
 - 403/fair-access block：`ProviderAuthorizationError`；reduce rate and alert owner。
 - 429/too many requests：`ProviderRateLimitError`。
+- Timeout：`ProviderTimeoutError`，bounded retry；不推进 watermark。
+- HTML login/auth wall/risk-control page：`ProviderAuthorizationError`，不得当成空数据。
+- Malformed JSON / unexpected non-JSON provider payload：`ProviderSchemaError`。
 - CIK not found：empty page for unknown resource vs 404 for resolve endpoint。
 - Schema drift/missing required accession fields：`ProviderSchemaError`。
+- Empty page loop / repeated feed page：`ProviderCursorError` / `INVALID_PAGINATION` after threshold。
+- Cursor expiry：RSS/feed pagination 或 files references 过期时映射为 `ProviderCursorError`。
 - Filing body requested accidentally：policy violation; block request path。
 
 ## Fixtures 与测试
@@ -63,7 +69,7 @@ Source URL：SEC archive URL / data.sec.gov endpoint。
 - Fixture 目录：`tests/fixtures/us/sec_edgar/`。
 - 最低 fixture 集：`success.json`、`empty.json`、`missing_fields.json`、`auth_failure.json`、`rate_limited.json`、`timeout.json`、`schema_changed.json`、`duplicate_page.json`。
 - 对账来源与容差：MVP 使用 synthetic golden fixture，Decimal 往返误差为 0；Phase 2 live 对账只使用已批准来源，市场价格容差按工程规范 1bp，官方宏观/利率同源重放 checksum 必须一致。
-- 测试 ID：`PRV-001`～`PRV-020` applicable；`NEWS-012`、`NEWS-017`、PIT `available_at <= as_of`。
+- 测试 ID：`PRV-001`～`PRV-021` applicable；`NEWS-012`、`NEWS-017`、PIT `available_at <= as_of`。
 - 在线 smoke：one known CIK submissions JSON, no body fetch, <1 rps in tests。
 - 脱敏：public accession metadata ok；no full filing body/exhibits in fixture unless explicitly approved。
 

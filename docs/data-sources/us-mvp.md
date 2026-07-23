@@ -358,6 +358,7 @@ Any row without a trustworthy availability proof must use `availability_basis=fi
 | Unknown required field rename | `ProviderSchemaError` + schema drift warning | no bulk write null |
 | Valid empty upstream response | `ProviderPage(items=[], complete=True)` | no error |
 | Empty page with repeated next cursor | `ProviderCursorError` / `INVALID_PAGINATION` after threshold | no infinite loop |
+| Expired/invalid provider cursor | `ProviderCursorError` | resume from committed watermark |
 | Stale official release | coverage=`stale`; no fake current value | retry by schedule |
 | Upstream source conflict | preserve both records and provenance | no arbitrary overwrite |
 
@@ -386,7 +387,7 @@ Minimum fixture names per provider slice:
 Test IDs required downstream:
 
 - #4 normalization：`SYM-004`～`SYM-010`、`TIME-001`、`TIME-002`、`TIME-005`、`TIME-006`、`TIME-010`、`UNIT-001`、`UNIT-002`、`UNIT-004`、`UNIT-005`、`UNIT-009`
-- #6/#7 provider contract：applicable `PRV-001`～`PRV-020`
+- #6/#7 provider contract：applicable `PRV-001`～`PRV-021`
 - News：`NEWS-002`、`NEWS-003`、`NEWS-012`、`NEWS-013`、`NEWS-017`
 - PIT：all provider outputs assert `available_at <= as_of`
 

@@ -53,9 +53,14 @@ Source URL：GDELT API URL without query secrets（无 key）和 canonical publi
 ## 失败与降级
 
 - 默认 disabled：health=`not_configured`。
+- 401 / invalid key if future access control appears：`ProviderAuthenticationError`。
+- 403 / license denied / auth wall：`ProviderAuthorizationError`。
 - 429/rate limit：`ProviderRateLimitError`；不扩大窗口。
+- Timeout：`ProviderTimeoutError`，bounded retry；不推进 watermark。
 - HTML login/auth wall/risk-control page：`ProviderAuthorizationError`。
 - Malformed JSON / unexpected non-JSON payload、schema drift：`ProviderSchemaError`。
+- Empty page loop / repeated time window：`ProviderCursorError` / `INVALID_PAGINATION` after threshold。
+- Cursor expiry：GDELT MVP 无稳定 cursor；若后续 adapter 引入 cursor，过期映射为 `ProviderCursorError`。
 - Publisher content detected in body：quarantine `LICENSE_RESTRICTION`。
 
 ## Fixtures 与测试

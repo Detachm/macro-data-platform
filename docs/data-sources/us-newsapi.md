@@ -54,9 +54,15 @@ Source URL：canonical article URL and API endpoint without key。
 
 - Missing contract/key：health=`not_configured`。
 - Developer/free plan in production：`ProviderAuthorizationError`。
-- 401/403：auth/authorization error，不重试。
+- 401 / invalid key：`ProviderAuthenticationError`，不重试。
+- 403 / plan denied / license denied / auth wall：`ProviderAuthorizationError`，不重试。
 - 429：`ProviderRateLimitError`。
+- Timeout：`ProviderTimeoutError`，bounded retry；不推进 watermark。
+- HTML login/auth wall/risk-control page：`ProviderAuthorizationError`，不得当成空数据。
+- Malformed JSON / unexpected non-JSON provider payload：`ProviderSchemaError`。
 - `articles` schema drift / truncated content shape change：`ProviderSchemaError`。
+- Empty page loop / repeated `page` result：`ProviderCursorError` / `INVALID_PAGINATION` after threshold。
+- Cursor expiry：page/pageSize pagination 无 opaque cursor；若 adapter snapshot cursor 过期，映射为 `ProviderCursorError`。
 - Body/snippet not allowed：quarantine or redact to `null` before `NewsEvent`。
 
 ## Fixtures 与测试

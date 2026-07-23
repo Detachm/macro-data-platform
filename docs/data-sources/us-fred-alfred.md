@@ -54,7 +54,14 @@ Source URL：FRED endpoint without API key。
 
 - 默认：health=`not_configured`，无 worker。
 - 任何未批准 live call：视为 policy violation，停止并打开 follow-up。
-- 401/403/429/schema drift：仅在未来获批 provider 中按统一 ProviderError 映射。
+- 401 / invalid key：未来获批 provider 中映射为 `ProviderAuthenticationError`。
+- 403 / license denied / auth wall / risk-control：未来获批 provider 中映射为 `ProviderAuthorizationError`。
+- 429 / rate limit：未来获批 provider 中映射为 `ProviderRateLimitError`。
+- Timeout：未来获批 provider 中映射为 `ProviderTimeoutError`。
+- HTML login/auth wall/risk-control page：`ProviderAuthorizationError`，不得当成空数据。
+- Malformed JSON / unexpected non-JSON provider payload、schema drift：`ProviderSchemaError`。
+- Empty page loop / repeated offset window：`ProviderCursorError` / `INVALID_PAGINATION` after threshold。
+- Cursor expiry：FRED/ALFRED offset-style pagination 没有平台 cursor；若 adapter 引入 cursor，过期映射为 `ProviderCursorError`。
 
 ## Fixtures 与测试
 

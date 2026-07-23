@@ -56,7 +56,7 @@ Issue #2 要求在实现 US adapter 前冻结两日 MVP 的美国数据源范围
 ## 验证
 
 - 文档结构：每个 `docs/data-sources/us-*.md` source-level 文件必须包含 ownership、接口与覆盖、公共合同映射、权利矩阵、失败与降级、fixtures/测试、运行指标与退出方案。
-- 测试 ID：后续 #4 覆盖 `SYM-004`～`SYM-010`、`TIME-005`、`TIME-006`、US unit tests；#6/#7 覆盖 applicable `PRV-001`～`PRV-020`、`NEWS-002`、`NEWS-003`、`NEWS-012`、`NEWS-013`、`NEWS-017` 和 PIT `available_at <= as_of`。
+- 测试 ID：后续 #4 覆盖 `SYM-004`～`SYM-010`、`TIME-005`、`TIME-006`、US unit tests；#6/#7 覆盖 applicable `PRV-001`～`PRV-021`、`NEWS-002`、`NEWS-003`、`NEWS-012`、`NEWS-013`、`NEWS-017` 和 PIT `available_at <= as_of`。
 - 数据回放范围：两日 MVP 使用 synthetic/脱敏 fixture；无批准凭据不跑 live。
 - 检查命令：`git diff --check`、`uv run ruff format --check .`、`uv run ruff check .`、`uv run mypy --strict src`、`uv run pytest -m "not live" --cov=macro_platform --cov-report=term-missing`。
 - 验收人：@Detachm 最终批准；@Nouzee 对 US news/NewsEvent rights 做交叉评审。

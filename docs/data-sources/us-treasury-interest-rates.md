@@ -50,9 +50,16 @@ Source URL：Treasury XML endpoint with data/year params。
 
 ## 失败与降级
 
-- Timeout/network failure：bounded retry；不推进 watermark。
+- 401 / protected endpoint requires auth：`ProviderAuthenticationError`，不重试。
+- 403 / access denied / auth wall：`ProviderAuthorizationError`，不重试。
+- 429 / rate limit：`ProviderRateLimitError`，按 header/schedule 退避。
+- Timeout/network failure：`ProviderTimeoutError`，bounded retry；不推进 watermark。
 - Empty `all&page=N` after previous entries：complete page end。
 - Empty first page unexpectedly：warning + coverage unavailable/stale。
+- Empty page loop / repeated same `page=N` result：`ProviderCursorError` / `INVALID_PAGINATION` after threshold。
+- Cursor expiry：page-based pagination 无 opaque cursor；若 adapter cursor 过期，映射为 `ProviderCursorError`。
+- HTML login/auth wall/risk-control page：`ProviderAuthorizationError`，不得当成空数据。
+- Malformed XML/JSON / unexpected non-JSON provider payload：`ProviderSchemaError`。
 - XML schema drift：`ProviderSchemaError`。
 - Missing maturity/value：row quarantine，不写 0。
 
@@ -61,7 +68,7 @@ Source URL：Treasury XML endpoint with data/year params。
 - Fixture 目录：`tests/fixtures/us/treasury_interest_rates/`。
 - 最低 fixture 集：`success.json`、`empty.json`、`missing_fields.json`、`auth_failure.json`、`rate_limited.json`、`timeout.json`、`schema_changed.json`、`duplicate_page.json`。
 - 对账来源与容差：MVP 使用 synthetic golden fixture，Decimal 往返误差为 0；Phase 2 live 对账只使用已批准来源，市场价格容差按工程规范 1bp，官方宏观/利率同源重放 checksum 必须一致。
-- 测试 ID：`PRV-001`～`PRV-020` applicable；`UNIT-001`、`UNIT-009`、PIT tests。
+- 测试 ID：`PRV-001`～`PRV-021` applicable；`UNIT-001`、`UNIT-009`、PIT tests。
 - 在线 smoke：one recent year or one month query；low-frequency。
 - 脱敏：public numeric data only；no secrets。
 

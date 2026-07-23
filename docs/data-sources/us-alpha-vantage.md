@@ -53,10 +53,14 @@ Source URL：endpoint URL without secret query params。
 ## 失败与降级
 
 - Missing key / unapproved plan：health=`not_configured`，不启用 live worker。
-- 401/403：`ProviderAuthenticationError` / `ProviderAuthorizationError`，不重试。
+- 401 / invalid key：`ProviderAuthenticationError`，不重试。
+- 403 / unapproved plan / license denied：`ProviderAuthorizationError`，不重试。
 - 429 或 quota note：`ProviderRateLimitError`，按 provider 提示退避。
+- Timeout：`ProviderTimeoutError`，bounded retry；不推进 watermark。
 - HTML login/auth wall/risk-control page：`ProviderAuthorizationError`，不得当成空数据。
 - Malformed JSON / unexpected non-JSON payload、schema drift、字段改名：`ProviderSchemaError`。
+- Empty page loop / repeated provider window：`ProviderCursorError` / `INVALID_PAGINATION` after threshold。
+- Cursor expiry：无 cursor；若后续 provider 引入不透明 cursor，过期映射为 `ProviderCursorError`。
 - 合法空响应：`ProviderPage(items=[], complete=True)`。
 
 ## Fixtures 与测试
@@ -64,7 +68,7 @@ Source URL：endpoint URL without secret query params。
 - Fixture 目录：`tests/fixtures/us/alpha_vantage/`（仅 synthetic，不复制 vendor 示例正文）。
 - 最低 fixture 集：`success.json`、`empty.json`、`missing_fields.json`、`auth_failure.json`、`rate_limited.json`、`timeout.json`、`schema_changed.json`、`duplicate_page.json`。
 - 对账来源与容差：MVP 使用 synthetic golden fixture，Decimal 往返误差为 0；Phase 2 live 对账只使用已批准来源，市场价格容差按工程规范 1bp，官方宏观/利率同源重放 checksum 必须一致。
-- 测试 ID：适用 `PRV-001`～`PRV-020`；bars 覆盖 `TIME-005`、`UNIT-004`；news 覆盖 `NEWS-012`、`NEWS-017`。
+- 测试 ID：适用 `PRV-001`～`PRV-021`；bars 覆盖 `TIME-005`、`UNIT-004`；news 覆盖 `NEWS-012`、`NEWS-017`。
 - 在线 smoke：无合同前禁止；获批后只拉一个 prior-day synthetic-approved ticker。
 - 脱敏方式：删除 API key、账号、vendor messages 中任何 plan/account 信息。
 

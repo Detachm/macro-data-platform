@@ -52,10 +52,16 @@ Source URL：`https://apps.bea.gov/api/data` with secret params removed。
 ## 失败与降级
 
 - Missing `UserID`：health=`not_configured`；fixture provider 可继续。
-- 401/403 或 invalid key response：auth/authorization error，不重试。
+- 401 / invalid key response：`ProviderAuthenticationError`，不重试。
+- 403 / authorization denied / auth wall：`ProviderAuthorizationError`，不重试。
 - 429 with `Retry-After`：`ProviderRateLimitError`。
+- Timeout：`ProviderTimeoutError`，bounded retry；不推进 watermark。
 - 30 errors/min 触发：circuit open，停止当前 run。
+- HTML login/auth wall/risk-control page：`ProviderAuthorizationError`，不得当成空数据。
+- Malformed JSON / unexpected non-JSON provider payload：`ProviderSchemaError`。
 - Dataset schema/metadata changed：`ProviderSchemaError`；不批量写 null。
+- Empty page loop / repeated provider window：`ProviderCursorError` / `INVALID_PAGINATION` after threshold。
+- Cursor expiry：BEA MVP 无 cursor；若后续 dataset token 过期，映射为 `ProviderCursorError`。
 - 合法无 observation：空 page + warning，不报错。
 
 ## Fixtures 与测试
@@ -63,7 +69,7 @@ Source URL：`https://apps.bea.gov/api/data` with secret params removed。
 - Fixture 目录：`tests/fixtures/us/bea/`。
 - 最低 fixture 集：`success.json`、`empty.json`、`missing_fields.json`、`auth_failure.json`、`rate_limited.json`、`timeout.json`、`schema_changed.json`、`duplicate_page.json`。
 - 对账来源与容差：MVP 使用 synthetic golden fixture，Decimal 往返误差为 0；Phase 2 live 对账只使用已批准来源，市场价格容差按工程规范 1bp，官方宏观/利率同源重放 checksum 必须一致。
-- 测试 ID：`PRV-001`～`PRV-020` applicable；macro PIT `PIT-001`、`PIT-002`、`PIT-006`。
+- 测试 ID：`PRV-001`～`PRV-021` applicable；macro PIT `PIT-001`、`PIT-002`、`PIT-006`。
 - 在线 smoke：`GetDatasetList` + 一个小 NIPA window；缺 UserID 自动 skip。
 - 脱敏：移除 UserID、request URL secret query。
 
