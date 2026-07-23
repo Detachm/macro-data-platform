@@ -10,10 +10,6 @@ from macro_platform.providers.registry import ProviderRegistry
 
 CN_PROVIDER_ID = "cn.contract-fixture.v1"
 CN_ROLE_BINDINGS = {
-    "cn.instruments.primary": CN_PROVIDER_ID,
-    "cn.bars.primary": CN_PROVIDER_ID,
-    "cn.macro.primary": CN_PROVIDER_ID,
-    "cn.news.primary": CN_PROVIDER_ID,
     "cn.contract_fixture.instruments": CN_PROVIDER_ID,
     "cn.contract_fixture.bars": CN_PROVIDER_ID,
     "cn.contract_fixture.market_observations": CN_PROVIDER_ID,
@@ -33,7 +29,7 @@ class CnSyntheticProvider(RegionalFixtureProvider):
     macro_code = "CPI_YOY"
     macro_series_name = "CN CPI YoY"
     instrument_listed_on_by_symbol = {"XSHG:600000": date(1999, 11, 10)}
-    live_ready_datasets = frozenset({Dataset.MACRO_RELEASES})
+    live_ready_datasets = frozenset()
     fixture_only_datasets = frozenset(
         {
             Dataset.INSTRUMENTS,
