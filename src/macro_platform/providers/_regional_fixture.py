@@ -213,6 +213,7 @@ class RegionalFixtureProvider:
     macro_code: ClassVar[str] = "CPI_YOY"
     macro_series_name: ClassVar[str] = "CPI YoY"
     instrument_listed_on_by_symbol: ClassVar[Mapping[str, date]] = {}
+    instrument_key_by_symbol: ClassVar[Mapping[str, str]] = {}
     live_ready_datasets: ClassVar[frozenset[Dataset]] = frozenset()
     live_candidate_datasets: ClassVar[frozenset[Dataset]] = frozenset()
     fixture_only_datasets: ClassVar[frozenset[Dataset]] = frozenset(
@@ -963,15 +964,64 @@ class RegionalFixtureProvider:
                 f"instrument listed_on is required to derive instrument_id for {mic}:{symbol}"
             )
         try:
+            normalize_instrument_symbol(
+                region=self.region,
+                venue_mic=mic,
+                local_symbol=symbol,
+                valid_from=instrument_listed_on,
+                provider_id=self.provider_id,
+                instrument_key="validation",
+            )
+        except CnHkNormalizationError as exc:
+            raise ProviderSchemaError(str(exc)) from exc
+        instrument_key = self._instrument_key_for_symbol(mic, symbol)
+        if instrument_key is None:
+            raise ProviderSchemaError(
+                f"instrument registry key is required to derive instrument_id for {mic}:{symbol}"
+            )
+        try:
             return normalize_instrument_symbol(
                 region=self.region,
                 venue_mic=mic,
                 local_symbol=symbol,
                 valid_from=instrument_listed_on,
                 provider_id=self.provider_id,
+                instrument_key=instrument_key,
             )
         except CnHkNormalizationError as exc:
             raise ProviderSchemaError(str(exc)) from exc
+
+    def _instrument_key_for_symbol(self, mic: str, symbol: str) -> str | None:
+        direct = self.instrument_key_by_symbol.get(f"{mic}:{symbol}")
+        if direct is not None:
+            return direct
+        for canonical_seed, instrument_key in self.instrument_key_by_symbol.items():
+            seed_mic, _, seed_symbol = canonical_seed.partition(":")
+            listed_on = self.instrument_listed_on_by_symbol.get(canonical_seed)
+            if seed_mic != mic or listed_on is None:
+                continue
+            try:
+                requested = normalize_instrument_symbol(
+                    region=self.region,
+                    venue_mic=mic,
+                    local_symbol=symbol,
+                    valid_from=listed_on,
+                    provider_id=self.provider_id,
+                    instrument_key=instrument_key,
+                )
+                candidate = normalize_instrument_symbol(
+                    region=self.region,
+                    venue_mic=seed_mic,
+                    local_symbol=seed_symbol,
+                    valid_from=listed_on,
+                    provider_id=self.provider_id,
+                    instrument_key=instrument_key,
+                )
+            except CnHkNormalizationError:
+                continue
+            if requested.canonical_symbol == candidate.canonical_symbol:
+                return instrument_key
+        return None
 
     def _listed_on_for_symbol(self, mic: str, symbol: str) -> date | None:
         direct = self.instrument_listed_on_by_symbol.get(f"{mic}:{symbol}")
@@ -988,6 +1038,7 @@ class RegionalFixtureProvider:
                     local_symbol=symbol,
                     valid_from=listed_on,
                     provider_id=self.provider_id,
+                    instrument_key="lookup",
                 )
                 candidate = normalize_instrument_symbol(
                     region=self.region,
@@ -995,6 +1046,7 @@ class RegionalFixtureProvider:
                     local_symbol=seed_symbol,
                     valid_from=listed_on,
                     provider_id=self.provider_id,
+                    instrument_key="lookup",
                 )
             except CnHkNormalizationError:
                 continue
