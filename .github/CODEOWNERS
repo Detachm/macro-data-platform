@@ -1,0 +1,22 @@
+# Replace these placeholder handles with real GitHub users or teams before enabling
+# branch protection. Paths are relative to this standalone repository.
+*                                                   @project-lead
+
+/src/macro_platform/providers/cn/                    @intern-a @project-lead
+/src/macro_platform/providers/hk/                    @intern-a @project-lead
+/src/macro_platform/normalization/cn_hk/             @intern-a @project-lead
+/tests/fixtures/cn/                                  @intern-a
+/tests/fixtures/hk/                                  @intern-a
+
+/src/macro_platform/providers/us/                    @intern-b @project-lead
+/src/macro_platform/normalization/us/                @intern-b @project-lead
+/tests/fixtures/us/                                  @intern-b
+
+/src/macro_platform/contracts/                       @intern-a @intern-b @project-lead
+/src/macro_platform/storage/                         @intern-b @project-lead
+/src/macro_platform/api/                             @intern-b @project-lead
+/src/macro_platform/jobs/                            @intern-b @project-lead
+/src/macro_platform/observability/                   @intern-b @project-lead
+/migrations/                                         @intern-b @project-lead
+/.github/                                            @intern-b @project-lead
+/docs/adr/                                           @project-lead

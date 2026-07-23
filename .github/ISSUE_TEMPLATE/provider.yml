@@ -1,0 +1,54 @@
+name: Provider 接入
+description: 新建或调整市场、宏观、新闻数据源适配器
+title: "[provider] "
+labels: ["provider"]
+body:
+  - type: input
+    id: owner
+    attributes:
+      label: Owner
+    validations:
+      required: true
+  - type: dropdown
+    id: region
+    attributes:
+      label: 区域
+      options: [CN, HK, US, GLOBAL]
+    validations:
+      required: true
+  - type: textarea
+    id: source
+    attributes:
+      label: 数据源与官方文档
+      description: 写明产品/端点、授权层级和官方文档链接，不得粘贴凭据。
+    validations:
+      required: true
+  - type: textarea
+    id: contract
+    attributes:
+      label: 入参、出参与错误行为
+      description: 指向公共 Query、ProviderPage 和规范化模型，并列出降级策略。
+    validations:
+      required: true
+  - type: textarea
+    id: tests
+    attributes:
+      label: 验收测试 ID
+      description: 至少覆盖 success/empty/auth/rate-limit/timeout/schema-change/duplicate-page。
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: 非目标、依赖和预计完成时间
+    validations:
+      required: true
+  - type: checkboxes
+    id: impact
+    attributes:
+      label: 影响确认
+      options:
+        - label: 已说明公共 contract/API/数据库影响
+          required: true
+        - label: 已说明 storage、redistribution、external LLM 权利
+          required: true

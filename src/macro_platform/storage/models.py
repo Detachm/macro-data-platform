@@ -1,0 +1,278 @@
+from __future__ import annotations
+
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Any
+from uuid import UUID
+
+from sqlalchemy import (
+    BigInteger,
+    Date,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PGUUID
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class InstrumentRow(Base):
+    __tablename__ = "instruments"
+
+    instrument_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    canonical_symbol: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    region: Mapped[str] = mapped_column(String(8), index=True)
+    status: Mapped[str] = mapped_column(String(24), index=True)
+    valid_from: Mapped[date] = mapped_column(Date)
+    valid_to: Mapped[date | None] = mapped_column(Date, nullable=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class InstrumentAliasRow(Base):
+    __tablename__ = "instrument_aliases"
+    __table_args__ = (
+        UniqueConstraint(
+            "provider_id", "source_symbol", "valid_from", name="uq_instrument_alias_effective"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    instrument_id: Mapped[str] = mapped_column(
+        ForeignKey("instruments.instrument_id", ondelete="RESTRICT"), index=True
+    )
+    provider_id: Mapped[str] = mapped_column(String(64), index=True)
+    source_symbol: Mapped[str] = mapped_column(String(128))
+    valid_from: Mapped[date] = mapped_column(Date)
+    valid_to: Mapped[date | None] = mapped_column(Date, nullable=True)
+
+
+class MarketBarRow(Base):
+    __tablename__ = "market_bars"
+    __table_args__ = (
+        UniqueConstraint(
+            "instrument_id",
+            "interval",
+            "bar_start",
+            "adjustment",
+            "provider_id",
+            name="uq_market_bar_source",
+        ),
+        Index("ix_market_bars_instrument_end", "instrument_id", "bar_end"),
+        Index("ix_market_bars_available", "available_at"),
+    )
+
+    bar_id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    instrument_id: Mapped[str] = mapped_column(
+        ForeignKey("instruments.instrument_id", ondelete="RESTRICT")
+    )
+    canonical_symbol: Mapped[str] = mapped_column(String(64))
+    region: Mapped[str] = mapped_column(String(8))
+    interval: Mapped[str] = mapped_column(String(8))
+    bar_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    bar_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    trading_date: Mapped[date] = mapped_column(Date)
+    open: Mapped[Decimal] = mapped_column(Numeric(38, 18))
+    high: Mapped[Decimal] = mapped_column(Numeric(38, 18))
+    low: Mapped[Decimal] = mapped_column(Numeric(38, 18))
+    close: Mapped[Decimal] = mapped_column(Numeric(38, 18))
+    volume: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    adjustment: Mapped[str] = mapped_column(String(32))
+    provider_id: Mapped[str] = mapped_column(String(64))
+    provider_record_id: Mapped[str] = mapped_column(String(256))
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    ingested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class MarketObservationRow(Base):
+    __tablename__ = "market_observations"
+    __table_args__ = (
+        Index("ix_market_observations_metric_available", "metric_code", "available_at"),
+    )
+
+    observation_id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    region: Mapped[str] = mapped_column(String(8), index=True)
+    metric_code: Mapped[str] = mapped_column(String(128), index=True)
+    scope_id: Mapped[str] = mapped_column(String(128), index=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    provider_id: Mapped[str] = mapped_column(String(64))
+    provider_record_id: Mapped[str] = mapped_column(String(256))
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    ingested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class MacroSeriesRow(Base):
+    __tablename__ = "macro_series"
+
+    series_id: Mapped[str] = mapped_column(String(160), primary_key=True)
+    region: Mapped[str] = mapped_column(String(8), index=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class MacroObservationRow(Base):
+    __tablename__ = "macro_observations"
+    __table_args__ = (
+        UniqueConstraint(
+            "series_id",
+            "period_end",
+            "vintage_id",
+            "provider_id",
+            name="uq_macro_observation_vintage",
+        ),
+        Index("ix_macro_observations_series_available", "series_id", "available_at"),
+    )
+
+    observation_id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    series_id: Mapped[str] = mapped_column(
+        ForeignKey("macro_series.series_id", ondelete="RESTRICT")
+    )
+    region: Mapped[str] = mapped_column(String(8))
+    period_end: Mapped[date] = mapped_column(Date)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    vintage_id: Mapped[str] = mapped_column(String(128))
+    revision_no: Mapped[int] = mapped_column(Integer)
+    provider_id: Mapped[str] = mapped_column(String(64))
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    ingested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class MacroReleaseRow(Base):
+    __tablename__ = "macro_releases"
+    __table_args__ = (Index("ix_macro_releases_region_scheduled", "region", "scheduled_at"),)
+
+    release_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    series_id: Mapped[str] = mapped_column(
+        ForeignKey("macro_series.series_id", ondelete="RESTRICT")
+    )
+    region: Mapped[str] = mapped_column(String(8))
+    scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    ingested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class NewsEventRow(Base):
+    __tablename__ = "news_events"
+    __table_args__ = (
+        Index("ix_news_events_published", "published_at", "news_id"),
+        Index("ix_news_events_available", "available_at"),
+        Index("ix_news_events_cluster", "cluster_id"),
+    )
+
+    news_id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    cluster_id: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    provider_id: Mapped[str] = mapped_column(String(64))
+    provider_record_id: Mapped[str] = mapped_column(String(256))
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(24))
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    ingested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class NewsEventRegionRow(Base):
+    __tablename__ = "news_event_regions"
+    news_id: Mapped[str] = mapped_column(
+        ForeignKey("news_events.news_id", ondelete="CASCADE"), primary_key=True
+    )
+    region: Mapped[str] = mapped_column(String(8), primary_key=True)
+
+
+class NewsEventEntityRow(Base):
+    __tablename__ = "news_event_entities"
+    news_id: Mapped[str] = mapped_column(
+        ForeignKey("news_events.news_id", ondelete="CASCADE"), primary_key=True
+    )
+    entity_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    entity_type: Mapped[str] = mapped_column(String(32))
+
+
+class NewsEventTopicRow(Base):
+    __tablename__ = "news_event_topics"
+    news_id: Mapped[str] = mapped_column(
+        ForeignKey("news_events.news_id", ondelete="CASCADE"), primary_key=True
+    )
+    topic: Mapped[str] = mapped_column(String(128), primary_key=True)
+
+
+class ProviderRunRow(Base):
+    __tablename__ = "provider_runs"
+    __table_args__ = (Index("ix_provider_runs_role_started", "provider_role", "started_at"),)
+
+    run_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    provider_role: Mapped[str] = mapped_column(String(64))
+    dataset: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(24))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    records_fetched: Mapped[int] = mapped_column(Integer, default=0)
+    records_accepted: Mapped[int] = mapped_column(Integer, default=0)
+    records_rejected: Mapped[int] = mapped_column(Integer, default=0)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    details: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+
+
+class JobWatermarkRow(Base):
+    __tablename__ = "job_watermarks"
+
+    provider_role: Mapped[str] = mapped_column(String(64), primary_key=True)
+    dataset: Mapped[str] = mapped_column(String(64), primary_key=True)
+    region: Mapped[str] = mapped_column(String(8), primary_key=True)
+    watermark: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cursor: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class IngestRejectionRow(Base):
+    __tablename__ = "ingest_rejections"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    run_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), index=True)
+    provider_id: Mapped[str] = mapped_column(String(64))
+    error_code: Mapped[str] = mapped_column(String(64))
+    redacted_payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ContextBuildRow(Base):
+    __tablename__ = "context_builds"
+
+    context_id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    data_fingerprint_sha256: Mapped[str] = mapped_column(String(64), index=True)
+    request_payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    coverage_payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
