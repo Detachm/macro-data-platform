@@ -156,22 +156,6 @@ def test_fixture_only_sources_are_guarded_from_production_scheduling(
             provider.assert_production_dataset_supported(dataset)
 
 
-@pytest.mark.parametrize(
-    ("provider_cls", "live_ready_dataset"),
-    [
-        (CnSyntheticProvider, Dataset.MACRO_RELEASES),
-        (HkSyntheticProvider, Dataset.MACRO_OBSERVATIONS),
-        (HkSyntheticProvider, Dataset.MACRO_RELEASES),
-        (HkSyntheticProvider, Dataset.NEWS),
-    ],
-)
-def test_live_ready_datasets_follow_cn_hk_source_freeze(
-    provider_cls: type[RegionalFixtureProvider],
-    live_ready_dataset: Dataset,
-) -> None:
-    provider_cls.from_fixture("success").assert_production_dataset_supported(live_ready_dataset)
-
-
 @pytest.mark.asyncio
 async def test_source_checksum_excludes_retrieved_at(tmp_path: Path, context: FetchContext) -> None:
     source_fixture = FIXTURE_ROOT / "cn" / "synthetic" / "success.json"

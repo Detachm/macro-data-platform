@@ -46,7 +46,9 @@ uv run pytest tests/contract/test_cn_hk_providers.py -ra
 
 The synthetic providers use only `tests/fixtures/{cn,hk}/synthetic/*`. They are fake fixture
 providers, not live CN/HK adapters. Registry roles are declared for structure-first loading only;
-`assert_production_dataset_supported` must reject every dataset until #1/#3 land real mappings.
+fixture-only datasets must be rejected by `assert_production_dataset_supported`; live-ready
+datasets follow the #1 capability freeze and still require #3 normalization before final
+acceptance.
 
 Reserved but incomplete cases are `xfail` with `blocked by #5`, `blocked by #1`, or `blocked by #3`
 recorded in both the pytest reason and the regional manifest. After #5 lands:

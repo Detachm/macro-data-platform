@@ -223,7 +223,7 @@ class RegionalFixtureProvider:
         return ProviderCapabilities(
             provider_id=self.provider_id,
             regions={self.region},
-            datasets=self.live_ready_datasets | self.fixture_only_datasets,
+            datasets=self.live_ready_datasets,
             intervals={Interval.D1},
             max_page_size=5000,
             supports_point_in_time=True,

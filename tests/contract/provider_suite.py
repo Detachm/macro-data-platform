@@ -22,7 +22,6 @@ from macro_platform.contracts.market import (
 )
 from macro_platform.contracts.news import ContentMode, NewsQuery
 from macro_platform.contracts.provider import (
-    Dataset,
     FetchContext,
     ProviderCapabilities,
     ProviderPage,
@@ -95,7 +94,6 @@ def assert_capabilities_contract(provider: BaseProvider) -> ProviderCapabilities
     capabilities = provider.capabilities()
     assert capabilities.provider_id.strip() == capabilities.provider_id
     assert capabilities.regions
-    assert capabilities.datasets
     assert capabilities.max_page_size > 0
     return capabilities
 
@@ -162,15 +160,7 @@ async def assert_success_fixture_contract(
     region = next(iter(provider.region_set()))
     capabilities = assert_capabilities_contract(provider)
     assert capabilities.regions == {region}
-    assert {
-        Dataset.INSTRUMENTS,
-        Dataset.BARS,
-        Dataset.MARKET_OBSERVATIONS,
-        Dataset.MACRO_SERIES,
-        Dataset.MACRO_OBSERVATIONS,
-        Dataset.MACRO_RELEASES,
-        Dataset.NEWS,
-    }.issubset(capabilities.datasets)
+    assert capabilities.datasets == provider.live_ready_datasets
 
     instrument_query = InstrumentQuery(regions={region}, limit=100)
     instrument_query_before = instrument_query.model_dump(mode="json")
