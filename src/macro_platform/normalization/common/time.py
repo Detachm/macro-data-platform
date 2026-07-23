@@ -4,7 +4,10 @@ from datetime import UTC, datetime
 
 
 class TimezoneRequiredError(ValueError):
-    pass
+    code = "TIMEZONE_REQUIRED"
+
+    def __init__(self, message: str) -> None:
+        super().__init__(f"{self.code}: {message}")
 
 
 def to_utc(value: datetime) -> datetime:

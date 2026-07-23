@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from macro_platform.normalization.common import TimezoneRequiredError
+from macro_platform.normalization.common import TimezoneRequiredError, normalize_canonical_symbol
 from macro_platform.normalization.us import (
     US_EQUITY_CALENDAR_VERSION,
     AmbiguousSymbolAliasError,
@@ -31,7 +31,6 @@ from macro_platform.normalization.us import (
     us_trading_date,
     validate_us_aliases,
 )
-from macro_platform.normalization.us.symbols import _normalize_canonical_symbol_parts
 
 FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "us" / "normalization"
 JsonFixtureCase = dict[str, object]
@@ -63,14 +62,14 @@ def test_sym_004_005_us_symbols_normalize_to_explicit_mic(case: JsonFixtureCase)
 
 @pytest.mark.parametrize("_case_id", [pytest.param("SYM-006", id="SYM-006")])
 def test_sym_006_same_symbol_on_two_exchanges_does_not_guess_market(_case_id: str) -> None:
-    nasdaq = normalize_us_symbol("TEST", exchange="NASDAQ")
-    nyse = normalize_us_symbol("TEST", exchange="NYSE")
+    nasdaq = normalize_us_symbol("000001", exchange="NASDAQ")
+    nyse = normalize_us_symbol("000001", exchange="NYSE")
 
-    assert nasdaq.canonical_symbol == "XNAS:TEST"
-    assert nyse.canonical_symbol == "XNYS:TEST"
+    assert nasdaq.canonical_symbol == "XNAS:000001"
+    assert nyse.canonical_symbol == "XNYS:000001"
 
     with pytest.raises(SymbolNormalizationError, match="SYMBOL_UNRESOLVED"):
-        normalize_us_symbol("TEST", exchange=None)
+        normalize_us_symbol("000001", exchange=None)
 
 
 @pytest.mark.parametrize("_case_id", [pytest.param("SYM-007", id="SYM-007")])
@@ -106,11 +105,11 @@ def test_us_symbol_normalize_is_deterministic() -> None:
 
 
 @pytest.mark.parametrize("_case_id", [pytest.param("SYM-010", id="SYM-010")])
-def test_sym_010_canonical_symbol_parts_normalization_is_idempotent(_case_id: str) -> None:
-    normalized = _normalize_canonical_symbol_parts("XNAS:aapl")
+def test_sym_010_canonical_symbol_normalization_is_idempotent(_case_id: str) -> None:
+    normalized = normalize_canonical_symbol("XHKG:00700")
 
-    assert normalized.canonical_symbol == "XNAS:AAPL"
-    assert _normalize_canonical_symbol_parts(normalized.canonical_symbol) == normalized
+    assert normalized == "XHKG:00700"
+    assert normalize_canonical_symbol(normalized) == normalized
 
 
 @pytest.mark.parametrize("_case_id", [pytest.param("SYM-008", id="SYM-008")])
@@ -210,6 +209,23 @@ def test_us_alias_rejects_inverted_effective_dates() -> None:
         )
 
 
+def test_us_alias_rejects_empty_effective_dates() -> None:
+    identity = UsInstrumentIdentity(
+        issuer_key="cik0000320193",
+        first_canonical_symbol="XNAS:AAPL",
+        first_valid_from=date(2026, 1, 1),
+    )
+
+    with pytest.raises(SymbolNormalizationError, match="SYMBOL_UNRESOLVED"):
+        normalize_us_alias(
+            source_symbol="AAPL",
+            exchange="NASDAQ",
+            valid_from=date(2026, 1, 1),
+            valid_to=date(2026, 1, 1),
+            instrument_identity=identity,
+        )
+
+
 def test_same_instrument_alias_overlap_is_not_ambiguous() -> None:
     identity = UsInstrumentIdentity(
         issuer_key="cik0000320193",
@@ -300,8 +316,10 @@ def test_time_001_to_us_market_utc_converts_aware_datetime(_case_id: str) -> Non
 
 @pytest.mark.parametrize("_case_id", [pytest.param("TIME-002", id="TIME-002")])
 def test_time_002_to_us_market_utc_rejects_naive_datetime(_case_id: str) -> None:
-    with pytest.raises(TimezoneRequiredError):
+    with pytest.raises(TimezoneRequiredError, match="TIMEZONE_REQUIRED") as error:
         to_us_market_utc(datetime(2026, 7, 23, 9, 30))
+
+    assert error.value.code == "TIMEZONE_REQUIRED"
 
 
 @pytest.mark.parametrize("_case_id", [pytest.param("TIME-005", id="TIME-005")])

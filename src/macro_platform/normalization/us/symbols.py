@@ -103,8 +103,8 @@ def normalize_us_alias(
     instrument_identity: UsInstrumentIdentity,
     valid_to: date | None = None,
 ) -> _UsAlias:
-    if valid_to is not None and valid_to < valid_from:
-        raise SymbolNormalizationError("valid_to must not be earlier than valid_from")
+    if valid_to is not None and valid_to <= valid_from:
+        raise SymbolNormalizationError("valid_to must be later than valid_from")
 
     symbol = normalize_us_symbol(source_symbol, exchange=exchange)
 
