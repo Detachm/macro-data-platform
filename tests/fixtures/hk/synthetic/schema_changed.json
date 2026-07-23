@@ -1,0 +1,30 @@
+{
+  "status": "ok",
+  "fetched_at": "2026-07-23T08:00:00Z",
+  "source_watermark": "hk-synthetic-schema",
+  "pages": {
+    "instruments": {
+      "next_cursor": null,
+      "items": [
+        {
+          "record_id": "hk-ins-schema",
+          "symbol": "00700",
+          "mic": "XHKG",
+          "name": "腾讯控股",
+          "name_en": "Tencent Holdings",
+          "asset_class": "equity",
+          "currency": "HKD",
+          "timezone": "Asia/Hong_Kong",
+          "status": "active",
+          "listed_on": "2004-06-16",
+          "lot_size": "100",
+          "valid_from": "2004-06-16",
+          "source_url": "https://example.test/hk/instruments/00700",
+          "retrieved_at": "2026-07-23T08:00:00Z",
+          "provider_updated_at": "2026-07-23T07:50:00Z",
+          "unexpected_vendor_field": true
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "status": "ok",
+  "fetched_at": "2026-07-23T08:00:00Z",
+  "source_watermark": "cn-synthetic-schema",
+  "pages": {
+    "instruments": {
+      "next_cursor": null,
+      "items": [
+        {
+          "record_id": "cn-ins-schema",
+          "symbol": "600000",
+          "mic": "XSHG",
+          "name": "浦发银行",
+          "name_en": "Shanghai Pudong Development Bank",
+          "asset_class": "equity",
+          "currency": "CNY",
+          "timezone": "Asia/Shanghai",
+          "status": "active",
+          "listed_on": "1999-11-10",
+          "lot_size": "100",
+          "valid_from": "1999-11-10",
+          "source_url": "https://example.test/cn/instruments/600000",
+          "retrieved_at": "2026-07-23T08:00:00Z",
+          "provider_updated_at": "2026-07-23T07:50:00Z",
+          "unexpected_vendor_field": true
+        }
+      ]
+    }
+  }
+}
