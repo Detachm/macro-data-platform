@@ -25,7 +25,7 @@
     {"id": "PRV-003", "status": "xfail", "blocked_by": ["#5"]},
     {"id": "PRV-004", "status": "xfail", "blocked_by": ["#5"]},
     {"id": "PRV-005", "status": "xfail", "blocked_by": ["#5"]},
-    {"id": "PRV-006", "status": "xfail", "blocked_by": ["#5", "#3"]},
+    {"id": "PRV-006", "status": "xfail", "blocked_by": ["#5"]},
     {"id": "PRV-007", "status": "implemented"},
     {"id": "PRV-008", "status": "implemented"},
     {"id": "PRV-009", "status": "implemented"},
@@ -33,7 +33,7 @@
     {"id": "PRV-011", "status": "xfail", "blocked_by": ["#5"]},
     {"id": "PRV-012", "status": "xfail", "blocked_by": ["#5"]},
     {"id": "PRV-013", "status": "implemented"},
-    {"id": "PRV-014", "status": "xfail", "blocked_by": ["#3"]},
+    {"id": "PRV-014", "status": "xfail", "blocked_by": ["#5"]},
     {"id": "PRV-015", "status": "xfail", "blocked_by": ["#5"]},
     {"id": "PRV-016", "status": "xfail", "blocked_by": ["#5"]},
     {"id": "PRV-017", "status": "implemented"},
@@ -44,7 +44,7 @@
     {"id": "NEWS-003", "status": "implemented"},
     {"id": "NEWS-012", "status": "implemented"},
     {"id": "NEWS-013", "status": "implemented"},
-    {"id": "NEWS-017", "status": "xfail", "blocked_by": ["#3"]},
+    {"id": "NEWS-017", "status": "xfail", "blocked_by": ["#5"]},
     {"id": "PIT-AVAILABLE-AT-AS-OF", "status": "implemented"}
   ]
 }

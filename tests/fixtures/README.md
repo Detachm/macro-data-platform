@@ -46,11 +46,11 @@ uv run pytest tests/contract/test_cn_hk_providers.py -ra
 
 The synthetic providers use only `tests/fixtures/{cn,hk}/synthetic/*`. They are fake fixture
 providers, not live CN/HK adapters. Registry roles are declared for structure-first loading only;
-fixture-only datasets must be rejected by `assert_production_dataset_supported`; live-ready
-datasets follow the #1 capability freeze and still require #3 normalization before final
-acceptance.
+fixture-only datasets must be rejected by `assert_production_dataset_supported`. The synthetic
+providers consume #3 normalization but still do not expose live capabilities; #1 live-ready sources
+are tracked as live candidates until real adapters are implemented.
 
-Reserved but incomplete cases are `xfail` with `blocked by #5`, `blocked by #1`, or `blocked by #3`
+Reserved but incomplete cases are `xfail` with `blocked by #5`
 recorded in both the pytest reason and the regional manifest. After #5 lands:
 
 1. Add the real provider fixture set under `tests/fixtures/{cn,hk}/<provider_name>/`.
@@ -74,7 +74,8 @@ Still blocked:
   PRV-015, PRV-016
 - NEWS-017
 
-Blocked by: #5/#1/#3 as recorded in tests/fixtures/{cn,hk}/manifest.json.
+Blocked by: #5 as recorded in tests/fixtures/{cn,hk}/manifest.json. #1 is consumed as
+implementation input but still pending cross-review.
 ```
 
 ## CN/HK contract matrix
@@ -96,7 +97,7 @@ Blocked by: #5/#1/#3 as recorded in tests/fixtures/{cn,hk}/manifest.json.
 保留为 `xfail` 的入口：`PRV-003`、`PRV-004`、`PRV-005`、`PRV-006`、`PRV-011`、
 `PRV-012`、`PRV-014`、`PRV-015`、`PRV-016`、`NEWS-017`，原因均写在测试和
 manifest 中，
-blocked by #5/#1/#3。
+blocked by #5。#1 文档已作为实现输入消费，但仍待交叉评审。
 
 ## 接入 #5 后解除 xfail
 

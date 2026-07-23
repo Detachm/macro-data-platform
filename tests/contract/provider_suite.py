@@ -65,7 +65,7 @@ CONTRACT_CASES = {
         ContractCase("PRV-003", "xfail", ("#5",)),
         ContractCase("PRV-004", "xfail", ("#5",)),
         ContractCase("PRV-005", "xfail", ("#5",)),
-        ContractCase("PRV-006", "xfail", ("#5", "#3")),
+        ContractCase("PRV-006", "xfail", ("#5",)),
         ContractCase("PRV-007", "implemented"),
         ContractCase("PRV-008", "implemented"),
         ContractCase("PRV-009", "implemented"),
@@ -73,7 +73,7 @@ CONTRACT_CASES = {
         ContractCase("PRV-011", "xfail", ("#5",)),
         ContractCase("PRV-012", "xfail", ("#5",)),
         ContractCase("PRV-013", "implemented"),
-        ContractCase("PRV-014", "xfail", ("#3",)),
+        ContractCase("PRV-014", "xfail", ("#5",)),
         ContractCase("PRV-015", "xfail", ("#5",)),
         ContractCase("PRV-016", "xfail", ("#5",)),
         ContractCase("PRV-017", "implemented"),
@@ -84,7 +84,7 @@ CONTRACT_CASES = {
         ContractCase("NEWS-003", "implemented"),
         ContractCase("NEWS-012", "implemented"),
         ContractCase("NEWS-013", "implemented"),
-        ContractCase("NEWS-017", "xfail", ("#3",)),
+        ContractCase("NEWS-017", "xfail", ("#5",)),
         ContractCase("PIT-AVAILABLE-AT-AS-OF", "implemented"),
     )
 }

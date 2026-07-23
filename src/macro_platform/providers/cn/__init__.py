@@ -33,7 +33,8 @@ class CnSyntheticProvider(RegionalFixtureProvider):
     macro_code = "CPI_YOY"
     macro_series_name = "CN CPI YoY"
     instrument_listed_on_by_symbol = {"XSHG:600000": date(1999, 11, 10)}
-    live_ready_datasets = frozenset({Dataset.MACRO_RELEASES})
+    live_ready_datasets = frozenset()
+    live_candidate_datasets = frozenset({Dataset.MACRO_RELEASES})
     fixture_only_datasets = frozenset(
         {
             Dataset.INSTRUMENTS,

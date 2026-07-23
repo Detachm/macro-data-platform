@@ -122,38 +122,29 @@ async def test_headline_only_news_fixture_keeps_body_empty_and_rights_explicit(
 
 
 @pytest.mark.parametrize(
-    ("provider_cls", "fixture_only_datasets"),
+    "provider_cls",
     [
-        (
-            CnSyntheticProvider,
-            {
-                Dataset.INSTRUMENTS,
-                Dataset.BARS,
-                Dataset.MARKET_OBSERVATIONS,
-                Dataset.MACRO_SERIES,
-                Dataset.MACRO_OBSERVATIONS,
-                Dataset.NEWS,
-            },
-        ),
-        (
-            HkSyntheticProvider,
-            {
-                Dataset.INSTRUMENTS,
-                Dataset.BARS,
-                Dataset.MARKET_OBSERVATIONS,
-                Dataset.MACRO_SERIES,
-            },
-        ),
+        CnSyntheticProvider,
+        HkSyntheticProvider,
     ],
 )
 def test_fixture_only_sources_are_guarded_from_production_scheduling(
     provider_cls: type[RegionalFixtureProvider],
-    fixture_only_datasets: set[Dataset],
 ) -> None:
     provider = provider_cls.from_fixture("success")
-    for dataset in fixture_only_datasets:
+    assert provider.capabilities().datasets == set()
+    for dataset in Dataset:
         with pytest.raises(UnsupportedCapabilityError):
             provider.assert_production_dataset_supported(dataset)
+
+
+def test_live_candidate_datasets_record_source_freeze_without_live_capability() -> None:
+    assert CnSyntheticProvider.live_candidate_datasets == {Dataset.MACRO_RELEASES}
+    assert HkSyntheticProvider.live_candidate_datasets == {
+        Dataset.MACRO_OBSERVATIONS,
+        Dataset.MACRO_RELEASES,
+        Dataset.NEWS,
+    }
 
 
 @pytest.mark.asyncio
@@ -171,6 +162,22 @@ async def test_source_checksum_excludes_retrieved_at(tmp_path: Path, context: Fe
     assert original.items[0].source.checksum_sha256 == changed.items[0].source.checksum_sha256
 
 
+@pytest.mark.asyncio
+async def test_cn_hk_normalization_mapping_errors_surface_as_schema_errors(
+    tmp_path: Path,
+    context: FetchContext,
+) -> None:
+    source_fixture = FIXTURE_ROOT / "hk" / "synthetic" / "success.json"
+    changed_fixture = tmp_path / "success_invalid_symbol.json"
+    payload = json.loads(source_fixture.read_text(encoding="utf-8"))
+    payload["pages"]["instruments"]["items"][0]["symbol"] = "100000"
+    changed_fixture.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    provider = HkSyntheticProvider(changed_fixture)
+    with pytest.raises(ProviderSchemaError, match="one to five digits"):
+        await provider.fetch_instruments(InstrumentQuery(regions={Region.HK}), context)
+
+
 def test_news_normalization_and_checksum_entrypoints() -> None:
     assert_news_normalization_contract()
     assert_canonical_checksum_contract()
@@ -179,6 +186,8 @@ def test_news_normalization_and_checksum_entrypoints() -> None:
 @pytest.mark.parametrize(
     ("provider", "role_bindings", "role"),
     [
+        (CnSyntheticProvider.from_fixture("success"), CN_ROLE_BINDINGS, "cn.macro.primary"),
+        (HkSyntheticProvider.from_fixture("success"), HK_ROLE_BINDINGS, "hk.macro.primary"),
         (
             CnSyntheticProvider.from_fixture("success"),
             CN_ROLE_BINDINGS,
