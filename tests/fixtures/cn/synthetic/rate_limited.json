@@ -1,0 +1,4 @@
+{
+  "status": "error",
+  "error": {"code": "429", "message": "synthetic rate limit", "retry_after_seconds": 60}
+}

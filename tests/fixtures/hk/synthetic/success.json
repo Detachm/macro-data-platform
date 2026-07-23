@@ -1,0 +1,160 @@
+{
+  "status": "ok",
+  "fetched_at": "2026-07-23T08:00:00Z",
+  "source_watermark": "hk-synthetic-2026-07-23",
+  "pages": {
+    "instruments": {
+      "next_cursor": null,
+      "items": [
+        {
+          "record_id": "hk-ins-00700",
+          "symbol": "00700",
+          "mic": "XHKG",
+          "name": "腾讯控股",
+          "name_en": "Tencent Holdings",
+          "asset_class": "equity",
+          "currency": "HKD",
+          "timezone": "Asia/Hong_Kong",
+          "status": "active",
+          "listed_on": "2004-06-16",
+          "lot_size": "100",
+          "valid_from": "2004-06-16",
+          "source_url": "https://example.test/hk/instruments/00700",
+          "retrieved_at": "2026-07-23T08:00:00Z",
+          "provider_updated_at": "2026-07-23T07:50:00Z"
+        }
+      ]
+    },
+    "bars": {
+      "next_cursor": null,
+      "items": [
+        {
+          "record_id": "hk-bar-00700-2026-07-22",
+          "symbol": "00700",
+          "mic": "XHKG",
+          "interval": "1d",
+          "bar_start": "2026-07-22T01:30:00Z",
+          "bar_end": "2026-07-22T08:00:00Z",
+          "trading_date": "2026-07-22",
+          "open": "410.20",
+          "high": "416.00",
+          "low": "408.40",
+          "close": "414.80",
+          "volume": "24500000",
+          "turnover": "10143000000",
+          "currency": "HKD",
+          "adjustment": "raw",
+          "available_at": "2026-07-22T08:05:00Z",
+          "availability_basis": "exchange_published",
+          "quality_flags": ["synthetic"],
+          "source_url": "https://example.test/hk/bars/00700/2026-07-22",
+          "retrieved_at": "2026-07-23T08:00:00Z",
+          "provider_updated_at": "2026-07-22T08:05:00Z"
+        }
+      ]
+    },
+    "market_observations": {
+      "next_cursor": null,
+      "items": [
+        {
+          "record_id": "hk-market-turnover-2026-07-22",
+          "scope_type": "market",
+          "scope_id": "HK_MAIN_BOARD",
+          "metric_code": "market.turnover",
+          "value": "128500000000",
+          "unit": "HKD",
+          "currency": "HKD",
+          "period_start": "2026-07-22T01:30:00Z",
+          "period_end": "2026-07-22T08:00:00Z",
+          "observed_at": "2026-07-22T08:00:00Z",
+          "available_at": "2026-07-22T08:10:00Z",
+          "availability_basis": "provider_disseminated",
+          "dimensions": {"market": "main-board"},
+          "quality_flags": ["synthetic"],
+          "source_url": "https://example.test/hk/market/turnover/2026-07-22",
+          "retrieved_at": "2026-07-23T08:00:00Z",
+          "provider_updated_at": "2026-07-22T08:10:00Z"
+        }
+      ]
+    },
+    "macro_observations": {
+      "next_cursor": null,
+      "items": [
+        {
+          "record_id": "hk-cpi-yoy-2026-06",
+          "series_id": "macro:HK:CENSTATD:510-60004",
+          "period_start": "2026-06-01",
+          "period_end": "2026-06-30",
+          "value": "1.6",
+          "unit": "percent",
+          "transformation": "yoy",
+          "released_at": "2026-07-21T08:30:00Z",
+          "available_at": "2026-07-21T08:31:00Z",
+          "availability_basis": "provider_disseminated",
+          "vintage_id": "2026-07-21T08:30:00Z",
+          "revision_no": 0,
+          "value_status": "preliminary",
+          "quality_flags": ["synthetic"],
+          "source_url": "https://example.test/hk/macro/cpi/2026-06",
+          "retrieved_at": "2026-07-23T08:00:00Z",
+          "provider_updated_at": "2026-07-21T08:31:00Z"
+        }
+      ]
+    },
+    "macro_releases": {
+      "next_cursor": null,
+      "items": [
+        {
+          "record_id": "hk-cpi-release-2026-06",
+          "series_id": "macro:HK:CENSTATD:510-60004",
+          "release_name": "HK CPI YoY",
+          "scheduled_at": "2026-07-21T08:30:00Z",
+          "released_at": "2026-07-21T08:30:00Z",
+          "available_at": "2026-07-21T08:31:00Z",
+          "period_start": "2026-06-01",
+          "period_end": "2026-06-30",
+          "actual": "1.6",
+          "consensus": "1.7",
+          "previous": "1.5",
+          "unit": "percent",
+          "status": "released",
+          "source_url": "https://example.test/hk/releases/cpi/2026-06",
+          "retrieved_at": "2026-07-23T08:00:00Z",
+          "provider_updated_at": "2026-07-21T08:31:00Z"
+        }
+      ]
+    },
+    "news": {
+      "next_cursor": null,
+      "items": [
+        {
+          "record_id": "hk-news-001",
+          "title": "港股成交额维持活跃",
+          "summary": "合成摘要：主要指数成交活跃，南向资金保持净流入。",
+          "body": null,
+          "content_mode": "snippet",
+          "language": "zh-HK",
+          "source_name": "HK Synthetic Wire",
+          "source_tier": "licensed_media",
+          "canonical_url": "https://example.test/hk/news/001?utm_source=fixture",
+          "published_at": "2026-07-23T01:15:00Z",
+          "first_seen_at": "2026-07-23T01:16:00Z",
+          "available_at": "2026-07-23T01:16:00Z",
+          "availability_basis": "first_seen",
+          "topics": ["market"],
+          "rights": {
+            "storage_allowed": true,
+            "internal_analysis_allowed": true,
+            "external_llm_allowed": false,
+            "embedding_allowed": false,
+            "redistribution_allowed": false
+          },
+          "quality_flags": ["synthetic"],
+          "source_url": "https://example.test/hk/news/001",
+          "retrieved_at": "2026-07-23T08:00:00Z",
+          "provider_updated_at": "2026-07-23T01:16:00Z"
+        }
+      ]
+    }
+  }
+}

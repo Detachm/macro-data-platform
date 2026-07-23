@@ -1,0 +1,17 @@
+{
+  "status": "ok",
+  "fetched_at": "2026-07-23T08:00:00Z",
+  "source_watermark": "cn-synthetic-missing",
+  "pages": {
+    "instruments": {
+      "next_cursor": null,
+      "items": [
+        {
+          "record_id": "cn-ins-missing",
+          "symbol": "600000",
+          "mic": "XSHG"
+        }
+      ]
+    }
+  }
+}
