@@ -37,7 +37,7 @@ from macro_platform.contracts.market import (
     MarketObservationQuery,
     ScopeType,
 )
-from macro_platform.contracts.news import ContentMode, NewsEvent, NewsQuery, SourceTier
+from macro_platform.contracts.news import ContentMode, EntityRef, NewsEvent, NewsQuery, SourceTier
 from macro_platform.contracts.provider import (
     Dataset,
     FetchContext,
@@ -45,7 +45,11 @@ from macro_platform.contracts.provider import (
     ProviderHealth,
     ProviderPage,
 )
-from macro_platform.normalization.common import canonical_json_checksum, canonicalize_url
+from macro_platform.normalization.common import (
+    canonical_json_checksum,
+    canonicalize_url,
+    normalize_title_for_matching,
+)
 from macro_platform.normalization.common.time import to_utc, utc_now
 from macro_platform.providers.base import (
     ProviderAuthenticationError,
@@ -168,11 +172,13 @@ _NEWS_KEYS = _SOURCE_KEYS | frozenset(
         "first_seen_at",
         "available_at",
         "availability_basis",
+        "entities",
         "topics",
         "rights",
         "quality_flags",
     }
 )
+_ENTITY_KEYS = frozenset({"entity_type", "entity_id", "mention", "confidence"})
 _RIGHTS_KEYS = frozenset(
     {
         "storage_allowed",
@@ -749,6 +755,16 @@ class RegionalFixtureProvider:
             body = None
             quality_flags = [*quality_flags, "body_omitted_by_rights"]
         summary = _optional_str(raw, "summary")
+        title = _str(raw["title"], "news.title")
+        normalized_title = normalize_title_for_matching(title)
+        canonical_url = (
+            canonicalize_url(_str(raw["canonical_url"], "news.canonical_url"))
+            if "canonical_url" in raw and raw["canonical_url"] is not None
+            else None
+        )
+        published_at = _datetime(raw["published_at"], "news.published_at")
+        entities = self._entity_refs(raw)
+        entity_ids = tuple(sorted(entity.entity_id for entity in entities))
         content_hash = canonical_json_checksum(
             {"title": raw["title"], "summary": summary, "body": body, "language": raw["language"]}
         )
@@ -760,34 +776,32 @@ class RegionalFixtureProvider:
                 "news",
                 self.provider_id,
                 _str(raw["record_id"], "news.record_id"),
-                _optional_str(raw, "canonical_url") or _str(raw["title"], "news.title"),
-                _utc_z(_datetime(raw["published_at"], "news.published_at")),
+                str(canonical_url) if canonical_url is not None else normalized_title,
+                _utc_z(published_at),
             ),
             cluster_id=_hex_id(
                 "cluster",
                 self.region.value,
-                _str(raw["title"], "news.title"),
-                _date_from_datetime(
-                    _datetime(raw["published_at"], "news.published_at")
-                ).isoformat(),
+                normalized_title,
+                ",".join(entity_ids),
+                _date_from_datetime(published_at).isoformat(),
             ),
-            title=_str(raw["title"], "news.title"),
+            title=title,
             summary=summary,
             body=body,
             content_mode=event_content_mode,
             language=_str(raw["language"], "news.language"),
             source_name=_str(raw["source_name"], "news.source_name"),
             source_tier=SourceTier(_str(raw["source_tier"], "news.source_tier")),
-            canonical_url=canonicalize_url(_str(raw["canonical_url"], "news.canonical_url"))
-            if "canonical_url" in raw and raw["canonical_url"] is not None
-            else None,
-            published_at=_datetime(raw["published_at"], "news.published_at"),
+            canonical_url=canonical_url,
+            published_at=published_at,
             first_seen_at=_datetime(raw["first_seen_at"], "news.first_seen_at"),
             available_at=_datetime(raw["available_at"], "news.available_at"),
             availability_basis=AvailabilityBasis(
                 _str(raw["availability_basis"], "news.availability_basis")
             ),
             regions=[self.region],
+            entities=entities,
             topics=_str_list(raw["topics"], "news.topics"),
             content_hash_sha256=content_hash,
             usage_rights=rights,
@@ -860,6 +874,28 @@ class RegionalFixtureProvider:
             ),
             content_expires_at=_optional_datetime(raw, "content_expires_at"),
         )
+
+    def _entity_refs(self, raw: Mapping[str, Any]) -> list[EntityRef]:
+        if "entities" not in raw or raw["entities"] is None:
+            return []
+        entities = []
+        for index, item in enumerate(_list(raw["entities"], "news.entities")):
+            entity = _mapping(item, f"news.entities[{index}]")
+            _ensure_keys(
+                entity,
+                _ENTITY_KEYS,
+                required={"entity_type", "entity_id", "confidence"},
+                path=f"news.entities[{index}]",
+            )
+            entities.append(
+                EntityRef(
+                    entity_type=cast(Any, _str(entity["entity_type"], "news.entities.entity_type")),
+                    entity_id=_str(entity["entity_id"], "news.entities.entity_id"),
+                    mention=_optional_str(entity, "mention"),
+                    confidence=_decimal(entity["confidence"], "news.entities.confidence"),
+                )
+            )
+        return entities
 
     def _instrument_id(self, mic: str, symbol: str, listed_on: date | None = None) -> str:
         instrument_listed_on = listed_on or self.instrument_listed_on_by_symbol.get(

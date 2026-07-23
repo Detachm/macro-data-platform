@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
@@ -8,7 +9,9 @@ from uuid import UUID
 import pytest
 
 from macro_platform.contracts.common import Region
+from macro_platform.contracts.editor import EditorContextRequest
 from macro_platform.contracts.market import InstrumentQuery
+from macro_platform.contracts.news import ContentMode, NewsQuery
 from macro_platform.contracts.provider import Dataset, FetchContext
 from macro_platform.providers.base import (
     ProviderAuthenticationError,
@@ -22,6 +25,11 @@ from macro_platform.providers.base import (
 from macro_platform.providers.cn import CN_PROVIDER_ID, CN_ROLE_BINDINGS, CnSyntheticProvider
 from macro_platform.providers.hk import HK_PROVIDER_ID, HK_ROLE_BINDINGS, HkSyntheticProvider
 from macro_platform.providers.registry import ProviderRegistry
+from macro_platform.services.editor_context_service import EditorContextService
+from macro_platform.services.macro_service import MacroService
+from macro_platform.services.market_service import MarketService
+from macro_platform.services.news_service import NewsService
+from macro_platform.storage.repositories import EmptyDataRepository
 from tests.contract.provider_suite import (
     CONTRACT_CASES,
     ContractCase,
@@ -38,6 +46,14 @@ from tests.contract.provider_suite import (
 FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures"
 NOW = datetime(2026, 7, 23, 8, 0, tzinfo=UTC)
 REQUEST_ID = UUID("00000000-0000-4000-8000-000000000005")
+
+
+class NewsOnlyRepository(EmptyDataRepository):
+    def __init__(self, events: list) -> None:
+        self._events = events
+
+    async def list_news(self, query: NewsQuery) -> list:
+        return self._events
 
 
 @pytest.fixture
@@ -119,6 +135,79 @@ async def test_headline_only_news_fixture_keeps_body_empty_and_rights_explicit(
     context: FetchContext,
 ) -> None:
     await assert_title_only_news_contract(provider_cls.from_fixture("headline_only"), context)
+
+
+@pytest.mark.asyncio
+async def test_news_002_003_provider_identity_uses_canonical_url_title_and_entities(
+    tmp_path: Path,
+    context: FetchContext,
+) -> None:
+    source_fixture = FIXTURE_ROOT / "cn" / "synthetic" / "success.json"
+    original_fixture = tmp_path / "success_original_news_identity_inputs.json"
+    changed_fixture = tmp_path / "success_changed_news_identity_inputs.json"
+    payload = json.loads(source_fixture.read_text(encoding="utf-8"))
+    changed_payload = deepcopy(payload)
+
+    original_news = payload["pages"]["news"]["items"][0]
+    changed_news = changed_payload["pages"]["news"]["items"][0]
+    original_news["canonical_url"] = "HTTPS://EXAMPLE.TEST/cn/news/001?utm_source=x&b=2&a=1"
+    changed_news["canonical_url"] = "https://example.test/cn/news/001?b=2&utm_medium=y&a=1"
+    original_news["title"] = " ＡＢＣ  Rate\nCUT "
+    changed_news["title"] = "abc rate cut"
+    original_news["entities"] = [
+        {"entity_type": "organization", "entity_id": "org-pboc", "confidence": "1"},
+        {"entity_type": "country", "entity_id": "country-cn", "confidence": "1"},
+    ]
+    changed_news["entities"] = [
+        {"entity_type": "country", "entity_id": "country-cn", "confidence": "1"},
+        {"entity_type": "organization", "entity_id": "org-pboc", "confidence": "1"},
+    ]
+    original_fixture.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    changed_fixture.write_text(json.dumps(changed_payload, ensure_ascii=False), encoding="utf-8")
+
+    query = NewsQuery(
+        regions={Region.CN},
+        published_from=datetime(2026, 7, 22, tzinfo=UTC),
+        published_to=datetime(2026, 7, 24, tzinfo=UTC),
+        as_of=context.as_of,
+        content_mode=ContentMode.SNIPPET,
+    )
+    original = await CnSyntheticProvider(original_fixture).fetch_news(query, context)
+    changed = await CnSyntheticProvider(changed_fixture).fetch_news(query, context)
+
+    assert str(original.items[0].canonical_url) == "https://example.test/cn/news/001?a=1&b=2"
+    assert original.items[0].news_id == changed.items[0].news_id
+    assert original.items[0].cluster_id == changed.items[0].cluster_id
+
+
+@pytest.mark.asyncio
+async def test_news_017_editor_context_omits_restricted_summary_and_body(
+    context: FetchContext,
+) -> None:
+    query = NewsQuery(
+        regions={Region.CN},
+        published_from=datetime(2026, 7, 22, tzinfo=UTC),
+        published_to=datetime(2026, 7, 24, tzinfo=UTC),
+        as_of=context.as_of,
+        content_mode=ContentMode.SNIPPET,
+    )
+    news = await CnSyntheticProvider.from_fixture("success").fetch_news(query, context)
+    assert news.items[0].summary is not None
+    assert news.items[0].usage_rights.external_llm_allowed is False
+
+    repository = NewsOnlyRepository(news.items)
+    service = EditorContextService(
+        market_service=MarketService(repository),
+        macro_service=MacroService(repository),
+        news_service=NewsService(repository),
+    )
+    editor_context = await service.build(EditorContextRequest(regions={Region.CN}, as_of=NOW))
+
+    assert len(editor_context.news_events) == 1
+    event = editor_context.news_events[0]
+    assert event.content_mode is ContentMode.HEADLINE
+    assert event.summary is None
+    assert event.body is None
 
 
 @pytest.mark.parametrize(

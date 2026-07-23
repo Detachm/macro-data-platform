@@ -44,7 +44,7 @@
     {"id": "NEWS-003", "status": "implemented"},
     {"id": "NEWS-012", "status": "implemented"},
     {"id": "NEWS-013", "status": "implemented"},
-    {"id": "NEWS-017", "status": "xfail", "blocked_by": ["#3"]},
+    {"id": "NEWS-017", "status": "implemented"},
     {"id": "PIT-AVAILABLE-AT-AS-OF", "status": "implemented"}
   ]
 }
