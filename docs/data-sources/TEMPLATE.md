@@ -39,7 +39,7 @@
 
 ## 失败与降级
 
-列出 401、403、429、超时、登录页伪 200、schema drift、空页循环和 cursor 过期的错误映射及 fallback。说明禁止重试的错误。
+列出 401、403、429、超时、登录页/auth wall/risk-control 伪 200、malformed JSON / unexpected non-JSON provider payload、schema drift、空页循环和 cursor 过期的错误映射及 fallback。说明禁止重试的错误。
 
 ## Fixtures 与测试
 

@@ -1407,8 +1407,9 @@ uv run pytest tests/live -m live -q
 | `PRV-016` | cursor 过期 | `ProviderCursorError`，从已提交 watermark 恢复 |
 | `PRV-017` | JSON 字段顺序不同但语义相同 | canonical checksum 相同 |
 | `PRV-018` | 未配置凭据 | health=not_configured，日志无 secret |
-| `PRV-019` | 200 返回 HTML 登录页 | `ProviderSchemaError`，不能当空数据 |
+| `PRV-019` | 200 返回 HTML 登录页 / auth wall / risk-control page | `ProviderAuthorizationError`，不能当空数据 |
 | `PRV-020` | 返回未知额外字段 | extra=forbid，契约测试失败 |
+| `PRV-021` | malformed JSON / unexpected non-JSON provider payload | `ProviderSchemaError`，不能当空数据 |
 
 ### 12.5 新闻去重、修订和授权
 
