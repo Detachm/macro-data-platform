@@ -195,7 +195,11 @@ def test_sym_012_repeated_symbol_normalization_is_idempotent() -> None:
         provider_id=first.aliases[0].provider_id,
     )
 
-    assert second == first
+    assert first.local_symbol == "00700"
+    assert first.aliases[0].source_symbol == "700"
+    assert second.local_symbol == first.local_symbol
+    assert second.instrument_id == first.instrument_id
+    assert second.canonical_symbol == first.canonical_symbol
 
 
 def test_time_001_cn_hk_timestamps_convert_to_utc_from_fixture() -> None:

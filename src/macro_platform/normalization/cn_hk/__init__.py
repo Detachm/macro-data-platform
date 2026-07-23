@@ -138,7 +138,7 @@ def normalize_instrument_symbol(
         aliases=(
             AliasEffectiveDate(
                 provider_id=clean_provider_id,
-                source_symbol=normalized_symbol,
+                source_symbol=clean_symbol,
                 canonical_symbol=canonical_symbol,
                 valid_from=valid_from,
                 valid_to=valid_to,
