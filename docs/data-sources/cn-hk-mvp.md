@@ -2,14 +2,14 @@
 
 Owner: @Nouzee
 Issue: #1 P0
-状态: 冻结草案，需实习生 B 交叉评审后才能作为 adapter 输入
+状态: review，冻结草案，已进入实习生 B 交叉评审
 区域: CN / HK
 Provider roles: `cn.instruments.primary`, `cn.bars.primary`, `cn.macro.primary`, `cn.news.primary`, `hk.instruments.primary`, `hk.bars.primary`, `hk.macro.primary`, `hk.news.primary`
 数据集: instruments / bars / macro_series / macro_observations / macro_releases / news
 采购/合同负责人: 项目负责人
 账号负责人: 项目负责人；两日 MVP 仅允许无凭据公开 API 或合成/脱敏 fixture
 首次批准日期: 待项目负责人批准
-复核日期: 待实习生 B 交叉评审
+复核日期: 2026-07-23 review
 允许服务器运行: 仅 `live-ready` 来源允许；`fixture-only` 和 `gap` 来源禁止生产调度
 保留期限: fixture 随仓库生命周期；open-data 标准化事实随数据库保留策略；未采购市场数据不保留
 要求署名: API/报告层保留 `source.source_name` 和 `source.source_url`
@@ -484,5 +484,5 @@ Adapter authors must register capabilities according to this matrix:
 ## Review gate
 
 - 实习生 A 可在本文件基础上实现 CN/HK fixture/provider skeleton。
-- 实习生 B 必须交叉评审本文件中的 contract 映射、`available_at` basis、cursor/分页和 `UsageRights`，并运行公共 provider contract suite。
+- review 中需由实习生 B 交叉检查本文件中的 contract 映射、`available_at` basis、cursor/分页和 `UsageRights`，并运行公共 provider contract suite。
 - 后续 Issue 如需新增公共字段、改变 ID、改变 `available_at` 语义或放开外部 LLM/embedding 权限，必须先提交 ADR 和负责人批准。
