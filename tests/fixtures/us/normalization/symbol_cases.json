@@ -1,0 +1,16 @@
+[
+  {
+    "id": "SYM-004",
+    "source_symbol": "aapl",
+    "exchange": "NASDAQ",
+    "expected_venue_mic": "XNAS",
+    "expected_canonical_symbol": "XNAS:AAPL"
+  },
+  {
+    "id": "SYM-005",
+    "source_symbol": "BRK.B",
+    "exchange": "NYSE",
+    "expected_venue_mic": "XNYS",
+    "expected_canonical_symbol": "XNYS:BRK.B"
+  }
+]

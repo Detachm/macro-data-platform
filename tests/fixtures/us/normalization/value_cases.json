@@ -1,0 +1,42 @@
+[
+  {
+    "id": "UNIT-001",
+    "raw_value": "5.2%",
+    "unit_hint": null,
+    "scale": null,
+    "expected_value": "5.2",
+    "expected_unit": "percent",
+    "expected_currency": null,
+    "expected_raw_unit": "%"
+  },
+  {
+    "id": "UNIT-002",
+    "raw_value": "25bp",
+    "unit_hint": null,
+    "scale": null,
+    "expected_value": "0.25",
+    "expected_unit": "percent",
+    "expected_currency": null,
+    "expected_raw_unit": "bp"
+  },
+  {
+    "id": "UNIT-004",
+    "raw_value": "12.5",
+    "unit_hint": "USD",
+    "scale": "1000",
+    "expected_value": "12500",
+    "expected_unit": "currency",
+    "expected_currency": "USD",
+    "expected_raw_unit": "USD"
+  },
+  {
+    "id": "UNIT-005",
+    "raw_value": "3123.45",
+    "unit_hint": "index_point",
+    "scale": null,
+    "expected_value": "3123.45",
+    "expected_unit": "index_point",
+    "expected_currency": null,
+    "expected_raw_unit": "index_point"
+  }
+]
