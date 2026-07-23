@@ -353,7 +353,8 @@ Any row without a trustworthy availability proof must use `availability_basis=fi
 | 403 / license denied | `ProviderAuthorizationError` | no; mark `LICENSE_RESTRICTION` |
 | 429 / Retry-After | `ProviderRateLimitError(retry_after_seconds=...)` | yes after header delay |
 | Timeout | `ProviderTimeoutError` | yes with bounded backoff |
-| HTML login page or non-JSON where JSON expected | `ProviderSchemaError` | no until schema reviewed |
+| HTML login page / auth wall / risk-control page | `ProviderAuthorizationError` | no; alert account owner |
+| Malformed JSON / unexpected non-JSON provider payload | `ProviderSchemaError` | no until schema reviewed |
 | Unknown required field rename | `ProviderSchemaError` + schema drift warning | no bulk write null |
 | Valid empty upstream response | `ProviderPage(items=[], complete=True)` | no error |
 | Empty page with repeated next cursor | `ProviderCursorError` / `INVALID_PAGINATION` after threshold | no infinite loop |

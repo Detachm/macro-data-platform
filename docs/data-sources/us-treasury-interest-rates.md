@@ -61,7 +61,6 @@ Source URL：Treasury XML endpoint with data/year params。
 - Fixture 目录：`tests/fixtures/us/treasury_interest_rates/`。
 - 最低 fixture 集：`success.json`、`empty.json`、`missing_fields.json`、`auth_failure.json`、`rate_limited.json`、`timeout.json`、`schema_changed.json`、`duplicate_page.json`。
 - 对账来源与容差：MVP 使用 synthetic golden fixture，Decimal 往返误差为 0；Phase 2 live 对账只使用已批准来源，市场价格容差按工程规范 1bp，官方宏观/利率同源重放 checksum 必须一致。
-- 最低 fixture：success、empty、missing_fields、timeout、schema_changed、duplicate_page。
 - 测试 ID：`PRV-001`～`PRV-020` applicable；`UNIT-001`、`UNIT-009`、PIT tests。
 - 在线 smoke：one recent year or one month query；low-frequency。
 - 脱敏：public numeric data only；no secrets。

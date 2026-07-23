@@ -63,7 +63,6 @@ Source URL：`https://apps.bea.gov/api/data` with secret params removed。
 - Fixture 目录：`tests/fixtures/us/bea/`。
 - 最低 fixture 集：`success.json`、`empty.json`、`missing_fields.json`、`auth_failure.json`、`rate_limited.json`、`timeout.json`、`schema_changed.json`、`duplicate_page.json`。
 - 对账来源与容差：MVP 使用 synthetic golden fixture，Decimal 往返误差为 0；Phase 2 live 对账只使用已批准来源，市场价格容差按工程规范 1bp，官方宏观/利率同源重放 checksum 必须一致。
-- 最低 fixture：success、empty、missing_fields、auth_failure、rate_limited、timeout、schema_changed、duplicate_page。
 - 测试 ID：`PRV-001`～`PRV-020` applicable；macro PIT `PIT-001`、`PIT-002`、`PIT-006`。
 - 在线 smoke：`GetDatasetList` + 一个小 NIPA window；缺 UserID 自动 skip。
 - 脱敏：移除 UserID、request URL secret query。

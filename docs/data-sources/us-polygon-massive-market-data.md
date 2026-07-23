@@ -55,7 +55,8 @@ Source URL：aggregate endpoint without key。
 - 401/403/license denied：auth/authorization error，不重试。
 - 429/plan limit：`ProviderRateLimitError`；honor retry-after if present。
 - `next_url` repeats empty pages：`ProviderCursorError` after threshold。
-- Schema drift/HTML：`ProviderSchemaError`。
+- HTML login/auth wall/risk-control page：`ProviderAuthorizationError`。
+- Malformed JSON / unexpected non-JSON payload、schema drift：`ProviderSchemaError`。
 - Main source unavailable with no approved fallback：coverage=`unavailable`，不偷返旧数据。
 
 ## Fixtures 与测试
@@ -63,7 +64,6 @@ Source URL：aggregate endpoint without key。
 - Fixture 目录：`tests/fixtures/us/polygon_massive/`，synthetic OHLCV。
 - 最低 fixture 集：`success.json`、`empty.json`、`missing_fields.json`、`auth_failure.json`、`rate_limited.json`、`timeout.json`、`schema_changed.json`、`duplicate_page.json`。
 - 对账来源与容差：MVP 使用 synthetic golden fixture，Decimal 往返误差为 0；Phase 2 live 对账只使用已批准来源，市场价格容差按工程规范 1bp，官方宏观/利率同源重放 checksum 必须一致。
-- 最低 fixture：success、empty、missing_fields、auth_failure、rate_limited、timeout、schema_changed、duplicate_page。
 - 测试 ID：`PRV-001`～`PRV-020` applicable；`TIME-005`、`TIME-010`、`UNIT-004`。
 - 在线 smoke：仅合同批准后一个 prior-day bar；默认 skip。
 - 脱敏：删除 API key、account/plan details、真实 vendor payload if rights unclear。

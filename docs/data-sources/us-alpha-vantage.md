@@ -55,7 +55,8 @@ Source URL：endpoint URL without secret query params。
 - Missing key / unapproved plan：health=`not_configured`，不启用 live worker。
 - 401/403：`ProviderAuthenticationError` / `ProviderAuthorizationError`，不重试。
 - 429 或 quota note：`ProviderRateLimitError`，按 provider 提示退避。
-- HTML、schema drift、字段改名：`ProviderSchemaError`，不得当成空数据。
+- HTML login/auth wall/risk-control page：`ProviderAuthorizationError`，不得当成空数据。
+- Malformed JSON / unexpected non-JSON payload、schema drift、字段改名：`ProviderSchemaError`。
 - 合法空响应：`ProviderPage(items=[], complete=True)`。
 
 ## Fixtures 与测试

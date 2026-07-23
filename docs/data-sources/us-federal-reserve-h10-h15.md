@@ -50,7 +50,8 @@ Source URL：configured DDP package/current release URL。
 ## 失败与降级
 
 - Download unavailable/timeout：retry with bounded backoff；coverage stale。
-- HTML/error page：`ProviderSchemaError`。
+- HTML login/auth wall/risk-control page：`ProviderAuthorizationError`。
+- Malformed CSV/JSON or unexpected non-data payload：`ProviderSchemaError`。
 - Schema/package column changed：schema drift warning，阻断 adapter。
 - 合法缺值：`value=null` + quality flag，不写 0。
 
@@ -59,7 +60,6 @@ Source URL：configured DDP package/current release URL。
 - Fixture 目录：`tests/fixtures/us/federal_reserve/`。
 - 最低 fixture 集：`success.json`、`empty.json`、`missing_fields.json`、`auth_failure.json`、`rate_limited.json`、`timeout.json`、`schema_changed.json`、`duplicate_page.json`。
 - 对账来源与容差：MVP 使用 synthetic golden fixture，Decimal 往返误差为 0；Phase 2 live 对账只使用已批准来源，市场价格容差按工程规范 1bp，官方宏观/利率同源重放 checksum 必须一致。
-- 最低 fixture：success、empty、missing_fields、rate_limited、timeout、schema_changed、duplicate_page。
 - 测试 ID：`PRV-001`～`PRV-020` applicable；`UNIT-001`、`UNIT-002`、`UNIT-005`、PIT available_at tests。
 - 在线 smoke：下载一个 latest/current package metadata；低频、无 aggressive polling。
 

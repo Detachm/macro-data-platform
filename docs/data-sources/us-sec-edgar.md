@@ -63,7 +63,6 @@ Source URL：SEC archive URL / data.sec.gov endpoint。
 - Fixture 目录：`tests/fixtures/us/sec_edgar/`。
 - 最低 fixture 集：`success.json`、`empty.json`、`missing_fields.json`、`auth_failure.json`、`rate_limited.json`、`timeout.json`、`schema_changed.json`、`duplicate_page.json`。
 - 对账来源与容差：MVP 使用 synthetic golden fixture，Decimal 往返误差为 0；Phase 2 live 对账只使用已批准来源，市场价格容差按工程规范 1bp，官方宏观/利率同源重放 checksum 必须一致。
-- 最低 fixture：success、empty、missing_fields、auth_failure、rate_limited、timeout、schema_changed、duplicate_page。
 - 测试 ID：`PRV-001`～`PRV-020` applicable；`NEWS-012`、`NEWS-017`、PIT `available_at <= as_of`。
 - 在线 smoke：one known CIK submissions JSON, no body fetch, <1 rps in tests。
 - 脱敏：public accession metadata ok；no full filing body/exhibits in fixture unless explicitly approved。

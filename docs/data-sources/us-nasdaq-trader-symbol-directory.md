@@ -61,7 +61,6 @@ Source URL：source file URL。
 - Fixture 目录：`tests/fixtures/us/instruments/nasdaq_trader/`。
 - 最低 fixture 集：`success.json`、`empty.json`、`missing_fields.json`、`auth_failure.json`、`rate_limited.json`、`timeout.json`、`schema_changed.json`、`duplicate_page.json`。
 - 对账来源与容差：MVP 使用 synthetic golden fixture，Decimal 往返误差为 0；Phase 2 live 对账只使用已批准来源，市场价格容差按工程规范 1bp，官方宏观/利率同源重放 checksum 必须一致。
-- 最低 fixture：success、empty、missing_fields、timeout、schema_changed、duplicate_page。
 - 测试 ID：`SYM-004`～`SYM-010`、`SYM-012`、`PRV-001`、`PRV-002`、`PRV-020`。
 - 在线 smoke：无 rights approval 前禁止保存 live snapshot；可人工 fetch 校验 shape。
 - 脱敏：不包含账号、cookie、商业 reference data dump。

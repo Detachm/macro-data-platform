@@ -54,7 +54,8 @@ Source URL：GDELT API URL without query secrets（无 key）和 canonical publi
 
 - 默认 disabled：health=`not_configured`。
 - 429/rate limit：`ProviderRateLimitError`；不扩大窗口。
-- HTML/schema drift：`ProviderSchemaError`。
+- HTML login/auth wall/risk-control page：`ProviderAuthorizationError`。
+- Malformed JSON / unexpected non-JSON payload、schema drift：`ProviderSchemaError`。
 - Publisher content detected in body：quarantine `LICENSE_RESTRICTION`。
 
 ## Fixtures 与测试
