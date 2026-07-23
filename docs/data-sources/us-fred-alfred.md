@@ -9,7 +9,7 @@
 - 官方文档：https://fred.stlouisfed.org/docs/api/terms_of_use.html
 - 账号负责人：@Detachm（API key 不配置到 MVP ingest）
 - 采购/合同负责人：@Detachm（legal/project approval required for any ingest）
-- 当前状态：非 ingest；不得持久化 FRED-derived observations，除非另开审批 Issue。
+- 当前状态：非 ingest；在逐 series owner rights review 和负责人批准完成前，不得持久化 FRED-derived observations。
 - 首次批准日期与复核日期：未批准；待 @Detachm 批准后 30 天复核，之后每季度复核。
 - 关联 Issue：[#2](https://github.com/Detachm/macro-data-platform/issues/2)
 
@@ -26,11 +26,11 @@
 
 | 权利 | 允许 | 依据/到期日 |
 |---|---:|---|
-| storage_allowed | false | Terms restrict storage/caching/archive; no MVP approval |
-| internal_analysis_allowed | false | non-ingest by default |
-| external_llm_allowed | false | AI/LLM-related restrictions require approval |
-| embedding_allowed | false | 未授权 |
-| redistribution_allowed | false | 未授权 |
+| storage_allowed | false | 平台 no-ingest 策略；待逐 series owner rights review 和负责人批准。FRED terms 要求遵守 data owner restrictions。 |
+| internal_analysis_allowed | false | 平台非 ingest 默认值；待批准。 |
+| external_llm_allowed | false | 平台 no-LLM/no-embedding 策略；待批准。 |
+| embedding_allowed | false | 平台 no-LLM/no-embedding 策略；待批准。 |
+| redistribution_allowed | false | 未完成逐 series 权利复核。 |
 
 ## 公共合同映射
 

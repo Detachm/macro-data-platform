@@ -16,7 +16,7 @@ Issue #2 要求在实现 US adapter 前冻结两日 MVP 的美国数据源范围
 1. 只写聚合 `us-mvp.md`，不拆 source-level 文件。
    - 拒绝：不满足 source-level owner、账号负责人、rights matrix 和退出方案要求。
 2. 直接使用 FRED/ALFRED 统一取宏观和利率数据。
-   - 拒绝：FRED 条款和 series-owner rights 对存储、缓存、归档、AI/LLM 场景存在不确定性。
+   - 拒绝：FRED 条款要求对第三方 series 遵守数据所有者的权利限制；逐 series owner permission 尚未复核。两日 MVP 因此采用平台 no-ingest/no-LLM 保守策略，而非把该平台策略表述为 FRED 的一概存储或 AI 禁令。
 3. 把 GDELT 作为默认 news metadata live source。
    - 拒绝：underlying publisher rights 未完成复核，权限不明确按不允许处理。
 4. 采用保守 MVP 矩阵：官方 numeric facts 为 live candidate，商业/不明确来源 fixture-only 或 disabled，source-level 文件逐一登记。
@@ -28,7 +28,7 @@ Issue #2 要求在实现 US adapter 前冻结两日 MVP 的美国数据源范围
 - 每个候选来源单独维护 source-level 登记文件：Nasdaq Trader、SEC EDGAR、Polygon/Massive、Alpha Vantage、Federal Reserve、Treasury、BLS、BEA、FRED/ALFRED、GDELT、NewsAPI。
 - 两日内无合同或权限不明确的商业行情、商业新闻、GDELT、FRED/ALFRED 均不得 live ingest；使用 synthetic/脱敏 fixture 完成 provider abstraction。
 - 官方 numeric facts 的 live candidate 是 SEC metadata、Federal Reserve、Treasury、BLS、BEA；即使如此，两日 provider 仍先 fixture-backed，live smoke 需要显式凭据和 source approval。
-- US MVP 的稳定 ID、`source.provider_record_id`、checksum、source URL 和排序键采用 `docs/data-sources/us-mvp.md` 中的公共 identity 表。ID 不依赖抓取时间、分页位置或随机数。
+- US MVP 的稳定 ID、`source.provider_record_id`、checksum、source URL 和排序键采用 `docs/data-sources/us-mvp.md` 中的公共 identity 表。US instrument ID 的唯一 seed 是 UTF-8 `canonical_symbol + first_valid_from`（ISO-8601 date，无分隔符）；`issuer_key`/SEC CIK 是可缺失 enrichment，绝不进入 seed。精确 golden 由 `tests/fixtures/us/normalization/instrument_id_cases.json` 共享。ID 不依赖抓取时间、分页位置、随机数或可选 enrichment。
 - 无可信 provider dissemination timestamp 时，`available_at` 必须使用平台 `first_seen`。官方 release calendar 或 observation date 不能单独作为 PIT availability proof。
 - SEC `acceptanceDateTime` 可作为 provider dissemination evidence 或 filing event time，但不能写成平台 `first_seen_at`。
 

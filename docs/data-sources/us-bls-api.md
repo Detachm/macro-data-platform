@@ -6,7 +6,7 @@
 - 区域：US
 - Provider role：`us.macro.primary`
 - 数据集：macro_series / macro_observations / macro_releases
-- 官方文档：https://www.bls.gov/developers/api_signature_v2.htm
+- 官方文档：https://www.bls.gov/developers/api_signature_v2.htm；配额说明：https://www.bls.gov/developers/api_faqs.htm
 - 账号负责人：@Detachm（registration key 待配置；不得提交）
 - 采购/合同负责人：@Detachm（public statistics）
 - 当前状态：official numeric data `live-candidate`；MVP provider 仍先 fixture-backed。
@@ -18,9 +18,9 @@
 - Base URL 与端点：`GET /publicAPI/v2/timeseries/data/{series_id}`；`POST /publicAPI/v2/timeseries/data/`。
 - 请求参数、分页/cursor：`seriesid[]`、`startyear`、`endyear`、`registrationkey`；按 year window 切分，无 cursor。
 - 频率、时区和上游时间字段：release calendar uses Eastern Time；API observations are period-level，actual `available_at` 默认 `first_seen`。
-- 历史深度、修订策略：registered 20-year windows；unregistered 10-year windows；macro revisions 新增 vintage。
+- 历史深度、修订策略：注册 API Version 2 的单次窗口为 20 年；未注册 API Version 1 的单次窗口为 10 年；macro revisions 新增 vintage。
 - 代码、单位、币种和空值规则：series-specific unit/transformation；`--`/`N/A` → null + quality flag。
-- 限流、并发、超时和重试要求：registered 500 queries/day、50 series/query、20 years/query；unregistered 25 queries/day、25 series/query、10 years/query；both 50 requests/10 seconds。
+- 限流、并发、超时和重试要求：BLS FAQ 列明注册 API Version 2 为 500 queries/day、50 series/query、20 years/query；未注册 API Version 1 为 25 queries/day、25 series/query、10 years/query；两者均为 50 requests/10 seconds。注册是 Version 2 的扩容路径，不将 Version 1 无 key 能力表述为 Version 2。
 
 ## 权利矩阵
 

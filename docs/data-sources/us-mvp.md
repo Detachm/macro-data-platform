@@ -44,7 +44,7 @@
 |---|---|---|---|---|
 | instruments | `fixture-only`，可用官方公开源设计 live adapter | Nasdaq Trader Symbol Directory + SEC company tickers/CIK enrichment | Polygon/Massive reference tickers if licensed | Nasdaq/SEC 可支持合成 fixture；交易所目录权利需复核后才能宣称 live-ready。 |
 | daily bars | `fixture-only` | Polygon/Massive stock aggregates，需商业授权 | Alpha Vantage，仅原型/低频 fallback | 交易所市场数据受许可约束；无合同前不存 live 行情、不发 LLM。 |
-| rates / FX / cross-asset observations | `live-candidate` for official public releases; MVP 仍用 fixture | Federal Reserve H.15/H.10 Data Download/current releases；Treasury official feeds where available | FRED 只作发现/人工核对，不作为持久化 ingest 源 | 官方利率/汇率可做首批 market observations；FRED API 条款限制存储和 AI 场景，默认不入库。 |
+| rates / FX / cross-asset observations | `live-candidate` for official public releases; MVP 仍用 fixture | Federal Reserve H.15/H.10 Data Download/current releases；Treasury official feeds where available | FRED 只作发现/人工核对，不作为持久化 ingest 源 | 官方利率/汇率可做首批 market observations；在逐 series owner rights review 前，平台对 FRED 采用 no-ingest/no-LLM 保守策略。 |
 | macro observations / releases | `live-candidate` for direct agency APIs; MVP 可 fixture | BLS Public Data API、BEA API、官方 release calendar | FRED 只作非持久化发现 | BLS/BEA 是 CPI、employment、GDP、PCE 等主源；available_at 不得早于 API/平台首次可见时间。 |
 | SEC filing metadata | `live-candidate` | SEC EDGAR `data.sec.gov` submissions + index files | Commercial SEC vendors only for enhanced search | SEC JSON APIs 无 API key，但必须遵守 fair access；只采 metadata，不采完整正文作为新闻正文。 |
 | daily news | `fixture-only` | Official releases/filings for `official` tier；GDELT disabled until rights approval | Licensed media provider pending procurement | 商业新闻正文/摘要默认不可外发；NewsAPI/Alpha Vantage/GDELT 等需合同或 rights approval 后才能进入 live。 |
@@ -57,13 +57,13 @@
 - 历史输出必须满足 `available_at <= request.as_of`。
 - Decimal 从原始字符串构造，不经过 `float`。
 - 没有可审计授权的正文、summary、token、Cookie、账号信息不得进入 Git、日志、fixture 或 EditorContext。
-- FRED API 默认不作为持久化 ingest 源：其法律条款要求遵守第三方数据所有者限制，并禁止将 FRED API 用于 AI/LLM 训练相关用途以及存储、缓存或归档 FRED Content。后续如要使用，必须先走负责人和法律/授权复核。
+- FRED API 默认不作为持久化 ingest 源：FRED terms 要求对第三方 series 遵守数据所有者的版权、许可和限制，非个人使用前取得 data owner permission。两日 MVP 采用平台 no-ingest/no-LLM/no-embedding 策略，直至逐 series rights review 与负责人批准完成；这不是把平台策略表述为 FRED 的一概 storage 或 AI 禁令。
 
 ## 公共 identity、checksum 与排序规则
 
 | 数据集 | identity basis | 公共 ID 规则 | `source.provider_record_id` | checksum | source URL | 稳定排序键 |
 |---|---|---|---|---|---|---|
-| instruments | `venue_mic + local_symbol + valid_from` | `ins_us_<sha256(canonical_symbol + valid_from)[:16]>` | `<provider_id>:<source_symbol>:<valid_from>` | canonical source row JSON，不含 retrieved_at | Nasdaq/SEC record URL or source file URL | `canonical_symbol ASC, valid_from ASC, instrument_id ASC` |
+| instruments | `venue_mic + local_symbol + valid_from` | `ins_us_<sha256(UTF-8(canonical_symbol + first_valid_from ISO-8601 date))[:16]>`（无分隔符；不含 issuer/CIK） | `<provider_id>:<source_symbol>:<valid_from>` | canonical source row JSON，不含 retrieved_at | Nasdaq/SEC record URL or source file URL | `canonical_symbol ASC, valid_from ASC, instrument_id ASC` |
 | daily bars | `instrument_id + interval + bar_start + adjustment + provider_id` | `bar_us_<sha256(identity_basis)[:20]>` | `<provider_id>:<ticker>:<interval>:<bar_start>:<adjustment>` | canonical OHLCV JSON + source record metadata，不含 retrieved_at | vendor aggregate URL or fixture source path | `bar_end ASC, instrument_id ASC, bar_id ASC` |
 | rates/FX observations | `region + scope_type + scope_id + metric_code + observed_at + provider_id` | `obs_us_<sha256(identity_basis)[:20]>` | `<provider_id>:<metric_code>:<observed_at-or-period>` | canonical observation JSON，不含 retrieved_at | official release/download URL | `observed_at ASC, observation_id ASC` |
 | macro series | `series_id` | stable `macro:US:<AUTHORITY>:<CODE>` | `<provider_id>:<authority-code>` | canonical series metadata JSON | agency series/table URL | `series_id ASC` |
@@ -101,7 +101,7 @@
 | Nasdaq `Symbol` / SEC `ticker` | `Instrument.local_symbol` | 大写；保留点号，如 `BRK.B`；不按数字猜市场。 | 是 | quarantine `SYMBOL_UNRESOLVED` |
 | Nasdaq listing exchange / market category | `venue_mic` | Nasdaq → `XNAS`；NYSE/NYSE American/Nasdaq/Cboe 等必须显式映射。 | 是 | quarantine `AMBIGUOUS_SYMBOL_ALIAS` |
 | `venue_mic + local_symbol` | `canonical_symbol` | `<MIC>:<LOCAL_SYMBOL>`，如 `XNAS:AAPL`、`XNYS:BRK.B`。 | 是 | quarantine |
-| SEC `cik_str` | `instrument_id` seed / alias metadata | canonical ID 稳定生成；CIK 作为 alias/enrichment，不替代 `instrument_id`。 | 否 | 缺失仍可保留 instrument，但标 quality flag |
+| SEC `cik_str` | alias metadata / issuer enrichment | 不进入 `instrument_id` seed；canonical ID 只取首个 canonical symbol + first valid date。 | 否 | 缺失仍可保留 instrument，并标 `issuer_enrichment_missing` quality flag |
 | Nasdaq `Security Name` / SEC `title` | `name` | 原文去首尾空白，不做展示型改写。 | 是 | quarantine |
 | Nasdaq `ETF` | `asset_class` | `Y` → `etf`；普通股 → `equity`；指数由单独白名单 fixture 生成。 | 是 | quarantine |
 | Nasdaq `Round Lot Size` | `lot_size` | 字符串转 Decimal。 | 否 | `null` |
@@ -109,7 +109,7 @@
 
 稳定 ID / checksum：
 
-- `instrument_id = ins_us_<sha256(canonical_symbol + first_valid_from)[:16]>`，后续如引入更强 ID 需 migration/ADR。
+- `instrument_id = ins_us_<sha256(UTF-8(canonical_symbol + first_valid_from ISO-8601 date))[:16]>`；seed 无分隔符，且不含 `issuer_key`/CIK。精确输入/输出由 `tests/fixtures/us/normalization/instrument_id_cases.json` 作为 #2/#4 共享 golden；后续如改 ID 语义需 migration/ADR。
 - alias 唯一键：`provider_id + source_symbol + valid_from`。
 - checksum 只基于业务字段 canonical JSON，不含 retrieved_at。
 
@@ -199,9 +199,9 @@ Rates/FX 公共合同映射：
 | 数据 | CPI、PPI、nonfarm payrolls、unemployment、wages 等 | GDP、PCE、personal income、NIPA 等 |
 | 官方文档 | BLS Public Data API developer docs | BEA Data API user guide |
 | Base URL / endpoint | `https://api.bls.gov/publicAPI/v2/timeseries/data/` | `https://apps.bea.gov/api/data` |
-| 认证 | API 2.0 需注册；不得提交 key。 | 注册后获取 36-character `UserID`；不得提交。 |
+| 认证 | 未注册 API Version 1 可无 key；注册 API Version 2 需 registration key，且不得提交。 | 注册后获取 36-character `UserID`；不得提交。 |
 | 请求参数 | `seriesid[]`、`startyear`、`endyear`、`registrationkey`。 | `UserID`、`method=GetData`、`DataSetName`、dataset-specific params、`ResultFormat=JSON`。 |
-| 限流 | BLS API 2.0：注册用户最多 50 series、20 年、500 queries/day；未注册用户 25 series、10 年、25 queries/day；两者均按 50 requests/10 seconds 控制。 | BEA：100 requests/min、100 MB/min、30 errors/min，429 带 `Retry-After`。 |
+| 限流 | BLS FAQ：注册 API Version 2 最多 50 series、20 年、500 queries/day；未注册 API Version 1 为 25 series、10 年、25 queries/day；两者均按 50 requests/10 seconds 控制。 | BEA：100 requests/min、100 MB/min、30 errors/min，429 带 `Retry-After`。 |
 | 分页 | 按 series/year window 切分；无平台 cursor。 | 按 dataset params/window 切分；避免 `ALL` 大范围。 |
 | 更新时间 | 按各 agency release calendar；BLS API 文档说明 API 可能有发布后滞后。 | 按 BEA release schedule；API 数据随官方发布更新。 |
 | 历史深度 | BLS API 限制单次窗口；历史可分段回补。 | 取决于 dataset/table。 |
@@ -317,7 +317,7 @@ Daily news 公共合同映射：
 | Treasury official feeds / Fiscal Data | true for numeric facts | true | true for numeric facts with source citation | true for numeric facts | true with attribution/no endorsement | Official public Treasury data；endpoint availability复核。 |
 | BLS Public Data API | true for public observations | true | true for numeric facts with source citation | true for numeric facts | true with attribution/no endorsement | Official public statistics；API key/limits apply。 |
 | BEA API | true for public observations | true | true for numeric facts with source citation | true for numeric facts | true with attribution/no endorsement | Official public statistics；UserID/limits apply。 |
-| FRED / ALFRED API | false | false for platform ingest | false | false | false | Terms restrict storage/caching/archive and AI/LLM-related use; not an ingest source unless approved. |
+| FRED / ALFRED API | false | false for platform ingest | false | false | false | 平台 no-ingest/no-LLM/no-embedding 策略，待逐 series owner rights review 与负责人批准；FRED terms 要求遵守 data owner restrictions。 |
 | GDELT | false until rights approval | false until rights approval | false | false | false | 权限不明确按不允许；仅 synthetic fixture。 |
 | NewsAPI / licensed media | false until contract | false until contract | false | false | false | Terms prohibit republishing copyrighted material; contract required。 |
 
@@ -455,7 +455,8 @@ Quality thresholds for US MVP fixture providers:
 - Federal Reserve Data Download Program: https://www.federalreserve.gov/datadownload/
 - Treasury Fiscal Data API documentation: https://fiscaldata.treasury.gov/api-documentation/
 - Treasury Daily Interest Rate XML Feed: https://home.treasury.gov/treasury-daily-interest-rate-xml-feed
-- BLS Public Data API: https://www.bls.gov/bls/api_features.htm
+- BLS Public Data API FAQ / quotas: https://www.bls.gov/developers/api_faqs.htm
+- BLS API Version 2 signature: https://www.bls.gov/developers/api_signature_v2.htm
 - BEA API signup/docs: https://apps.bea.gov/api/signup/
 - BEA API user guide: https://apps.bea.gov/api/_pdf/bea_web_service_api_user_guide.pdf
 - FRED API terms: https://fred.stlouisfed.org/docs/api/terms_of_use.html
