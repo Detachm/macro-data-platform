@@ -1,0 +1,4 @@
+{
+  "status": "error",
+  "error": {"code": "invalid_cursor", "message": "synthetic duplicate page cursor"}
+}
