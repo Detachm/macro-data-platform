@@ -63,6 +63,7 @@ class UnitMappingError(CnHkNormalizationError):
 
 @dataclass(frozen=True)
 class AliasEffectiveDate:
+    instrument_key: str
     provider_id: str
     source_symbol: str
     canonical_symbol: str
@@ -71,8 +72,19 @@ class AliasEffectiveDate:
 
 
 @dataclass(frozen=True)
+class InstrumentAliasRegistryEntry:
+    instrument_key: str
+    provider_id: str
+    source_symbol: str
+    venue_mic: str
+    valid_from: date
+    valid_to: date | None = None
+
+
+@dataclass(frozen=True)
 class NormalizedInstrumentSymbol:
     instrument_id: str
+    instrument_key: str
     canonical_symbol: str
     region: Region
     venue_mic: str
@@ -99,6 +111,15 @@ class NormalizedUnit:
     is_percent: bool = False
 
 
+@dataclass(frozen=True)
+class MissingUnitValue:
+    value: None
+    unit: str
+    source_unit: str
+    missing_reason: str
+    currency: str | None = None
+
+
 def normalize_instrument_symbol(
     *,
     region: Region,
@@ -106,17 +127,29 @@ def normalize_instrument_symbol(
     local_symbol: str,
     valid_from: date,
     provider_id: str,
+    instrument_key: str,
     valid_to: date | None = None,
 ) -> NormalizedInstrumentSymbol:
     """Normalize exchange-specific symbols without guessing the exchange."""
 
     clean_venue = venue_mic.strip().upper()
     clean_symbol = local_symbol.strip()
+    source_symbol = clean_symbol
     clean_provider_id = provider_id.strip()
+    clean_instrument_key = instrument_key.strip()
     if not clean_provider_id:
         raise SymbolMappingError("provider_id is required", field="provider_id")
+    if not clean_instrument_key:
+        raise SymbolMappingError("instrument_key is required", field="instrument_key")
     if valid_to is not None and valid_to < valid_from:
         raise SymbolMappingError("valid_to must not be earlier than valid_from", field="valid_to")
+
+    parsed_venue, parsed_symbol = _split_prefixed_symbol(clean_symbol)
+    if parsed_venue is not None:
+        if clean_venue and clean_venue != parsed_venue:
+            raise SymbolMappingError("symbol venue conflicts with venue_mic", field="local_symbol")
+        clean_venue = parsed_venue
+        clean_symbol = parsed_symbol
 
     if region is Region.CN:
         normalized_symbol = _normalize_cn_symbol(clean_venue, clean_symbol)
@@ -129,7 +162,8 @@ def normalize_instrument_symbol(
 
     canonical_symbol = f"{clean_venue}:{normalized_symbol}"
     return NormalizedInstrumentSymbol(
-        instrument_id=_instrument_id(region, clean_venue, normalized_symbol, valid_from),
+        instrument_id=_instrument_id(region, clean_instrument_key),
+        instrument_key=clean_instrument_key,
         canonical_symbol=canonical_symbol,
         region=region,
         venue_mic=clean_venue,
@@ -137,13 +171,58 @@ def normalize_instrument_symbol(
         timezone=timezone,
         aliases=(
             AliasEffectiveDate(
+                instrument_key=clean_instrument_key,
                 provider_id=clean_provider_id,
-                source_symbol=clean_symbol,
+                source_symbol=source_symbol,
                 canonical_symbol=canonical_symbol,
                 valid_from=valid_from,
                 valid_to=valid_to,
             ),
         ),
+    )
+
+
+def resolve_instrument_alias(
+    *,
+    region: Region,
+    venue_mic: str,
+    local_symbol: str,
+    as_of: date,
+    provider_id: str,
+    aliases: tuple[InstrumentAliasRegistryEntry, ...],
+    include_inactive: bool = False,
+) -> NormalizedInstrumentSymbol:
+    clean_venue = venue_mic.strip().upper()
+    clean_symbol = local_symbol.strip()
+    parsed_venue, parsed_symbol = _split_prefixed_symbol(clean_symbol)
+    if parsed_venue is not None:
+        if clean_venue and clean_venue != parsed_venue:
+            raise SymbolMappingError("symbol venue conflicts with venue_mic", field="local_symbol")
+        clean_venue = parsed_venue
+        clean_symbol = parsed_symbol
+
+    requested_symbol = _normalize_symbol_for_region(region, clean_venue, clean_symbol)
+    matching = tuple(
+        entry for entry in aliases if _alias_matches(region, entry, clean_venue, requested_symbol)
+    )
+    active = tuple(entry for entry in matching if _alias_active(entry, as_of))
+    candidates = active or (matching if include_inactive else ())
+    if not candidates:
+        if matching:
+            raise SymbolMappingError("inactive symbol alias", field="local_symbol")
+        raise SymbolMappingError("symbol alias unresolved", field="local_symbol")
+    instrument_keys = {entry.instrument_key for entry in candidates}
+    if len(instrument_keys) != 1:
+        raise SymbolMappingError("ambiguous symbol alias", field="local_symbol")
+    entry = candidates[0]
+    return normalize_instrument_symbol(
+        region=region,
+        venue_mic=entry.venue_mic,
+        local_symbol=entry.source_symbol,
+        valid_from=entry.valid_from,
+        valid_to=entry.valid_to,
+        provider_id=provider_id,
+        instrument_key=entry.instrument_key,
     )
 
 
@@ -239,6 +318,14 @@ def normalize_unit(
             scale=Decimal("1"),
             is_percent=True,
         )
+    if unit_key in _BASIS_POINT_UNITS:
+        return NormalizedUnit(
+            value=decimal_value / Decimal("100"),
+            unit="percent",
+            source_unit=clean_unit,
+            scale=Decimal("0.01"),
+            is_percent=True,
+        )
 
     unit, currency, scale = _currency_unit(region, unit_key)
     return NormalizedUnit(
@@ -248,6 +335,32 @@ def normalize_unit(
         scale=scale,
         currency=currency,
     )
+
+
+def normalize_optional_unit(
+    *, region: Region, value: Decimal | int | str | None, source_unit: str
+) -> NormalizedUnit | MissingUnitValue:
+    clean_unit = " ".join(source_unit.strip().split())
+    if not clean_unit:
+        raise UnitMappingError("source_unit is required", field="source_unit")
+    if value is None or (isinstance(value, str) and value.strip() in _MISSING_VALUE_SENTINELS):
+        unit_key = clean_unit.lower()
+        if unit_key in _PERCENT_UNITS or unit_key in _BASIS_POINT_UNITS:
+            return MissingUnitValue(
+                value=None,
+                unit="percent",
+                source_unit=clean_unit,
+                missing_reason="vendor_missing",
+            )
+        unit, currency, _scale = _currency_unit(region, unit_key)
+        return MissingUnitValue(
+            value=None,
+            unit=unit,
+            source_unit=clean_unit,
+            missing_reason="vendor_missing",
+            currency=currency,
+        )
+    return normalize_unit(region=region, value=value, source_unit=source_unit)
 
 
 def _normalize_cn_symbol(venue_mic: str, local_symbol: str) -> str:
@@ -266,11 +379,55 @@ def _normalize_hk_symbol(venue_mic: str, local_symbol: str) -> str:
     return local_symbol.zfill(5)
 
 
-def _instrument_id(region: Region, venue_mic: str, local_symbol: str, listed_on: date) -> str:
-    seed = f"{region.value}|{venue_mic}|{local_symbol}|{listed_on.isoformat()}"
+def _instrument_id(region: Region, instrument_key: str) -> str:
+    seed = f"{region.value}|{instrument_key}"
     digest = hashlib.sha256(seed.encode("utf-8")).digest()
     token = base64.b32encode(digest).decode("ascii").lower().rstrip("=")[:26]
     return f"ins_{token}"
+
+
+def _split_prefixed_symbol(source_symbol: str) -> tuple[str | None, str]:
+    upper_symbol = source_symbol.upper()
+    if ":" in upper_symbol:
+        venue, _, symbol = upper_symbol.partition(":")
+        return venue, symbol
+    if upper_symbol.startswith("SH") and len(upper_symbol) == 8:
+        return "XSHG", upper_symbol[2:]
+    if upper_symbol.startswith("SZ") and len(upper_symbol) == 8:
+        return "XSHE", upper_symbol[2:]
+    if upper_symbol.endswith(".SH") or upper_symbol.endswith(".SS"):
+        return "XSHG", upper_symbol[:-3]
+    if upper_symbol.endswith(".SZ"):
+        return "XSHE", upper_symbol[:-3]
+    if upper_symbol.endswith(".HK"):
+        return "XHKG", upper_symbol[:-3]
+    return None, source_symbol
+
+
+def _normalize_symbol_for_region(region: Region, venue_mic: str, source_symbol: str) -> str:
+    if region is Region.CN:
+        return _normalize_cn_symbol(venue_mic, source_symbol)
+    if region is Region.HK:
+        return _normalize_hk_symbol(venue_mic, source_symbol)
+    raise SymbolMappingError("only CN/HK regions are supported", field="region")
+
+
+def _alias_matches(
+    region: Region, entry: InstrumentAliasRegistryEntry, venue_mic: str, normalized_symbol: str
+) -> bool:
+    entry_venue, entry_symbol = _split_prefixed_symbol(entry.source_symbol)
+    candidate_venue = entry_venue or entry.venue_mic.strip().upper()
+    if candidate_venue != venue_mic:
+        return False
+    try:
+        candidate_symbol = _normalize_symbol_for_region(region, candidate_venue, entry_symbol)
+    except SymbolMappingError:
+        return False
+    return candidate_symbol == normalized_symbol
+
+
+def _alias_active(entry: InstrumentAliasRegistryEntry, as_of: date) -> bool:
+    return entry.valid_from <= as_of and (entry.valid_to is None or as_of <= entry.valid_to)
 
 
 def _timezone_for_region(region: Region) -> str:
@@ -296,6 +453,8 @@ def _currency_unit(region: Region, unit_key: str) -> tuple[str, str, Decimal]:
 
 
 _PERCENT_UNITS = frozenset({"%", "percent", "pct", "percentage", "百分比", "百分点"})
+_BASIS_POINT_UNITS = frozenset({"bp", "bps", "basis point", "basis points", "基点"})
+_MISSING_VALUE_SENTINELS = frozenset({"", "--", "N/A", "n/a", "NA", "na"})
 _CN_CURRENCY_UNITS: dict[str, tuple[str, Decimal]] = {
     "cny": ("CNY", Decimal("1")),
     "rmb": ("CNY", Decimal("1")),
@@ -323,7 +482,9 @@ __all__ = [
     "HK_VENUES",
     "AliasEffectiveDate",
     "CnHkNormalizationError",
+    "InstrumentAliasRegistryEntry",
     "MappingErrorCode",
+    "MissingUnitValue",
     "NormalizedInstrumentSymbol",
     "NormalizedTimestamp",
     "NormalizedUnit",
@@ -335,7 +496,9 @@ __all__ = [
     "local_session_datetime",
     "normalize_decimal",
     "normalize_instrument_symbol",
+    "normalize_optional_unit",
     "normalize_timestamp",
     "normalize_trading_date",
     "normalize_unit",
+    "resolve_instrument_alias",
 ]
