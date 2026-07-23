@@ -66,13 +66,12 @@ PR description seed:
 Implemented test IDs:
 - PRV-001, PRV-002, PRV-007, PRV-008, PRV-009, PRV-010, PRV-013, PRV-017,
   PRV-018, PRV-019, PRV-020
-- NEWS-002, NEWS-003, NEWS-012, NEWS-013
+- NEWS-002, NEWS-003, NEWS-012, NEWS-013, NEWS-017
 - PIT-AVAILABLE-AT-AS-OF
 
 Still blocked:
 - PRV-003, PRV-004, PRV-005, PRV-006, PRV-011, PRV-012, PRV-014,
   PRV-015, PRV-016
-- NEWS-017
 
 Blocked by: #5/#1/#3 as recorded in tests/fixtures/{cn,hk}/manifest.json.
 ```
@@ -92,9 +91,11 @@ Blocked by: #5/#1/#3 as recorded in tests/fixtures/{cn,hk}/manifest.json.
 - `NEWS-002`、`NEWS-003`、`PRV-017`：URL canonicalization、标题 normalization 和
   canonical checksum。
 - `NEWS-012`、`NEWS-013`：title-only 新闻、空 vendor annotation，并保留 rights 字段骨架。
+- `NEWS-017`：EditorContext 对 `external_llm_allowed=false` 的新闻输出 headline-only，
+  不返回受限 summary/body。
 
 保留为 `xfail` 的入口：`PRV-003`、`PRV-004`、`PRV-005`、`PRV-006`、`PRV-011`、
-`PRV-012`、`PRV-014`、`PRV-015`、`PRV-016`、`NEWS-017`，原因均写在测试和
+`PRV-012`、`PRV-014`、`PRV-015`、`PRV-016`，原因均写在测试和
 manifest 中，
 blocked by #5/#1/#3。
 

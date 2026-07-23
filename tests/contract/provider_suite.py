@@ -84,7 +84,7 @@ CONTRACT_CASES = {
         ContractCase("NEWS-003", "implemented"),
         ContractCase("NEWS-012", "implemented"),
         ContractCase("NEWS-013", "implemented"),
-        ContractCase("NEWS-017", "xfail", ("#3",)),
+        ContractCase("NEWS-017", "implemented"),
         ContractCase("PIT-AVAILABLE-AT-AS-OF", "implemented"),
     )
 }
