@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from base64 import b32encode
 from collections.abc import Callable, Iterable, Mapping
 from datetime import date, datetime
 from decimal import Decimal
@@ -44,6 +43,15 @@ from macro_platform.contracts.provider import (
     ProviderCapabilities,
     ProviderHealth,
     ProviderPage,
+)
+from macro_platform.normalization.cn_hk import (
+    CnHkNormalizationError,
+    NormalizedInstrumentSymbol,
+    NormalizedUnit,
+    normalize_instrument_symbol,
+    normalize_timestamp,
+    normalize_trading_date,
+    normalize_unit,
 )
 from macro_platform.normalization.common import (
     canonical_json_checksum,
@@ -206,6 +214,7 @@ class RegionalFixtureProvider:
     macro_series_name: ClassVar[str] = "CPI YoY"
     instrument_listed_on_by_symbol: ClassVar[Mapping[str, date]] = {}
     live_ready_datasets: ClassVar[frozenset[Dataset]] = frozenset()
+    live_candidate_datasets: ClassVar[frozenset[Dataset]] = frozenset()
     fixture_only_datasets: ClassVar[frozenset[Dataset]] = frozenset(
         {
             Dataset.INSTRUMENTS,
@@ -512,17 +521,18 @@ class RegionalFixtureProvider:
         mic = _str(raw["mic"], "instrument.mic")
         listed_on = _optional_date(raw, "listed_on")
         valid_from = _date(raw["valid_from"], "instrument.valid_from")
+        normalized = self._normalized_symbol(mic, symbol, listed_on or valid_from)
         return Instrument(
-            instrument_id=self._instrument_id(mic, symbol, listed_on or valid_from),
-            canonical_symbol=f"{mic}:{symbol}",
+            instrument_id=normalized.instrument_id,
+            canonical_symbol=normalized.canonical_symbol,
             region=self.region,
-            venue_mic=mic,
-            local_symbol=symbol,
+            venue_mic=normalized.venue_mic,
+            local_symbol=normalized.local_symbol,
             name=_str(raw["name"], "instrument.name"),
             name_en=_optional_str(raw, "name_en"),
             asset_class=AssetClass(_str(raw["asset_class"], "instrument.asset_class")),
             currency=_str(raw["currency"], "instrument.currency"),
-            timezone=_str(raw["timezone"], "instrument.timezone"),
+            timezone=normalized.timezone,
             status=InstrumentStatus(_str(raw["status"], "instrument.status")),
             listed_on=listed_on,
             delisted_on=_optional_date(raw, "delisted_on"),
@@ -561,15 +571,16 @@ class RegionalFixtureProvider:
         symbol = _str(raw["symbol"], "bar.symbol")
         mic = _str(raw["mic"], "bar.mic")
         source = self._source(raw, source_symbol=symbol)
-        bar_start = _datetime(raw["bar_start"], "bar.bar_start")
-        bar_end = _datetime(raw["bar_end"], "bar.bar_end")
+        bar_start = self._normalized_datetime(raw["bar_start"], "bar.bar_start")
+        bar_end = self._normalized_datetime(raw["bar_end"], "bar.bar_end")
         interval = Interval(_str(raw["interval"], "bar.interval"))
         adjustment = Adjustment(_str(raw["adjustment"], "bar.adjustment"))
-        instrument_id = self._instrument_id(mic, symbol)
+        normalized_symbol = self._normalized_symbol(mic, symbol)
+        trading_date = self._normalized_trading_date(raw["trading_date"], "bar.trading_date")
         return MarketBar(
             bar_id=_hex_id(
                 "bar",
-                instrument_id,
+                normalized_symbol.instrument_id,
                 interval.value,
                 _utc_z(bar_start),
                 _utc_z(bar_end),
@@ -577,24 +588,24 @@ class RegionalFixtureProvider:
                 source.provider_id,
                 source.provider_record_id,
             ),
-            instrument_id=instrument_id,
-            canonical_symbol=f"{mic}:{symbol}",
+            instrument_id=normalized_symbol.instrument_id,
+            canonical_symbol=normalized_symbol.canonical_symbol,
             region=self.region,
             interval=interval,
             bar_start=bar_start,
             bar_end=bar_end,
-            trading_date=_date(raw["trading_date"], "bar.trading_date"),
-            open=_decimal(raw["open"], "bar.open"),
-            high=_decimal(raw["high"], "bar.high"),
-            low=_decimal(raw["low"], "bar.low"),
-            close=_decimal(raw["close"], "bar.close"),
+            trading_date=trading_date,
+            open=self._normalized_unit_value(raw["open"], raw["currency"], "bar.open"),
+            high=self._normalized_unit_value(raw["high"], raw["currency"], "bar.high"),
+            low=self._normalized_unit_value(raw["low"], raw["currency"], "bar.low"),
+            close=self._normalized_unit_value(raw["close"], raw["currency"], "bar.close"),
             volume=_optional_decimal(raw, "volume"),
             turnover=_optional_decimal(raw, "turnover"),
             vwap=_optional_decimal(raw, "vwap"),
             currency=_str(raw["currency"], "bar.currency"),
             adjustment=adjustment,
-            adjustment_as_of=_optional_datetime(raw, "adjustment_as_of"),
-            available_at=_datetime(raw["available_at"], "bar.available_at"),
+            adjustment_as_of=self._optional_normalized_datetime(raw, "adjustment_as_of"),
+            available_at=self._normalized_datetime(raw["available_at"], "bar.available_at"),
             availability_basis=AvailabilityBasis(
                 _str(raw["availability_basis"], "bar.availability_basis")
             ),
@@ -630,13 +641,22 @@ class RegionalFixtureProvider:
             scope_type=ScopeType(_str(raw["scope_type"], "market_observation.scope_type")),
             scope_id=_str(raw["scope_id"], "market_observation.scope_id"),
             metric_code=_str(raw["metric_code"], "market_observation.metric_code"),
-            value=_optional_decimal(raw, "value"),
-            unit=_str(raw["unit"], "market_observation.unit"),
-            currency=_optional_str(raw, "currency"),
-            period_start=_datetime(raw["period_start"], "market_observation.period_start"),
-            period_end=_datetime(raw["period_end"], "market_observation.period_end"),
-            observed_at=_datetime(raw["observed_at"], "market_observation.observed_at"),
-            available_at=_datetime(raw["available_at"], "market_observation.available_at"),
+            value=self._optional_normalized_unit_value(raw, "value", "unit"),
+            unit=self._normalized_unit(raw["unit"], "market_observation.unit").unit,
+            currency=_optional_str(raw, "currency")
+            or self._normalized_unit(raw["unit"], "market_observation.unit").currency,
+            period_start=self._normalized_datetime(
+                raw["period_start"], "market_observation.period_start"
+            ),
+            period_end=self._normalized_datetime(
+                raw["period_end"], "market_observation.period_end"
+            ),
+            observed_at=self._normalized_datetime(
+                raw["observed_at"], "market_observation.observed_at"
+            ),
+            available_at=self._normalized_datetime(
+                raw["available_at"], "market_observation.available_at"
+            ),
             availability_basis=AvailabilityBasis(
                 _str(raw["availability_basis"], "market_observation.availability_basis")
             ),
@@ -681,11 +701,13 @@ class RegionalFixtureProvider:
             region=self.region,
             period_start=_date(raw["period_start"], "macro_observation.period_start"),
             period_end=_date(raw["period_end"], "macro_observation.period_end"),
-            value=_optional_decimal(raw, "value"),
-            unit=_str(raw["unit"], "macro_observation.unit"),
+            value=self._optional_normalized_unit_value(raw, "value", "unit"),
+            unit=self._normalized_unit(raw["unit"], "macro_observation.unit").unit,
             transformation=_str(raw["transformation"], "macro_observation.transformation"),
-            released_at=_optional_datetime(raw, "released_at"),
-            available_at=_datetime(raw["available_at"], "macro_observation.available_at"),
+            released_at=self._optional_normalized_datetime(raw, "released_at"),
+            available_at=self._normalized_datetime(
+                raw["available_at"], "macro_observation.available_at"
+            ),
             availability_basis=AvailabilityBasis(
                 _str(raw["availability_basis"], "macro_observation.availability_basis")
             ),
@@ -720,7 +742,9 @@ class RegionalFixtureProvider:
             release_id=_hex_id(
                 "rel",
                 _str(raw["series_id"], "macro_release.series_id"),
-                _utc_z(_datetime(raw["scheduled_at"], "macro_release.scheduled_at")),
+                _utc_z(
+                    self._normalized_datetime(raw["scheduled_at"], "macro_release.scheduled_at")
+                ),
                 _str(raw["period_start"], "macro_release.period_start"),
                 _str(raw["period_end"], "macro_release.period_end"),
                 _str(raw["release_name"], "macro_release.release_name"),
@@ -728,15 +752,19 @@ class RegionalFixtureProvider:
             series_id=_str(raw["series_id"], "macro_release.series_id"),
             region=self.region,
             release_name=_str(raw["release_name"], "macro_release.release_name"),
-            scheduled_at=_datetime(raw["scheduled_at"], "macro_release.scheduled_at"),
-            released_at=_optional_datetime(raw, "released_at"),
-            available_at=_datetime(raw["available_at"], "macro_release.available_at"),
+            scheduled_at=self._normalized_datetime(
+                raw["scheduled_at"], "macro_release.scheduled_at"
+            ),
+            released_at=self._optional_normalized_datetime(raw, "released_at"),
+            available_at=self._normalized_datetime(
+                raw["available_at"], "macro_release.available_at"
+            ),
             period_start=_date(raw["period_start"], "macro_release.period_start"),
             period_end=_date(raw["period_end"], "macro_release.period_end"),
-            actual=_optional_decimal(raw, "actual"),
-            consensus=_optional_decimal(raw, "consensus"),
-            previous=_optional_decimal(raw, "previous"),
-            unit=_str(raw["unit"], "macro_release.unit"),
+            actual=self._optional_normalized_unit_value(raw, "actual", "unit"),
+            consensus=self._optional_normalized_unit_value(raw, "consensus", "unit"),
+            previous=self._optional_normalized_unit_value(raw, "previous", "unit"),
+            unit=self._normalized_unit(raw["unit"], "macro_release.unit").unit,
             status=cast(Any, _str(raw["status"], "macro_release.status")),
             source=self._source(raw),
         )
@@ -781,7 +809,7 @@ class RegionalFixtureProvider:
             if "canonical_url" in raw and raw["canonical_url"] is not None
             else None
         )
-        published_at = _datetime(raw["published_at"], "news.published_at")
+        published_at = self._normalized_datetime(raw["published_at"], "news.published_at")
         entities = self._entity_refs(raw)
         entity_ids = tuple(sorted(entity.entity_id for entity in entities))
         content_hash = canonical_json_checksum(
@@ -818,8 +846,8 @@ class RegionalFixtureProvider:
             source_tier=SourceTier(_str(raw["source_tier"], "news.source_tier")),
             canonical_url=canonical_url,
             published_at=published_at,
-            first_seen_at=_datetime(raw["first_seen_at"], "news.first_seen_at"),
-            available_at=_datetime(raw["available_at"], "news.available_at"),
+            first_seen_at=self._normalized_datetime(raw["first_seen_at"], "news.first_seen_at"),
+            available_at=self._normalized_datetime(raw["available_at"], "news.available_at"),
             availability_basis=AvailabilityBasis(
                 _str(raw["availability_basis"], "news.availability_basis")
             ),
@@ -845,8 +873,8 @@ class RegionalFixtureProvider:
             source_name=source_name or self.source_name,
             source_url=_str(raw["source_url"], "source.source_url"),
             source_symbol=source_symbol,
-            retrieved_at=_datetime(raw["retrieved_at"], "source.retrieved_at"),
-            provider_updated_at=_optional_datetime(raw, "provider_updated_at"),
+            retrieved_at=self._normalized_datetime(raw["retrieved_at"], "source.retrieved_at"),
+            provider_updated_at=self._optional_normalized_datetime(raw, "provider_updated_at"),
             checksum_sha256=canonical_json_checksum(_source_checksum_payload(raw)),
         )
 
@@ -920,7 +948,9 @@ class RegionalFixtureProvider:
             )
         return entities
 
-    def _instrument_id(self, mic: str, symbol: str, listed_on: date | None = None) -> str:
+    def _normalized_symbol(
+        self, mic: str, symbol: str, listed_on: date | None = None
+    ) -> NormalizedInstrumentSymbol:
         instrument_listed_on = listed_on or self.instrument_listed_on_by_symbol.get(
             f"{mic}:{symbol}"
         )
@@ -928,9 +958,58 @@ class RegionalFixtureProvider:
             raise ProviderSchemaError(
                 f"instrument listed_on is required to derive instrument_id for {mic}:{symbol}"
             )
-        seed = f"{self.region.value}|{mic}|{symbol}|{instrument_listed_on.isoformat()}"
-        digest = b32encode(sha256(seed.encode("utf-8")).digest()).decode("ascii").lower()
-        return f"ins_{digest[:26]}"
+        try:
+            return normalize_instrument_symbol(
+                region=self.region,
+                venue_mic=mic,
+                local_symbol=symbol,
+                valid_from=instrument_listed_on,
+                provider_id=self.provider_id,
+            )
+        except CnHkNormalizationError as exc:
+            raise ProviderSchemaError(str(exc)) from exc
+
+    def _normalized_datetime(self, value: Any, path: str) -> datetime:
+        try:
+            return normalize_timestamp(region=self.region, value=_datetime(value, path)).utc
+        except CnHkNormalizationError as exc:
+            raise ProviderSchemaError(str(exc)) from exc
+
+    def _optional_normalized_datetime(self, raw: Mapping[str, Any], key: str) -> datetime | None:
+        if key not in raw or raw[key] is None:
+            return None
+        return self._normalized_datetime(raw[key], key)
+
+    def _normalized_trading_date(self, value: Any, path: str) -> date:
+        try:
+            return normalize_trading_date(region=self.region, value=_date(value, path))
+        except CnHkNormalizationError as exc:
+            raise ProviderSchemaError(str(exc)) from exc
+
+    def _normalized_unit(self, source_unit: Any, path: str) -> NormalizedUnit:
+        try:
+            return normalize_unit(
+                region=self.region, value="0", source_unit=_str(source_unit, path)
+            )
+        except CnHkNormalizationError as exc:
+            raise ProviderSchemaError(str(exc)) from exc
+
+    def _normalized_unit_value(self, value: Any, source_unit: Any, path: str) -> Decimal:
+        try:
+            return normalize_unit(
+                region=self.region,
+                value=_str(value, path),
+                source_unit=_str(source_unit, f"{path}.unit"),
+            ).value
+        except CnHkNormalizationError as exc:
+            raise ProviderSchemaError(str(exc)) from exc
+
+    def _optional_normalized_unit_value(
+        self, raw: Mapping[str, Any], value_key: str, unit_key: str
+    ) -> Decimal | None:
+        if value_key not in raw or raw[value_key] is None:
+            return None
+        return self._normalized_unit_value(raw[value_key], raw[unit_key], value_key)
 
     def _macro_series_id(self) -> str:
         return f"macro:{self.region.value}:{self.macro_authority}:{self.macro_code}"
