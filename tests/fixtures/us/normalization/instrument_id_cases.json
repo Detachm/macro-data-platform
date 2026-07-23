@@ -1,0 +1,16 @@
+[
+  {
+    "id": "SYM-ID-001",
+    "issuer_key": "cik0000320193",
+    "first_canonical_symbol": "XNAS:AAPL",
+    "first_valid_from": "2026-01-01",
+    "expected_instrument_id": "ins_us_d5c730c03dd6a4af"
+  },
+  {
+    "id": "SYM-ID-002",
+    "issuer_key": null,
+    "first_canonical_symbol": "XNAS:SPY",
+    "first_valid_from": "1993-01-29",
+    "expected_instrument_id": "ins_us_1506273ac6c0abcd"
+  }
+]
