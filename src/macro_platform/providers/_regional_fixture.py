@@ -426,7 +426,7 @@ class RegionalFixtureProvider:
         try:
             text = self._fixture_path.read_text(encoding="utf-8")
             if "<html" in text[:200].lower():
-                raise ProviderAuthorizationError("provider returned a login or risk-control page")
+                raise ProviderSchemaError("provider returned a login or risk-control page")
             payload = json.loads(text)
         except json.JSONDecodeError as exc:
             raise ProviderSchemaError("provider payload must be JSON") from exc
