@@ -97,7 +97,7 @@ async def test_empty_fixture_returns_complete_empty_page(
         ("timeout", ProviderTimeoutError),
         ("missing_fields", ProviderSchemaError),
         ("schema_changed", ProviderSchemaError),
-        ("html_login", ProviderSchemaError),
+        ("html_login", ProviderAuthorizationError),
         ("duplicate_page", ProviderCursorError),
     ],
 )
