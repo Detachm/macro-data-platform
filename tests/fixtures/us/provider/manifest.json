@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "offline_only": true,
+  "credentials": "none",
+  "fixtures": {
+    "success.json": ["PRV-001", "PRV-002", "PRV-005", "PRV-013", "PRV-014", "PIT"],
+    "dst_offset.json": ["PRV-012", "TIME-005"],
+    "empty.json": ["empty_page"],
+    "auth_failure.json": ["PRV-008"],
+    "forbidden.json": ["PRV-008"],
+    "rate_limited.json": ["PRV-007"],
+    "timeout.json": ["PRV-010"],
+    "missing_fields.json": ["PRV-009"],
+    "schema_changed.json": ["PRV-009", "PRV-020"],
+    "malformed_json.json": ["PRV-021"],
+    "html_login.json": ["PRV-019"],
+    "duplicate_page.json": ["PRV-003", "PRV-014"]
+  },
+  "not_applicable": {
+    "PRV-011": {
+      "reason": "The fixture adapter declares supports_point_in_time=true; a provider without historical PIT capability is outside this adapter's contract.",
+      "follow_up": "Any future live adapter that lacks historical PIT must add this case before it can be enabled."
+    }
+  }
+}

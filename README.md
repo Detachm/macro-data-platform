@@ -47,3 +47,21 @@ uv run pytest -m "not live" --cov=macro_platform --cov-report=term-missing
 - Docker Compose、CI、CODEOWNERS、PR/ADR/数据源模板。
 
 区域 provider 和 PostgreSQL 查询/写入实现当前是待实现插槽，默认 `EmptyDataRepository` 会返回空数据并在 EditorContext 中明确标注 `unavailable`。任何 provider 必须先补 fixture 和公共契约测试，不能让 API 临时直连上游。
+
+## US fixture contract evidence
+
+US fixture provider 的合同测试默认离线、无需真实凭据或数据库。在完成 `uv sync --dev` 后运行：
+
+```bash
+uv run pytest tests/unit tests/contract -m "not live" -q
+```
+
+如只复现 US provider 的共享合同证据，运行：
+
+```bash
+uv run pytest tests/contract/test_us_fixture_provider_contract.py -q
+```
+
+Fixture 文件和所覆盖的错误/时间场景记录在
+`tests/fixtures/us/provider/manifest.json`。默认 CI 不运行任何 live smoke；如需联网，必须遵循
+`docs/data-sources/us-mvp.md` 的 Phase 2 审批、凭据和限速要求。

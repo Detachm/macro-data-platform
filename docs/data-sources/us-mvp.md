@@ -394,6 +394,32 @@ Test IDs required downstream:
 - News：`NEWS-002`、`NEWS-003`、`NEWS-012`、`NEWS-013`、`NEWS-017`
 - PIT：all provider outputs assert `available_at <= as_of`
 
+### #7 US fixture contract evidence
+
+共享合同测试入口为 `tests/contract/test_us_fixture_provider_contract.py`，只使用
+`tests/fixtures/us/provider/` 下的合成离线 fixture；其受测试保护的
+`manifest.json` 声明所有 fixture 文件、覆盖场景和无凭据约束。复现命令：
+
+```bash
+uv run pytest tests/unit tests/contract -m "not live" -q
+```
+
+| Test ID | Evidence |
+|---|---|
+| `PRV-001`、`PRV-002`、`PRV-005`、`PRV-013` | 共享 suite 对全纵向切片的稳定输出、provenance、checksum 和 query 不变性断言。 |
+| `PRV-003`、`PRV-014`、`PRV-015`、`PRV-016` | cursor chain、跨页重复、空页阈值和无效 cursor fixture/unit tests。 |
+| `PRV-004` | shared contract test 验证 bars 的 `[start, end)` 边界。 |
+| `PRV-006` | mixed invalid record 被 quarantine，合法记录继续输出。 |
+| `PRV-007`～`PRV-010`、`PRV-019`～`PRV-021` | 离线 error fixture 必须抛显式错误，绝不能变成空页。 |
+| `PRV-011` | 不适用：本 fixture adapter 声明 `supports_point_in_time=true`；未来不支持历史 PIT 的 live adapter 在启用前必须新增该 case。 |
+| `PRV-012`、`TIME-005` | `dst_offset.json` 使用 `America/New_York` 夏令时 `09:30-04:00`，输出为 UTC 并保持正确 trading date。 |
+| `PRV-017`、`PRV-018` | canonical checksum / fixture-only `not_configured` health regression tests。 |
+| `NEWS-002`、`NEWS-003`、`NEWS-012`、`NEWS-013`、`NEWS-017` | canonical URL、标题 fingerprint、headline-only、空 vendor annotations、外部 LLM 权利清洗测试。 |
+| PIT | all pages with `available_at` use shared `available_at <= as_of` assertion. |
+
+默认 CI 不运行 live smoke；仅在 Phase 2 获得来源批准和显式凭据后，才可执行
+`pytest -m live` 中定义的最小请求。
+
 Fixture policy:
 
 - Use synthetic values or heavily transformed public facts; no vendor examples copied verbatim.
