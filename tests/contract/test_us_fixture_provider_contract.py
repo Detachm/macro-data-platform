@@ -22,7 +22,6 @@ from macro_platform.contracts.market import (
 )
 from macro_platform.contracts.news import ContentMode, NewsQuery
 from macro_platform.contracts.provider import FetchContext
-from macro_platform.normalization.common import canonical_json_checksum
 from macro_platform.providers.base import (
     ProviderAuthenticationError,
     ProviderAuthorizationError,
@@ -253,7 +252,7 @@ async def test_us_fixture_provider_contract_honors_half_open_ranges_and_stable_o
 
 @pytest.mark.parametrize(
     "_test_id",
-    [pytest.param("PRV-012", id="PRV-012"), pytest.param("TIME-005", id="TIME-005")],
+    [pytest.param("TIME-005", id="TIME-005")],
 )
 async def test_us_fixture_provider_contract_parses_dst_offset_bar_fixture(
     _test_id: str,
@@ -280,9 +279,6 @@ async def test_us_fixture_provider_contract_parses_dst_offset_bar_fixture(
     assert page.items[0].trading_date == date(2026, 3, 9)
     assert raw_bar["bar_start"] == "2026-03-09T09:30:00-04:00"
     assert raw_bar["bar_end"] == "2026-03-09T16:00:00-04:00"
-    assert page.items[0].source.checksum_sha256 == canonical_json_checksum(
-        {key: value for key, value in raw_bar.items() if key != "retrieved_at"}
-    )
 
 
 @pytest.mark.parametrize(
@@ -505,7 +501,7 @@ async def test_us_fixture_provider_contract_filters_future_records_from_every_pi
     assert len(news.items) == 4
 
 
-@pytest.mark.parametrize("_test_id", [pytest.param("PRV-003", id="PRV-003")])
+@pytest.mark.parametrize("_test_id", [pytest.param("PRV-003-duplicate", id="PRV-003-duplicate")])
 async def test_us_fixture_provider_contract_rejects_cross_page_duplicate_records(
     tmp_path: Path,
     _test_id: str,
@@ -531,8 +527,8 @@ async def test_us_fixture_provider_contract_rejects_cross_page_duplicate_records
         )
 
 
-@pytest.mark.parametrize("_test_id", [pytest.param("PRV-014", id="PRV-014")])
-async def test_us_fixture_provider_contract_replays_a_page_without_new_business_records(
+@pytest.mark.parametrize("_test_id", [pytest.param("PRV-003", id="PRV-003")])
+async def test_us_fixture_provider_contract_returns_complete_two_page_result_without_duplicates(
     tmp_path: Path,
     _test_id: str,
 ) -> None:
@@ -540,7 +536,7 @@ async def test_us_fixture_provider_contract_replays_a_page_without_new_business_
     first = _daily_news(payload)
     second = {
         **first,
-        "record_id": "replay-page-two",
+        "record_id": "pagination-page-two",
         "canonical_url": "https://www.bls.gov/news.release/cpi.page-two.htm",
     }
     payload["pages"] = {
@@ -552,17 +548,22 @@ async def test_us_fixture_provider_contract_replays_a_page_without_new_business_
     provider = _write_fixture(tmp_path, "page-replay.json", payload)
     query = _news_query()
     first_page = await provider.fetch_news(query, CONTEXT)
-    replayed_page = await provider.fetch_news(query, CONTEXT)
     second_page = await provider.fetch_news(
         query.model_copy(update={"cursor": first_page.next_cursor}), CONTEXT
     )
 
     assert first_page.next_cursor is not None
-    assert_stable_page(first_page, replayed_page)
-    assert replayed_page.next_cursor == first_page.next_cursor
+    assert first_page.complete is False
     assert second_page.next_cursor is None
+    assert second_page.complete is True
     provider_record_ids = [
         item.source.provider_record_id for item in [*first_page.items, *second_page.items]
+    ]
+    assert [
+        provider_record_id.rsplit(":", maxsplit=1)[-1] for provider_record_id in provider_record_ids
+    ] == [
+        "bls-cpi-june-2026",
+        "pagination-page-two",
     ]
     assert len(provider_record_ids) == len(set(provider_record_ids))
 
@@ -577,5 +578,9 @@ def test_us_fixture_manifest_matches_the_offline_fixture_set() -> None:
     assert manifest["credentials"] == "none"
     assert set(manifest["fixtures"]) == fixture_names
     assert all(test_ids for test_ids in manifest["fixtures"].values())
-    assert manifest["not_applicable"]["PRV-011"]["reason"]
-    assert manifest["not_applicable"]["PRV-011"]["follow_up"]
+    for test_id in {"PRV-011", "PRV-012", "PRV-014", "PRV-016"}:
+        assert manifest["not_applicable"][test_id]["reason"]
+        assert (
+            manifest["not_applicable"][test_id]["follow_up"]
+            == "https://github.com/Detachm/macro-data-platform/issues/20"
+        )

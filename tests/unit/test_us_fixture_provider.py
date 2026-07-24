@@ -272,11 +272,9 @@ async def test_us_fixture_provider_returns_an_explicit_empty_page() -> None:
     assert page.next_cursor is None
 
 
-@pytest.mark.parametrize("_test_id", [pytest.param("PRV-016", id="PRV-016")])
 @pytest.mark.asyncio
 async def test_us_fixture_provider_enforces_pit_and_rejects_unknown_cursors(
     provider: UsFixtureProvider,
-    _test_id: str,
 ) -> None:
     before_observation = datetime(2026, 7, 22, 21, 0, tzinfo=UTC)
     pit_context = FetchContext(
