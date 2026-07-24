@@ -12,6 +12,7 @@ from macro_platform.contracts.macro import (
     MacroObservationQuery,
     MacroReleaseQuery,
     MacroSeriesQuery,
+    RevisionPolicy,
 )
 from macro_platform.contracts.market import (
     Adjustment,
@@ -69,21 +70,23 @@ async def test_us_fixture_provider_maps_all_vertical_slice_datasets(
     )
     assert repeated_instruments.items == instruments.items
 
-    bars = await provider.fetch_bars(
-        BarQuery(
-            instrument_ids=[instrument.instrument_id],
-            interval=Interval.D1,
-            start=datetime(2026, 7, 22, tzinfo=UTC),
-            end=datetime(2026, 7, 23, tzinfo=UTC),
-            adjustment=Adjustment.RAW,
-            as_of=NOW,
-        ),
-        CONTEXT,
+    bar_query = BarQuery(
+        instrument_ids=[instrument.instrument_id],
+        interval=Interval.D1,
+        start=datetime(2026, 7, 22, tzinfo=UTC),
+        end=datetime(2026, 7, 23, tzinfo=UTC),
+        adjustment=Adjustment.RAW,
+        as_of=NOW,
     )
+    original_bar_query = bar_query.model_copy(deep=True)
+    bars = await provider.fetch_bars(bar_query, CONTEXT)
+    repeated_bars = await provider.fetch_bars(bar_query, CONTEXT)
     assert len(bars.items) == 1
     assert bars.items[0].trading_date == date(2026, 7, 22)
     assert bars.items[0].bar_start == datetime(2026, 7, 22, 13, 30, tzinfo=UTC)
     assert bars.items[0].available_at <= NOW
+    assert repeated_bars.items == bars.items
+    assert bar_query == original_bar_query
 
     observations = await provider.fetch_market_observations(
         MarketObservationQuery(
@@ -248,3 +251,213 @@ async def test_us_fixture_source_checksum_excludes_retrieved_at(tmp_path: Path) 
         original_page.items[0].source.checksum_sha256
         == changed_page.items[0].source.checksum_sha256
     )
+
+
+@pytest.mark.asyncio
+async def test_us_fixture_provider_keeps_optional_issuer_enrichment_out_of_id_seed(
+    tmp_path: Path,
+) -> None:
+    source_fixture = UsFixtureProvider.fixture_dir / "success.json"
+    changed_fixture = tmp_path / "missing-issuer-enrichment.json"
+    payload = json.loads(source_fixture.read_text(encoding="utf-8"))
+    payload["pages"]["instruments"]["items"][0].pop("issuer_key")
+    payload["pages"]["bars"]["items"][0].pop("issuer_key")
+    changed_fixture.write_text(json.dumps(payload), encoding="utf-8")
+
+    original = UsFixtureProvider.from_fixture("success", clock=lambda: NOW)
+    changed = UsFixtureProvider(changed_fixture, clock=lambda: NOW)
+    query = InstrumentQuery(regions={Region.US})
+
+    original_instrument = (await original.fetch_instruments(query, CONTEXT)).items[0]
+    changed_instrument = (await changed.fetch_instruments(query, CONTEXT)).items[0]
+    changed_bars = await changed.fetch_bars(
+        BarQuery(
+            instrument_ids=[changed_instrument.instrument_id],
+            interval=Interval.D1,
+            start=datetime(2026, 7, 22, tzinfo=UTC),
+            end=datetime(2026, 7, 23, tzinfo=UTC),
+            as_of=NOW,
+        ),
+        CONTEXT,
+    )
+
+    assert changed_instrument.instrument_id == original_instrument.instrument_id
+    assert len(changed_bars.items) == 1
+
+
+@pytest.mark.asyncio
+async def test_us_fixture_provider_follows_fixture_cursor_chain(tmp_path: Path) -> None:
+    source_fixture = UsFixtureProvider.fixture_dir / "success.json"
+    paginated_fixture = tmp_path / "paginated.json"
+    payload = json.loads(source_fixture.read_text(encoding="utf-8"))
+    first = payload["pages"]["instruments"]["items"][0]
+    second = {
+        **first,
+        "record_id": "nasdaq-msft",
+        "source_url": "https://example.test/us/instruments/msft",
+        "symbol": "msft",
+        "issuer_key": "cik0000789019",
+        "first_canonical_symbol": "XNAS:MSFT",
+        "first_valid_from": "1986-03-13",
+        "name": "Microsoft Corporation",
+        "listed_on": "1986-03-13",
+        "valid_from": "1986-03-13",
+    }
+    payload["pages"] = {
+        "instruments": [
+            {"cursor": None, "next_cursor": "instrument-page-2", "items": [first]},
+            {"cursor": "instrument-page-2", "next_cursor": None, "items": [second]},
+        ]
+    }
+    paginated_fixture.write_text(json.dumps(payload), encoding="utf-8")
+    provider = UsFixtureProvider(paginated_fixture, clock=lambda: NOW)
+
+    first_page = await provider.fetch_instruments(InstrumentQuery(regions={Region.US}), CONTEXT)
+    assert first_page.next_cursor is not None
+    with pytest.raises(ProviderCursorError, match="query snapshot"):
+        await provider.fetch_instruments(
+            InstrumentQuery(
+                regions={Region.US},
+                venues={"XNYS"},
+                cursor=first_page.next_cursor,
+            ),
+            CONTEXT,
+        )
+    second_page = await provider.fetch_instruments(
+        InstrumentQuery(regions={Region.US}, cursor=first_page.next_cursor), CONTEXT
+    )
+
+    assert [item.canonical_symbol for item in first_page.items] == ["XNAS:AAPL"]
+    assert first_page.complete is False
+    assert [item.canonical_symbol for item in second_page.items] == ["XNAS:MSFT"]
+    assert second_page.next_cursor is None
+    assert second_page.complete is True
+
+
+@pytest.mark.asyncio
+async def test_us_fixture_provider_quarantines_bad_records_when_a_page_has_valid_records(
+    tmp_path: Path,
+) -> None:
+    source_fixture = UsFixtureProvider.fixture_dir / "success.json"
+    mixed_fixture = tmp_path / "mixed-records.json"
+    payload = json.loads(source_fixture.read_text(encoding="utf-8"))
+    payload["pages"]["instruments"]["items"].append("not-a-provider-record")
+    mixed_fixture.write_text(json.dumps(payload), encoding="utf-8")
+    provider = UsFixtureProvider(mixed_fixture, clock=lambda: NOW)
+
+    page = await provider.fetch_instruments(InstrumentQuery(regions={Region.US}), CONTEXT)
+
+    assert [item.canonical_symbol for item in page.items] == ["XNAS:AAPL"]
+    assert [warning.code for warning in page.warnings] == ["PROVIDER_RECORD_QUARANTINED"]
+
+
+@pytest.mark.asyncio
+async def test_us_fixture_provider_rejects_unknown_page_datasets(tmp_path: Path) -> None:
+    source_fixture = UsFixtureProvider.fixture_dir / "success.json"
+    changed_fixture = tmp_path / "unknown-page-dataset.json"
+    payload = json.loads(source_fixture.read_text(encoding="utf-8"))
+    payload["pages"]["unexpected_dataset"] = {"next_cursor": None, "items": []}
+    changed_fixture.write_text(json.dumps(payload), encoding="utf-8")
+    provider = UsFixtureProvider(changed_fixture, clock=lambda: NOW)
+
+    with pytest.raises(ProviderSchemaError, match="unexpected fields at pages"):
+        await provider.fetch_instruments(InstrumentQuery(regions={Region.US}), CONTEXT)
+
+
+@pytest.mark.asyncio
+async def test_us_fixture_provider_rejects_an_empty_page_that_advances_cursor(
+    tmp_path: Path,
+) -> None:
+    source_fixture = UsFixtureProvider.fixture_dir / "success.json"
+    changed_fixture = tmp_path / "empty-page-with-cursor.json"
+    payload = json.loads(source_fixture.read_text(encoding="utf-8"))
+    payload["pages"] = {"instruments": {"next_cursor": "again", "items": []}}
+    changed_fixture.write_text(json.dumps(payload), encoding="utf-8")
+    provider = UsFixtureProvider(changed_fixture, clock=lambda: NOW)
+
+    with pytest.raises(ProviderCursorError, match="empty fixture page") as error:
+        await provider.fetch_instruments(InstrumentQuery(regions={Region.US}), CONTEXT)
+
+    assert error.value.code == "INVALID_PAGINATION"
+
+
+@pytest.mark.asyncio
+async def test_us_fixture_provider_reports_missing_fixture_as_not_configured(
+    tmp_path: Path,
+) -> None:
+    provider = UsFixtureProvider(tmp_path / "not-configured.json", clock=lambda: NOW)
+
+    health = await provider.healthcheck()
+
+    assert health.status == "not_configured"
+    assert health.checked_at == NOW
+
+
+@pytest.mark.asyncio
+async def test_us_fixture_provider_applies_macro_revision_policy(tmp_path: Path) -> None:
+    source_fixture = UsFixtureProvider.fixture_dir / "success.json"
+    revisions_fixture = tmp_path / "macro-revisions.json"
+    payload = json.loads(source_fixture.read_text(encoding="utf-8"))
+    latest = payload["pages"]["macro_observations"]["items"][0]
+    first = {
+        **latest,
+        "record_id": "bls-cpi-all-items-2026-06-first",
+        "provider_updated_at": "2026-07-10T12:30:00Z",
+        "value": "2.6",
+        "released_at": "2026-07-10T12:30:00Z",
+        "available_at": "2026-07-10T12:31:00Z",
+        "vintage_id": "2026-07-10T12:30:00Z",
+        "revision_no": 0,
+    }
+    latest.update(
+        {
+            "record_id": "bls-cpi-all-items-2026-06-revised",
+            "provider_updated_at": "2026-07-17T12:30:00Z",
+            "value": "2.7",
+            "released_at": "2026-07-17T12:30:00Z",
+            "available_at": "2026-07-17T12:31:00Z",
+            "vintage_id": "2026-07-17T12:30:00Z",
+            "revision_no": 1,
+        }
+    )
+    payload["pages"]["macro_observations"]["items"] = [latest, first]
+    revisions_fixture.write_text(json.dumps(payload), encoding="utf-8")
+    provider = UsFixtureProvider(revisions_fixture, clock=lambda: NOW)
+
+    base_query = {
+        "series_ids": ["macro:US:BLS:CPI_ALL_ITEMS"],
+        "period_from": date(2026, 6, 1),
+        "period_to": date(2026, 6, 30),
+        "as_of": NOW,
+    }
+    latest_page = await provider.fetch_macro_observations(
+        MacroObservationQuery(**base_query), CONTEXT
+    )
+    first_page = await provider.fetch_macro_observations(
+        MacroObservationQuery(**base_query, revision_policy=RevisionPolicy.FIRST_RELEASE), CONTEXT
+    )
+    all_page = await provider.fetch_macro_observations(
+        MacroObservationQuery(**base_query, revision_policy=RevisionPolicy.ALL_VINTAGES), CONTEXT
+    )
+
+    assert [item.revision_no for item in latest_page.items] == [1]
+    assert [item.revision_no for item in first_page.items] == [0]
+    assert [item.revision_no for item in all_page.items] == [0, 1]
+
+
+@pytest.mark.asyncio
+async def test_us_fixture_provider_honors_news_entity_filters(provider: UsFixtureProvider) -> None:
+    matching_query = NewsQuery(
+        regions={Region.US},
+        published_from=datetime(2026, 7, 1, tzinfo=UTC),
+        published_to=datetime(2026, 8, 1, tzinfo=UTC),
+        as_of=NOW,
+        entity_ids=["cik0000320193"],
+    )
+    non_matching_query = matching_query.model_copy(update={"entity_ids": ["cik0000789019"]})
+
+    matching_page = await provider.fetch_news(matching_query, CONTEXT)
+    non_matching_page = await provider.fetch_news(non_matching_query, CONTEXT)
+
+    assert [entity.entity_id for entity in matching_page.items[0].entities] == ["cik0000320193"]
+    assert non_matching_page.items == []

@@ -17,6 +17,7 @@ from macro_platform.contracts.common import (
     SourceRef,
     StrictModel,
     UsageRights,
+    WarningItem,
 )
 from macro_platform.contracts.macro import (
     Frequency,
@@ -26,6 +27,7 @@ from macro_platform.contracts.macro import (
     MacroReleaseQuery,
     MacroSeries,
     MacroSeriesQuery,
+    RevisionPolicy,
 )
 from macro_platform.contracts.market import (
     Adjustment,
@@ -39,7 +41,7 @@ from macro_platform.contracts.market import (
     MarketObservationQuery,
     ScopeType,
 )
-from macro_platform.contracts.news import ContentMode, NewsEvent, NewsQuery, SourceTier
+from macro_platform.contracts.news import ContentMode, EntityRef, NewsEvent, NewsQuery, SourceTier
 from macro_platform.contracts.provider import (
     Dataset,
     FetchContext,
@@ -61,7 +63,6 @@ from macro_platform.providers.base import (
     ProviderAuthenticationError,
     ProviderAuthorizationError,
     ProviderCursorError,
-    ProviderError,
     ProviderRateLimitError,
     ProviderSchemaError,
     ProviderTimeoutError,
@@ -82,6 +83,8 @@ US_ROLE_BINDINGS: dict[str, str] = {
 
 _FIXTURE_DIR = Path(__file__).resolve().parents[4] / "tests" / "fixtures" / "us" / "provider"
 _PAGE_KEYS = frozenset({"next_cursor", "items"})
+_PAGINATED_PAGE_KEYS = _PAGE_KEYS | {"cursor"}
+_DATASET_PAGE_KEYS = frozenset(dataset.value for dataset in Dataset)
 _ENVELOPE_KEYS = frozenset({"status", "fetched_at", "source_watermark", "pages"})
 _ERROR_ENVELOPE_KEYS = frozenset({"status", "error"})
 _ERROR_KEYS = frozenset({"code", "message", "retry_after_seconds"})
@@ -208,11 +211,13 @@ _NEWS_KEYS = _SOURCE_KEYS | frozenset(
         "first_seen_at",
         "available_at",
         "availability_basis",
+        "entities",
         "topics",
         "rights",
         "quality_flags",
     }
 )
+_ENTITY_KEYS = frozenset({"entity_type", "entity_id", "mention", "confidence"})
 _RIGHTS_KEYS = frozenset(
     {
         "storage_allowed",
@@ -277,8 +282,7 @@ class UsFixtureProvider:
     async def fetch_instruments(
         self, query: InstrumentQuery, context: FetchContext
     ) -> ProviderPage[Instrument]:
-        _reject_cursor(query.cursor)
-        page = self._page("instruments", self._parse_instrument)
+        page = self._page_for_query(Dataset.INSTRUMENTS, self._parse_instrument, query, context)
         items = [
             item
             for item in page.items
@@ -296,12 +300,11 @@ class UsFixtureProvider:
         )
 
     async def fetch_bars(self, query: BarQuery, context: FetchContext) -> ProviderPage[MarketBar]:
-        _reject_cursor(query.cursor)
         if query.interval is not Interval.D1 or query.adjustment is not Adjustment.RAW:
             raise UnsupportedCapabilityError(
                 "the US fixture vertical slice supports raw daily bars only"
             )
-        page = self._page("bars", self._parse_bar)
+        page = self._page_for_query(Dataset.BARS, self._parse_bar, query, context)
         items = [
             item
             for item in page.items
@@ -320,8 +323,12 @@ class UsFixtureProvider:
     async def fetch_market_observations(
         self, query: MarketObservationQuery, context: FetchContext
     ) -> ProviderPage[MarketObservation]:
-        _reject_cursor(query.cursor)
-        page = self._page("market_observations", self._parse_market_observation)
+        page = self._page_for_query(
+            Dataset.MARKET_OBSERVATIONS,
+            self._parse_market_observation,
+            query,
+            context,
+        )
         items = [
             item
             for item in page.items
@@ -340,8 +347,7 @@ class UsFixtureProvider:
     async def fetch_macro_series(
         self, query: MacroSeriesQuery, context: FetchContext
     ) -> ProviderPage[MacroSeries]:
-        _reject_cursor(query.cursor)
-        page = self._page("macro_series", self._parse_macro_series)
+        page = self._page_for_query(Dataset.MACRO_SERIES, self._parse_macro_series, query, context)
         items = [
             item
             for item in page.items
@@ -354,8 +360,12 @@ class UsFixtureProvider:
     async def fetch_macro_observations(
         self, query: MacroObservationQuery, context: FetchContext
     ) -> ProviderPage[MacroObservation]:
-        _reject_cursor(query.cursor)
-        page = self._page("macro_observations", self._parse_macro_observation)
+        page = self._page_for_query(
+            Dataset.MACRO_OBSERVATIONS,
+            self._parse_macro_observation,
+            query,
+            context,
+        )
         items = [
             item
             for item in page.items
@@ -363,17 +373,25 @@ class UsFixtureProvider:
             and query.period_from <= item.period_start <= query.period_to
             and _is_available(item.available_at, query.as_of, context)
         ]
+        selected_revisions = _select_macro_revisions(items, query.revision_policy)
         return _limited_page(
             page,
-            sorted(items, key=lambda item: (item.period_end, item.series_id, item.available_at)),
+            sorted(
+                selected_revisions,
+                key=lambda item: (item.period_end, item.series_id, item.available_at),
+            ),
             query.limit,
         )
 
     async def fetch_macro_releases(
         self, query: MacroReleaseQuery, context: FetchContext
     ) -> ProviderPage[MacroRelease]:
-        _reject_cursor(query.cursor)
-        page = self._page("macro_releases", self._parse_macro_release)
+        page = self._page_for_query(
+            Dataset.MACRO_RELEASES,
+            self._parse_macro_release,
+            query,
+            context,
+        )
         items = [
             item
             for item in page.items
@@ -386,8 +404,7 @@ class UsFixtureProvider:
         )
 
     async def fetch_news(self, query: NewsQuery, context: FetchContext) -> ProviderPage[NewsEvent]:
-        _reject_cursor(query.cursor)
-        page = self._page("news", self._parse_news)
+        page = self._page_for_query(Dataset.NEWS, self._parse_news, query, context)
         items = [
             item
             for item in page.items
@@ -396,6 +413,12 @@ class UsFixtureProvider:
             and _is_available(item.available_at, query.as_of, context)
             and (not query.languages or item.language in query.languages)
             and (not query.source_tiers or item.source_tier in query.source_tiers)
+            and (
+                not query.entity_ids
+                or bool(
+                    set(query.entity_ids).intersection(entity.entity_id for entity in item.entities)
+                )
+            )
             and (not query.topics or bool(set(query.topics).intersection(item.topics)))
             and (query.include_superseded or item.supersedes_news_id is None)
             and _content_satisfies(query.content_mode, item.content_mode)
@@ -406,43 +429,87 @@ class UsFixtureProvider:
             query.limit,
         )
 
+    def _page_for_query[T: StrictModel](
+        self,
+        dataset: Dataset,
+        parser: Callable[[Mapping[str, object]], T],
+        query: StrictModel,
+        context: FetchContext,
+    ) -> ProviderPage[T]:
+        fingerprint = _cursor_fingerprint(query, context)
+        return self._page(
+            dataset,
+            parser,
+            cursor=_decode_cursor(query.model_dump().get("cursor"), dataset, fingerprint),
+            cursor_fingerprint=fingerprint,
+        )
+
     def _page[T: StrictModel](
         self,
-        dataset: str,
+        dataset: Dataset,
         parser: Callable[[Mapping[str, object]], T],
+        *,
+        cursor: str | None,
+        cursor_fingerprint: str,
     ) -> ProviderPage[T]:
         payload = self._payload()
         _ensure_keys(payload, _ENVELOPE_KEYS, {"status", "fetched_at", "pages"}, "$")
         pages = _mapping(_required(payload, "pages", "pages"), "pages")
-        raw_page = _mapping(_required(pages, dataset, f"pages.{dataset}"), f"pages.{dataset}")
-        _ensure_keys(raw_page, _PAGE_KEYS, {"next_cursor", "items"}, f"pages.{dataset}")
+        _ensure_keys(pages, _DATASET_PAGE_KEYS, {dataset.value}, "pages")
+        raw_page = _fixture_page(pages, dataset, cursor)
         raw_items = _list(
-            _required(raw_page, "items", f"pages.{dataset}.items"), f"pages.{dataset}.items"
+            _required(raw_page, "items", f"pages.{dataset.value}.items"),
+            f"pages.{dataset.value}.items",
         )
+        next_cursor = _optional_str(raw_page, "next_cursor")
+        if not raw_items and next_cursor is not None:
+            raise ProviderCursorError(
+                f"empty fixture page for {dataset.value} must not advance to another cursor",
+                code="INVALID_PAGINATION",
+            )
         self._ensure_no_duplicate_records(raw_items, dataset)
-        try:
-            items = [parser(_mapping(raw_item, f"pages.{dataset}.items")) for raw_item in raw_items]
-        except ProviderError:
-            raise
-        except (TimezoneRequiredError, UsNormalizationError, ValueError) as exc:
-            raise ProviderSchemaError(f"invalid {dataset} fixture: {exc}") from exc
+        items: list[T] = []
+        warnings: list[WarningItem] = []
+        for index, raw_item in enumerate(raw_items):
+            try:
+                item = parser(_mapping(raw_item, f"pages.{dataset.value}.items[{index}]"))
+            except ProviderSchemaError as exc:
+                warnings.append(_quarantine_warning(dataset, index, exc))
+            except (TimezoneRequiredError, UsNormalizationError, ValueError) as exc:
+                warnings.append(
+                    _quarantine_warning(
+                        dataset,
+                        index,
+                        ProviderSchemaError(f"invalid {dataset.value} fixture: {exc}"),
+                    )
+                )
+            else:
+                items.append(item)
+        if raw_items and not items:
+            raise ProviderSchemaError(f"all records in {dataset.value} fixture page were rejected")
         return ProviderPage[T](
             items=items,
-            next_cursor=_optional_str(raw_page, "next_cursor"),
+            next_cursor=(
+                _encode_cursor(dataset, next_cursor, cursor_fingerprint)
+                if next_cursor is not None
+                else None
+            ),
             source_watermark=_optional_str(payload, "source_watermark"),
             fetched_at=_datetime(_required(payload, "fetched_at", "fetched_at"), "fetched_at"),
-            complete=_optional_str(raw_page, "next_cursor") is None,
+            complete=next_cursor is None,
+            warnings=warnings,
         )
 
-    def _ensure_no_duplicate_records(self, raw_items: Sequence[object], dataset: str) -> None:
+    def _ensure_no_duplicate_records(self, raw_items: Sequence[object], dataset: Dataset) -> None:
         record_ids = [
-            _str(
-                _required(_mapping(item, dataset), "record_id", f"{dataset}.record_id"), "record_id"
-            )
+            record_id
             for item in raw_items
+            if isinstance(item, dict)
+            and isinstance((record_id := item.get("record_id")), str)
+            and record_id.strip()
         ]
         if len(record_ids) != len(set(record_ids)):
-            raise ProviderCursorError(f"duplicate record id in {dataset} fixture page")
+            raise ProviderCursorError(f"duplicate record id in {dataset.value} fixture page")
 
     def _payload(self) -> Mapping[str, object]:
         try:
@@ -492,7 +559,14 @@ class UsFixtureProvider:
             raw,
             _INSTRUMENT_KEYS,
             _INSTRUMENT_KEYS
-            - {"listed_on", "delisted_on", "lot_size", "valid_to", "provider_updated_at"},
+            - {
+                "issuer_key",
+                "listed_on",
+                "delisted_on",
+                "lot_size",
+                "valid_to",
+                "provider_updated_at",
+            },
             "instrument",
         )
         alias = _us_alias(raw, "instrument")
@@ -524,7 +598,10 @@ class UsFixtureProvider:
 
     def _parse_bar(self, raw: Mapping[str, object]) -> MarketBar:
         _ensure_keys(
-            raw, _BAR_KEYS, _BAR_KEYS - {"volume", "turnover", "provider_updated_at"}, "bar"
+            raw,
+            _BAR_KEYS,
+            _BAR_KEYS - {"issuer_key", "volume", "turnover", "provider_updated_at"},
+            "bar",
         )
         alias = _us_alias(raw, "bar")
         bar_start = _datetime(_required(raw, "bar_start", "bar.bar_start"), "bar.bar_start")
@@ -852,6 +929,7 @@ class UsFixtureProvider:
                 )
             ),
             regions=[Region.US],
+            entities=_news_entities(_required(raw, "entities", "news.entities")),
             topics=_str_list(_required(raw, "topics", "news.topics"), "news.topics"),
             content_hash_sha256=canonical_json_checksum(
                 {"title": title, "summary": summary, "url": canonical_url}
@@ -896,9 +974,92 @@ def register_us_provider_roles(registry: ProviderRegistry, provider: UsFixturePr
         registry.bind_role(role, provider_id)
 
 
+def _cursor_fingerprint(query: StrictModel, context: FetchContext) -> str:
+    query_payload = query.model_dump()
+    query_payload.pop("cursor", None)
+    return canonical_json_checksum(
+        {
+            "query": _canonical_cursor_value(query_payload),
+            "context_as_of": context.as_of.isoformat(),
+            "cursor_version": "fixture-v1",
+        }
+    )
+
+
+def _canonical_cursor_value(value: object) -> object:
+    if isinstance(value, dict):
+        return {key: _canonical_cursor_value(item) for key, item in value.items()}
+    if isinstance(value, set):
+        return sorted(
+            (_canonical_cursor_value(item) for item in value),
+            key=canonical_json_checksum,
+        )
+    if isinstance(value, list):
+        return [_canonical_cursor_value(item) for item in value]
+    return value
+
+
+def _encode_cursor(dataset: Dataset, raw_cursor: str, fingerprint: str) -> str:
+    return f"fixture-v1:{dataset.value}:{fingerprint}:{raw_cursor}"
+
+
+def _decode_cursor(cursor: object, dataset: Dataset, fingerprint: str) -> str | None:
+    if cursor is None:
+        return None
+    if not isinstance(cursor, str):
+        raise ProviderCursorError("fixture cursor must be a string")
+    try:
+        version, encoded_dataset, encoded_fingerprint, raw_cursor = cursor.split(":", maxsplit=3)
+    except ValueError as exc:
+        raise ProviderCursorError("fixture cursor is malformed") from exc
+    if (
+        version != "fixture-v1"
+        or encoded_dataset != dataset.value
+        or encoded_fingerprint != fingerprint
+        or not raw_cursor
+    ):
+        raise ProviderCursorError("fixture cursor is not valid for this query snapshot")
+    return raw_cursor
+
+
+def _fixture_page(
+    pages: Mapping[str, object], dataset: Dataset, cursor: str | None
+) -> Mapping[str, object]:
+    raw_dataset_page = _required(pages, dataset.value, f"pages.{dataset.value}")
+    if isinstance(raw_dataset_page, dict):
+        if cursor is not None:
+            raise ProviderCursorError(
+                f"fixture dataset {dataset.value} has no continuation cursor: {cursor}"
+            )
+        raw_page = _mapping(raw_dataset_page, f"pages.{dataset.value}")
+        _ensure_keys(raw_page, _PAGE_KEYS, _PAGE_KEYS, f"pages.{dataset.value}")
+        return raw_page
+
+    raw_page_sequence = _list(raw_dataset_page, f"pages.{dataset.value}")
+    for index, raw_page_value in enumerate(raw_page_sequence):
+        raw_page = _mapping(raw_page_value, f"pages.{dataset.value}[{index}]")
+        _ensure_keys(
+            raw_page,
+            _PAGINATED_PAGE_KEYS,
+            _PAGINATED_PAGE_KEYS,
+            f"pages.{dataset.value}[{index}]",
+        )
+        if _optional_str(raw_page, "cursor") == cursor:
+            return raw_page
+    raise ProviderCursorError(f"unknown fixture cursor for {dataset.value}: {cursor}")
+
+
+def _quarantine_warning(dataset: Dataset, index: int, error: ProviderSchemaError) -> WarningItem:
+    return WarningItem(
+        code="PROVIDER_RECORD_QUARANTINED",
+        message=str(error)[:500],
+        scope=f"{dataset.value}[{index}]",
+    )
+
+
 def _us_alias(raw: Mapping[str, object], path: str) -> Any:
     identity = UsInstrumentIdentity(
-        issuer_key=_str(_required(raw, "issuer_key", f"{path}.issuer_key"), f"{path}.issuer_key"),
+        issuer_key=_optional_str(raw, "issuer_key"),
         first_canonical_symbol=_str(
             _required(raw, "first_canonical_symbol", f"{path}.first_canonical_symbol"),
             f"{path}.first_canonical_symbol",
@@ -915,6 +1076,39 @@ def _us_alias(raw: Mapping[str, object], path: str) -> Any:
         valid_to=_optional_date(raw, "valid_to"),
         instrument_identity=identity,
     )
+
+
+def _news_entities(value: object) -> list[EntityRef]:
+    entities: list[EntityRef] = []
+    for index, raw_entity in enumerate(_list(value, "news.entities")):
+        entity = _mapping(raw_entity, f"news.entities[{index}]")
+        _ensure_keys(
+            entity,
+            _ENTITY_KEYS,
+            _ENTITY_KEYS - {"mention"},
+            f"news.entities[{index}]",
+        )
+        entities.append(
+            EntityRef(
+                entity_type=cast(
+                    Any,
+                    _str(
+                        _required(entity, "entity_type", f"news.entities[{index}].entity_type"),
+                        f"news.entities[{index}].entity_type",
+                    ),
+                ),
+                entity_id=_str(
+                    _required(entity, "entity_id", f"news.entities[{index}].entity_id"),
+                    f"news.entities[{index}].entity_id",
+                ),
+                mention=_optional_str(entity, "mention"),
+                confidence=_decimal(
+                    _required(entity, "confidence", f"news.entities[{index}].confidence"),
+                    f"news.entities[{index}].confidence",
+                ),
+            )
+        )
+    return entities
 
 
 def _source(raw: Mapping[str, object], *, source_symbol: str | None = None) -> SourceRef:
@@ -963,15 +1157,50 @@ def _unit_value(
     return normalize_us_value(raw_value, unit_hint=unit)
 
 
+def _select_macro_revisions(
+    items: list[MacroObservation], revision_policy: RevisionPolicy
+) -> list[MacroObservation]:
+    if revision_policy is RevisionPolicy.ALL_VINTAGES:
+        return items
+
+    selected: dict[tuple[str, date], MacroObservation] = {}
+    for item in items:
+        key = (item.series_id, item.period_end)
+        current = selected.get(key)
+        if current is None:
+            selected[key] = item
+            continue
+        if revision_policy is RevisionPolicy.FIRST_RELEASE:
+            if (item.revision_no, item.available_at, item.observation_id) < (
+                current.revision_no,
+                current.available_at,
+                current.observation_id,
+            ):
+                selected[key] = item
+        elif (item.revision_no, item.available_at, item.observation_id) > (
+            current.revision_no,
+            current.available_at,
+            current.observation_id,
+        ):
+            selected[key] = item
+    return list(selected.values())
+
+
 def _limited_page[T: StrictModel](
     page: ProviderPage[T], items: list[T], limit: int
 ) -> ProviderPage[T]:
+    if len(items) > limit:
+        raise UnsupportedCapabilityError(
+            "fixture page exceeds query limit; request a larger limit or use an approved "
+            "fixture cursor"
+        )
     return ProviderPage[T](
-        items=items[:limit],
-        next_cursor=None,
+        items=items,
+        next_cursor=page.next_cursor,
         source_watermark=page.source_watermark,
         fetched_at=page.fetched_at,
-        complete=True,
+        complete=page.complete,
+        warnings=page.warnings,
     )
 
 
@@ -981,11 +1210,6 @@ def _is_active_on(item: Instrument, active_on: date) -> bool:
 
 def _is_available(available_at: datetime, query_as_of: datetime, context: FetchContext) -> bool:
     return available_at <= query_as_of and available_at <= context.as_of
-
-
-def _reject_cursor(cursor: str | None) -> None:
-    if cursor is not None:
-        raise ProviderCursorError("fixture-backed US provider has no valid continuation cursor")
 
 
 def _content_satisfies(requested: ContentMode, actual: ContentMode) -> bool:
@@ -1096,14 +1320,20 @@ def _optional_datetime(raw: Mapping[str, object], key: str) -> datetime | None:
     return _datetime(raw[key], key)
 
 
+def _decimal(value: object, path: str) -> Decimal:
+    if not isinstance(value, str):
+        raise ProviderSchemaError(f"{path} must be a decimal string")
+    try:
+        return Decimal(value)
+    except Exception as exc:
+        raise ProviderSchemaError(f"{path} must be a decimal string") from exc
+
+
 def _optional_decimal(raw: Mapping[str, object], key: str) -> Decimal | None:
     value = _optional_str(raw, key)
     if value is None:
         return None
-    try:
-        return Decimal(value)
-    except Exception as exc:
-        raise ProviderSchemaError(f"{key} must be a decimal string") from exc
+    return _decimal(value, key)
 
 
 def _str_list(value: object, path: str) -> list[str]:
