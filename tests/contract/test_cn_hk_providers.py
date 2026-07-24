@@ -185,7 +185,6 @@ async def test_news_002_003_provider_identity_uses_canonical_url_title_and_entit
             "title": original_news["title"],
             "summary": original_news["summary"],
             "body": original_news["body"],
-            "language": original_news["language"],
         }
     )
 

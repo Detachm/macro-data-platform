@@ -770,7 +770,6 @@ class RegionalFixtureProvider:
                 "title": title,
                 "summary": summary,
                 "body": body,
-                "language": raw["language"],
             }
         )
         event_content_mode = content_mode

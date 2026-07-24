@@ -37,6 +37,7 @@ def test_news_003_title_normalization_handles_width_case_spacing_and_punctuation
 def test_news_matching_keeps_numeric_and_negation_tokens_distinct() -> None:
     assert normalize_title_for_matching("增长1.0%") != normalize_title_for_matching("增长10%")
     assert normalize_title_for_matching("不构成违约") != normalize_title_for_matching("构成违约")
+    assert normalize_title_for_matching("市場") == normalize_title_for_matching("市场")
 
 
 def test_time_001_to_utc_converts_aware_datetime() -> None:
