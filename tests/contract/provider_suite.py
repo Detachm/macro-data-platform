@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -71,12 +70,14 @@ CONTRACT_CASES = {
         ContractCase("PRV-008", "implemented"),
         ContractCase("PRV-009", "implemented"),
         ContractCase("PRV-010", "implemented"),
-        ContractCase("PRV-011", "xfail", ("#5",)),
-        ContractCase("PRV-012", "xfail", ("#5",)),
+        ContractCase("PRV-011", "xfail", ("#20",), "requires persisted unsupported-PIT evidence"),
+        ContractCase("PRV-012", "xfail", ("#20",), "requires raw-timezone audit persistence"),
         ContractCase("PRV-013", "implemented"),
-        ContractCase("PRV-014", "xfail", ("#3",)),
-        ContractCase("PRV-015", "xfail", ("#5",)),
-        ContractCase("PRV-016", "xfail", ("#5",)),
+        ContractCase("PRV-014", "xfail", ("#20",), "requires transactional retry persistence"),
+        ContractCase("PRV-015", "xfail", ("#21",), "requires fixture cursor continuation protocol"),
+        ContractCase(
+            "PRV-016", "xfail", ("#20",), "requires committed provider watermark recovery"
+        ),
         ContractCase("PRV-017", "implemented"),
         ContractCase("PRV-018", "implemented"),
         ContractCase("PRV-019", "implemented"),
@@ -339,32 +340,9 @@ async def assert_news_identity_contract(
 ) -> None:
     """Exercise NEWS-002/003 through each regional provider entry point."""
 
-    original_fixture = temporary_directory / "success_original_news_identity_inputs.json"
-    changed_fixture = temporary_directory / "success_changed_news_identity_inputs.json"
-    source_text = await asyncio.to_thread(source_fixture.read_text, encoding="utf-8")
-    payload = json.loads(source_text)
-    changed_payload = json.loads(source_text)
-
-    original_news = payload["pages"]["news"]["items"][0]
-    changed_news = changed_payload["pages"]["news"]["items"][0]
-    original_news["canonical_url"] = "HTTPS://EXAMPLE.TEST/news/001?utm_source=x&b=2&a=1"
-    changed_news["canonical_url"] = "https://example.test/news/001?b=2&utm_medium=y&a=1"
-    original_news["title"] = " ＡＢＣ， Rate\nCUT！ "
-    changed_news["title"] = "abc rate cut"
-    original_news["entities"] = [
-        {"entity_type": "organization", "entity_id": "org-central-bank", "confidence": "1"},
-        {"entity_type": "country", "entity_id": "country-region", "confidence": "1"},
-    ]
-    changed_news["entities"] = list(reversed(original_news["entities"]))
-    await asyncio.to_thread(
-        original_fixture.write_text,
-        json.dumps(payload, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    await asyncio.to_thread(
-        changed_fixture.write_text,
-        json.dumps(changed_payload, ensure_ascii=False),
-        encoding="utf-8",
+    original_fixture, changed_fixture, original_news = _prepare_news_identity_fixtures(
+        source_fixture,
+        temporary_directory,
     )
 
     original_provider = provider_cls(original_fixture)
@@ -400,26 +378,9 @@ async def assert_title_fallback_news_identity_contract(
 ) -> None:
     """Verify stable NEWS-003 identity when the canonical URL is absent."""
 
-    first_fixture = temporary_directory / "news_title_fallback_first.json"
-    second_fixture = temporary_directory / "news_title_fallback_second.json"
-    source_text = await asyncio.to_thread(source_fixture.read_text, encoding="utf-8")
-    first_payload = json.loads(source_text)
-    second_payload = json.loads(source_text)
-    first_news = first_payload["pages"]["news"]["items"][0]
-    second_news = second_payload["pages"]["news"]["items"][0]
-    first_news["canonical_url"] = None
-    second_news["canonical_url"] = None
-    first_news["title"] = "中國，開發銀行：Rate,Cut"
-    second_news["title"] = "中国开发银行 Rate Cut"
-    await asyncio.to_thread(
-        first_fixture.write_text,
-        json.dumps(first_payload, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    await asyncio.to_thread(
-        second_fixture.write_text,
-        json.dumps(second_payload, ensure_ascii=False),
-        encoding="utf-8",
+    first_fixture, second_fixture = _prepare_title_fallback_news_identity_fixtures(
+        source_fixture,
+        temporary_directory,
     )
 
     first_provider = provider_cls(first_fixture)
@@ -438,6 +399,53 @@ async def assert_title_fallback_news_identity_contract(
     assert first.items[0].news_id == second.items[0].news_id
     assert first.items[0].cluster_id == second.items[0].cluster_id
     assert first.items[0].content_hash_sha256 != second.items[0].content_hash_sha256
+
+
+def _prepare_news_identity_fixtures(
+    source_fixture: Path,
+    temporary_directory: Path,
+) -> tuple[Path, Path, dict[str, object]]:
+    original_fixture = temporary_directory / "success_original_news_identity_inputs.json"
+    changed_fixture = temporary_directory / "success_changed_news_identity_inputs.json"
+    payload = json.loads(source_fixture.read_text(encoding="utf-8"))
+    changed_payload = json.loads(source_fixture.read_text(encoding="utf-8"))
+    original_news = payload["pages"]["news"]["items"][0]
+    changed_news = changed_payload["pages"]["news"]["items"][0]
+    assert isinstance(original_news, dict)
+    assert isinstance(changed_news, dict)
+    original_news["canonical_url"] = "HTTPS://EXAMPLE.TEST/news/001?utm_source=x&b=2&a=1"
+    changed_news["canonical_url"] = "https://example.test/news/001?b=2&utm_medium=y&a=1"
+    original_news["title"] = " ＡＢＣ， Rate\nCUT！ "
+    changed_news["title"] = "abc rate cut"
+    original_news["entities"] = [
+        {"entity_type": "organization", "entity_id": "org-central-bank", "confidence": "1"},
+        {"entity_type": "country", "entity_id": "country-region", "confidence": "1"},
+    ]
+    changed_news["entities"] = list(reversed(original_news["entities"]))
+    original_fixture.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    changed_fixture.write_text(json.dumps(changed_payload, ensure_ascii=False), encoding="utf-8")
+    return original_fixture, changed_fixture, original_news
+
+
+def _prepare_title_fallback_news_identity_fixtures(
+    source_fixture: Path,
+    temporary_directory: Path,
+) -> tuple[Path, Path]:
+    first_fixture = temporary_directory / "news_title_fallback_first.json"
+    second_fixture = temporary_directory / "news_title_fallback_second.json"
+    first_payload = json.loads(source_fixture.read_text(encoding="utf-8"))
+    second_payload = json.loads(source_fixture.read_text(encoding="utf-8"))
+    first_news = first_payload["pages"]["news"]["items"][0]
+    second_news = second_payload["pages"]["news"]["items"][0]
+    assert isinstance(first_news, dict)
+    assert isinstance(second_news, dict)
+    first_news["canonical_url"] = None
+    second_news["canonical_url"] = None
+    first_news["title"] = "中國，開發銀行：Rate,Cut"
+    second_news["title"] = "中国开发银行 Rate Cut"
+    first_fixture.write_text(json.dumps(first_payload, ensure_ascii=False), encoding="utf-8")
+    second_fixture.write_text(json.dumps(second_payload, ensure_ascii=False), encoding="utf-8")
+    return first_fixture, second_fixture
 
 
 def _canonical_items(items: Sequence[StrictModel]) -> list[dict[str, object]]:
