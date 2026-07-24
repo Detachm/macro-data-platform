@@ -767,7 +767,7 @@ class RegionalFixtureProvider:
         entity_ids = tuple(sorted(entity.entity_id for entity in entities))
         content_hash = canonical_json_checksum(
             {
-                "title": normalized_title,
+                "title": title,
                 "summary": summary,
                 "body": body,
                 "language": raw["language"],

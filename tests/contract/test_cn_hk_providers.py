@@ -179,10 +179,10 @@ async def test_news_002_003_provider_identity_uses_canonical_url_title_and_entit
     assert str(original.items[0].canonical_url) == "https://example.test/cn/news/001?a=1&b=2"
     assert original.items[0].news_id == changed.items[0].news_id
     assert original.items[0].cluster_id == changed.items[0].cluster_id
-    assert original.items[0].content_hash_sha256 == changed.items[0].content_hash_sha256
+    assert original.items[0].content_hash_sha256 != changed.items[0].content_hash_sha256
     assert original.items[0].content_hash_sha256 == canonical_json_checksum(
         {
-            "title": "abcratecut",
+            "title": original_news["title"],
             "summary": original_news["summary"],
             "body": original_news["body"],
             "language": original_news["language"],
