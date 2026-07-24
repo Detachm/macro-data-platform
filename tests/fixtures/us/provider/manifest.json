@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "offline_only": true,
+  "credentials": "none",
+  "fixtures": {
+    "success.json": ["PRV-001", "PRV-002", "PRV-005", "PRV-013"],
+    "dst_offset.json": ["TIME-005"],
+    "empty.json": ["empty_page"],
+    "auth_failure.json": ["PRV-008"],
+    "forbidden.json": ["PRV-008"],
+    "rate_limited.json": ["PRV-007"],
+    "timeout.json": ["PRV-010"],
+    "missing_fields.json": ["PRV-009"],
+    "schema_changed.json": ["PRV-009", "PRV-020"],
+    "malformed_json.json": ["PRV-021"],
+    "html_login.json": ["PRV-019"],
+    "duplicate_page.json": ["invalid_same_page_duplicate"]
+  },
+  "not_applicable": {
+    "PRV-011": {
+      "reason": "The fixture adapter declares supports_point_in_time=true; a provider without historical PIT capability is outside this adapter's contract.",
+      "follow_up": "https://github.com/Detachm/macro-data-platform/issues/20"
+    },
+    "PRV-012": {
+      "reason": "The fixture retains raw input only as a test file; it has no persisted audit record that can retain the original local timestamp and value alongside the normalized output.",
+      "follow_up": "https://github.com/Detachm/macro-data-platform/issues/20"
+    },
+    "PRV-014": {
+      "reason": "The fixture adapter never writes through a repository, so it cannot prove transactional idempotency after a successful write and a lost response.",
+      "follow_up": "https://github.com/Detachm/macro-data-platform/issues/20"
+    },
+    "PRV-016": {
+      "reason": "The fixture cursor is stateless and this vertical slice has no committed watermark store from which to recover after expiry.",
+      "follow_up": "https://github.com/Detachm/macro-data-platform/issues/20"
+    }
+  }
+}

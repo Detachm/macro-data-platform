@@ -1,0 +1,40 @@
+{
+  "status": "ok",
+  "fetched_at": "2026-07-23T08:00:00Z",
+  "source_watermark": "fixture-dst-offset-v1",
+  "pages": {
+    "bars": {
+      "next_cursor": null,
+      "items": [
+        {
+          "record_id": "polygon-aapl-2026-03-09",
+          "source_name": "Polygon/Massive Aggregate Fixture",
+          "source_url": "https://api.polygon.io/v2/aggs/ticker/AAPL/range/1/day/2026-03-09/2026-03-09",
+          "retrieved_at": "2026-07-23T08:00:00Z",
+          "provider_updated_at": "2026-03-09T20:05:00Z",
+          "symbol": "aapl",
+          "exchange": "NASDAQ",
+          "issuer_key": "cik0000320193",
+          "first_canonical_symbol": "XNAS:AAPL",
+          "first_valid_from": "1980-12-12",
+          "valid_from": "1980-12-12",
+          "interval": "1d",
+          "bar_start": "2026-03-09T09:30:00-04:00",
+          "bar_end": "2026-03-09T16:00:00-04:00",
+          "trading_date": "2026-03-09",
+          "open": "210.10",
+          "high": "214.20",
+          "low": "209.80",
+          "close": "213.50",
+          "volume": "52000000",
+          "turnover": "11102000000",
+          "currency": "USD",
+          "adjustment": "raw",
+          "available_at": "2026-03-09T20:05:00Z",
+          "availability_basis": "provider_disseminated",
+          "quality_flags": ["synthetic", "dst"]
+        }
+      ]
+    }
+  }
+}

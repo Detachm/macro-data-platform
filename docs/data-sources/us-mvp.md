@@ -390,9 +390,43 @@ Minimum fixture names per provider slice:
 Test IDs required downstream:
 
 - #4 normalization：`SYM-004`～`SYM-010`、`TIME-001`、`TIME-002`、`TIME-005`、`TIME-006`、`TIME-010`、`UNIT-001`、`UNIT-002`、`UNIT-004`、`UNIT-005`、`UNIT-009`
-- #6/#7 provider contract：applicable `PRV-001`～`PRV-021`
+- #6/#7 fixture provider contract：`PRV-001`～`PRV-010`、`PRV-013`、`PRV-015`、`PRV-017`～`PRV-021`；`PRV-011`、`PRV-012`、`PRV-014`、`PRV-016` 需要持久化状态，转交 [#20](https://github.com/Detachm/macro-data-platform/issues/20)。
 - News：`NEWS-002`、`NEWS-003`、`NEWS-012`、`NEWS-013`、`NEWS-017`
 - PIT：all provider outputs assert `available_at <= as_of`
+
+### #7 US fixture contract evidence
+
+共享合同测试入口为 `tests/contract/test_us_fixture_provider_contract.py`，只使用
+`tests/fixtures/us/provider/` 下的合成离线 fixture；其受测试保护的
+`manifest.json` 声明所有 fixture 文件、覆盖场景和无凭据约束。复现命令：
+
+```bash
+uv run pytest tests/unit tests/contract -m "not live" -q
+```
+
+合同用例通过 pytest 参数 ID 直接暴露其测试编号；可用
+`pytest tests/contract/test_us_fixture_provider_contract.py --collect-only -q`
+追溯每个 `PRV-*`、`PIT-009`、`TIME-005` 和 `NEWS-*` 证据。临时生成的
+两页、字段重排和未来记录 fixture 只在测试目录中创建，不会成为可被
+生产调度使用的数据源。
+
+| Test ID | Evidence |
+|---|---|
+| `PRV-001`、`PRV-002`、`PRV-005`、`PRV-013` | 共享 suite 对全纵向切片的稳定输出、provenance、checksum 和 query 不变性断言。 |
+| `PRV-003` | 公开 `fetch_news` 正常两页回归：合并结果完整、无重复，末页 `cursor=null`；另有跨页重复 provider record 的拒绝回归。 |
+| `PRV-015` | 空页阈值 fixture/unit test。 |
+| `PRV-004` | shared contract test 验证 bars 的 `[start, end)` 边界。 |
+| `PRV-006` | mixed invalid record 被 quarantine，合法记录继续输出。 |
+| `PRV-007`～`PRV-010`、`PRV-019`～`PRV-021` | 离线 error fixture 必须抛显式错误，绝不能变成空页。 |
+| `PRV-011`、`PRV-012`、`PRV-014`、`PRV-016` | 不适用：fixture adapter 没有 unsupported-PIT capability 状态、持久化 raw audit record、事务性 repository 或 committed watermark store。分别需要历史 PIT capability、DST 原始值审计、写入成功后丢响应的幂等重试、cursor 过期后的 watermark 恢复；统一转交 [#20](https://github.com/Detachm/macro-data-platform/issues/20)。 |
+| `TIME-005` | `dst_offset.json` 使用 `America/New_York` 夏令时 `09:30-04:00` 输入，输出 UTC 并保持正确 trading date。 |
+| `PRV-017` | 同一 provider fixture 用原始及递归 JSON key 重排文本各执行一次公开 fetch，输出 checksum 必须相同。 |
+| `PRV-018` | fixture-only `not_configured` health regression test。 |
+| `NEWS-002`、`NEWS-003`、`NEWS-012`、`NEWS-013`、`NEWS-017` | 仅经公开 `fetch_news` 验证 canonical URL、标题 fingerprint、headline-only、空 vendor annotations、外部 LLM 权利清洗。 |
+| `PIT-009` | 为 bars、market observations、macro observations、macro releases、news 分别注入未来 `available_at` 记录，以较早 `as_of` 查询；每个输出都必须过滤未来记录。 |
+
+默认 CI 不运行 live smoke；仅在 Phase 2 获得来源批准和显式凭据后，才可执行
+`pytest -m live` 中定义的最小请求。
 
 Fixture policy:
 

@@ -384,9 +384,11 @@ async def test_us_fixture_source_checksum_includes_provider_updated_at(tmp_path:
     assert original_apple.source.checksum_sha256 != changed_apple.source.checksum_sha256
 
 
+@pytest.mark.parametrize("_test_id", [pytest.param("PRV-018", id="PRV-018")])
 @pytest.mark.asyncio
 async def test_us_fixture_provider_reports_fixture_only_as_not_configured(
     provider: UsFixtureProvider,
+    _test_id: str,
 ) -> None:
     health = await provider.healthcheck()
 
@@ -545,9 +547,11 @@ async def test_us_fixture_provider_uses_cursor_to_continue_a_limited_page(tmp_pa
     assert second_page.complete is True
 
 
+@pytest.mark.parametrize("_test_id", [pytest.param("PRV-006", id="PRV-006")])
 @pytest.mark.asyncio
 async def test_us_fixture_provider_quarantines_bad_records_when_a_page_has_valid_records(
     tmp_path: Path,
+    _test_id: str,
 ) -> None:
     source_fixture = UsFixtureProvider.fixture_dir / "success.json"
     mixed_fixture = tmp_path / "mixed-records.json"
@@ -598,9 +602,11 @@ async def test_us_fixture_provider_rejects_unknown_page_datasets(tmp_path: Path)
         await provider.fetch_instruments(InstrumentQuery(regions={Region.US}), CONTEXT)
 
 
+@pytest.mark.parametrize("_test_id", [pytest.param("PRV-015", id="PRV-015")])
 @pytest.mark.asyncio
 async def test_us_fixture_provider_rejects_an_empty_page_that_advances_cursor(
     tmp_path: Path,
+    _test_id: str,
 ) -> None:
     source_fixture = UsFixtureProvider.fixture_dir / "success.json"
     changed_fixture = tmp_path / "empty-page-with-cursor.json"
