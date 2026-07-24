@@ -29,8 +29,9 @@ def test_news_002_url_canonicalization_removes_tracking_and_fragment() -> None:
     assert actual == "https://example.com/a?a=1&b=2"
 
 
-def test_news_003_title_normalization_handles_width_case_and_spacing() -> None:
-    assert normalize_title_for_matching(" ＡＢＣ  Rate\nCUT ") == "abc rate cut"
+def test_news_003_title_normalization_handles_width_case_spacing_and_punctuation() -> None:
+    assert normalize_title_for_matching(" ＡＢＣ， Rate\nCUT！ ") == "abcratecut"
+    assert normalize_title_for_matching("abc rate cut") == "abcratecut"
 
 
 def test_time_001_to_utc_converts_aware_datetime() -> None:

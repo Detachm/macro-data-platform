@@ -766,7 +766,12 @@ class RegionalFixtureProvider:
         entities = self._entity_refs(raw)
         entity_ids = tuple(sorted(entity.entity_id for entity in entities))
         content_hash = canonical_json_checksum(
-            {"title": raw["title"], "summary": summary, "body": body, "language": raw["language"]}
+            {
+                "title": normalized_title,
+                "summary": summary,
+                "body": body,
+                "language": raw["language"],
+            }
         )
         event_content_mode = content_mode
         if body is None and content_mode is ContentMode.FULL_TEXT:

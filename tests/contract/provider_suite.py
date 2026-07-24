@@ -289,7 +289,8 @@ def assert_news_normalization_contract() -> None:
     assert canonicalize_url("HTTPS://EXAMPLE.TEST/a?utm_source=x&b=2&a=1") == (
         "https://example.test/a?a=1&b=2"
     )
-    assert normalize_title_for_matching(" ＡＢＣ  Rate\nCUT ") == "abc rate cut"
+    assert normalize_title_for_matching(" ＡＢＣ， Rate\nCUT！ ") == "abcratecut"
+    assert normalize_title_for_matching("abc rate cut") == "abcratecut"
 
 
 def assert_canonical_checksum_contract() -> None:

@@ -13,6 +13,7 @@ from macro_platform.contracts.editor import EditorContextRequest
 from macro_platform.contracts.market import InstrumentQuery
 from macro_platform.contracts.news import ContentMode, NewsQuery
 from macro_platform.contracts.provider import Dataset, FetchContext
+from macro_platform.normalization.common import canonical_json_checksum
 from macro_platform.providers.base import (
     ProviderAuthenticationError,
     ProviderAuthorizationError,
@@ -152,7 +153,7 @@ async def test_news_002_003_provider_identity_uses_canonical_url_title_and_entit
     changed_news = changed_payload["pages"]["news"]["items"][0]
     original_news["canonical_url"] = "HTTPS://EXAMPLE.TEST/cn/news/001?utm_source=x&b=2&a=1"
     changed_news["canonical_url"] = "https://example.test/cn/news/001?b=2&utm_medium=y&a=1"
-    original_news["title"] = " ＡＢＣ  Rate\nCUT "
+    original_news["title"] = " ＡＢＣ， Rate\nCUT！ "
     changed_news["title"] = "abc rate cut"
     original_news["entities"] = [
         {"entity_type": "organization", "entity_id": "org-pboc", "confidence": "1"},
@@ -178,6 +179,15 @@ async def test_news_002_003_provider_identity_uses_canonical_url_title_and_entit
     assert str(original.items[0].canonical_url) == "https://example.test/cn/news/001?a=1&b=2"
     assert original.items[0].news_id == changed.items[0].news_id
     assert original.items[0].cluster_id == changed.items[0].cluster_id
+    assert original.items[0].content_hash_sha256 == changed.items[0].content_hash_sha256
+    assert original.items[0].content_hash_sha256 == canonical_json_checksum(
+        {
+            "title": "abcratecut",
+            "summary": original_news["summary"],
+            "body": original_news["body"],
+            "language": original_news["language"],
+        }
+    )
 
 
 @pytest.mark.asyncio
