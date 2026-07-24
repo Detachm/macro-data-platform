@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
@@ -13,7 +12,6 @@ from macro_platform.contracts.editor import EditorContextRequest
 from macro_platform.contracts.market import InstrumentQuery
 from macro_platform.contracts.news import ContentMode, NewsQuery
 from macro_platform.contracts.provider import Dataset, FetchContext
-from macro_platform.normalization.common import canonical_json_checksum
 from macro_platform.providers.base import (
     ProviderAuthenticationError,
     ProviderAuthorizationError,
@@ -39,8 +37,10 @@ from tests.contract.provider_suite import (
     assert_empty_fixture_is_explicit,
     assert_error_fixture_raises,
     assert_fixture_manifest_contract,
+    assert_news_identity_contract,
     assert_news_normalization_contract,
     assert_success_fixture_contract,
+    assert_title_fallback_news_identity_contract,
     assert_title_only_news_contract,
 )
 
@@ -138,54 +138,42 @@ async def test_headline_only_news_fixture_keeps_body_empty_and_rights_explicit(
     await assert_title_only_news_contract(provider_cls.from_fixture("headline_only"), context)
 
 
+@pytest.mark.parametrize(
+    ("provider_cls", "source_fixture"),
+    [
+        (CnSyntheticProvider, FIXTURE_ROOT / "cn" / "synthetic" / "success.json"),
+        (HkSyntheticProvider, FIXTURE_ROOT / "hk" / "synthetic" / "success.json"),
+    ],
+)
 @pytest.mark.asyncio
 async def test_news_002_003_provider_identity_uses_canonical_url_title_and_entities(
     tmp_path: Path,
     context: FetchContext,
+    provider_cls: type[RegionalFixtureProvider],
+    source_fixture: Path,
 ) -> None:
-    source_fixture = FIXTURE_ROOT / "cn" / "synthetic" / "success.json"
-    original_fixture = tmp_path / "success_original_news_identity_inputs.json"
-    changed_fixture = tmp_path / "success_changed_news_identity_inputs.json"
-    payload = json.loads(source_fixture.read_text(encoding="utf-8"))
-    changed_payload = deepcopy(payload)
+    await assert_news_identity_contract(provider_cls, source_fixture, tmp_path, context)
 
-    original_news = payload["pages"]["news"]["items"][0]
-    changed_news = changed_payload["pages"]["news"]["items"][0]
-    original_news["canonical_url"] = "HTTPS://EXAMPLE.TEST/cn/news/001?utm_source=x&b=2&a=1"
-    changed_news["canonical_url"] = "https://example.test/cn/news/001?b=2&utm_medium=y&a=1"
-    original_news["title"] = " ＡＢＣ， Rate\nCUT！ "
-    changed_news["title"] = "abc rate cut"
-    original_news["entities"] = [
-        {"entity_type": "organization", "entity_id": "org-pboc", "confidence": "1"},
-        {"entity_type": "country", "entity_id": "country-cn", "confidence": "1"},
-    ]
-    changed_news["entities"] = [
-        {"entity_type": "country", "entity_id": "country-cn", "confidence": "1"},
-        {"entity_type": "organization", "entity_id": "org-pboc", "confidence": "1"},
-    ]
-    original_fixture.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    changed_fixture.write_text(json.dumps(changed_payload, ensure_ascii=False), encoding="utf-8")
 
-    query = NewsQuery(
-        regions={Region.CN},
-        published_from=datetime(2026, 7, 22, tzinfo=UTC),
-        published_to=datetime(2026, 7, 24, tzinfo=UTC),
-        as_of=context.as_of,
-        content_mode=ContentMode.SNIPPET,
-    )
-    original = await CnSyntheticProvider(original_fixture).fetch_news(query, context)
-    changed = await CnSyntheticProvider(changed_fixture).fetch_news(query, context)
-
-    assert str(original.items[0].canonical_url) == "https://example.test/cn/news/001?a=1&b=2"
-    assert original.items[0].news_id == changed.items[0].news_id
-    assert original.items[0].cluster_id == changed.items[0].cluster_id
-    assert original.items[0].content_hash_sha256 != changed.items[0].content_hash_sha256
-    assert original.items[0].content_hash_sha256 == canonical_json_checksum(
-        {
-            "title": original_news["title"],
-            "summary": original_news["summary"],
-            "body": original_news["body"],
-        }
+@pytest.mark.parametrize(
+    ("provider_cls", "source_fixture"),
+    [
+        (CnSyntheticProvider, FIXTURE_ROOT / "cn" / "synthetic" / "success.json"),
+        (HkSyntheticProvider, FIXTURE_ROOT / "hk" / "synthetic" / "success.json"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_news_003_title_fallback_is_shared_by_cn_and_hk(
+    tmp_path: Path,
+    context: FetchContext,
+    provider_cls: type[RegionalFixtureProvider],
+    source_fixture: Path,
+) -> None:
+    await assert_title_fallback_news_identity_contract(
+        provider_cls,
+        source_fixture,
+        tmp_path,
+        context,
     )
 
 

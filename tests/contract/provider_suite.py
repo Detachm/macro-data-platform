@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -291,6 +292,10 @@ def assert_news_normalization_contract() -> None:
     )
     assert normalize_title_for_matching(" ＡＢＣ， Rate\nCUT！ ") == "abc rate cut"
     assert normalize_title_for_matching("abc rate cut") == "abc rate cut"
+    assert normalize_title_for_matching("Rate,Cut") == normalize_title_for_matching("Rate Cut")
+    assert normalize_title_for_matching("中國，增長") == normalize_title_for_matching("中国增长")
+    assert normalize_title_for_matching("增长1-0%") != normalize_title_for_matching("增长10%")
+    assert normalize_title_for_matching("不构成违约") != normalize_title_for_matching("构成违约")
 
 
 def assert_canonical_checksum_contract() -> None:
@@ -324,6 +329,115 @@ async def assert_title_only_news_contract(
     assert item.vendor_annotations == []
     assert item.usage_rights.storage_allowed is True
     assert item.quality_flags[0] == "synthetic"
+
+
+async def assert_news_identity_contract(
+    provider_cls: type[RegionalFixtureProvider],
+    source_fixture: Path,
+    temporary_directory: Path,
+    context: FetchContext,
+) -> None:
+    """Exercise NEWS-002/003 through each regional provider entry point."""
+
+    original_fixture = temporary_directory / "success_original_news_identity_inputs.json"
+    changed_fixture = temporary_directory / "success_changed_news_identity_inputs.json"
+    source_text = await asyncio.to_thread(source_fixture.read_text, encoding="utf-8")
+    payload = json.loads(source_text)
+    changed_payload = json.loads(source_text)
+
+    original_news = payload["pages"]["news"]["items"][0]
+    changed_news = changed_payload["pages"]["news"]["items"][0]
+    original_news["canonical_url"] = "HTTPS://EXAMPLE.TEST/news/001?utm_source=x&b=2&a=1"
+    changed_news["canonical_url"] = "https://example.test/news/001?b=2&utm_medium=y&a=1"
+    original_news["title"] = " ＡＢＣ， Rate\nCUT！ "
+    changed_news["title"] = "abc rate cut"
+    original_news["entities"] = [
+        {"entity_type": "organization", "entity_id": "org-central-bank", "confidence": "1"},
+        {"entity_type": "country", "entity_id": "country-region", "confidence": "1"},
+    ]
+    changed_news["entities"] = list(reversed(original_news["entities"]))
+    await asyncio.to_thread(
+        original_fixture.write_text,
+        json.dumps(payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    await asyncio.to_thread(
+        changed_fixture.write_text,
+        json.dumps(changed_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    original_provider = provider_cls(original_fixture)
+    region = next(iter(original_provider.region_set()))
+    query = NewsQuery(
+        regions={region},
+        published_from=datetime(2026, 7, 22, tzinfo=UTC),
+        published_to=datetime(2026, 7, 24, tzinfo=UTC),
+        as_of=context.as_of,
+        content_mode=ContentMode.SNIPPET,
+    )
+    original = await original_provider.fetch_news(query, context)
+    changed = await provider_cls(changed_fixture).fetch_news(query, context)
+
+    assert str(original.items[0].canonical_url) == "https://example.test/news/001?a=1&b=2"
+    assert original.items[0].news_id == changed.items[0].news_id
+    assert original.items[0].cluster_id == changed.items[0].cluster_id
+    assert original.items[0].content_hash_sha256 != changed.items[0].content_hash_sha256
+    assert original.items[0].content_hash_sha256 == canonical_json_checksum(
+        {
+            "title": original_news["title"],
+            "summary": original_news["summary"],
+            "body": original_news["body"],
+        }
+    )
+
+
+async def assert_title_fallback_news_identity_contract(
+    provider_cls: type[RegionalFixtureProvider],
+    source_fixture: Path,
+    temporary_directory: Path,
+    context: FetchContext,
+) -> None:
+    """Verify stable NEWS-003 identity when the canonical URL is absent."""
+
+    first_fixture = temporary_directory / "news_title_fallback_first.json"
+    second_fixture = temporary_directory / "news_title_fallback_second.json"
+    source_text = await asyncio.to_thread(source_fixture.read_text, encoding="utf-8")
+    first_payload = json.loads(source_text)
+    second_payload = json.loads(source_text)
+    first_news = first_payload["pages"]["news"]["items"][0]
+    second_news = second_payload["pages"]["news"]["items"][0]
+    first_news["canonical_url"] = None
+    second_news["canonical_url"] = None
+    first_news["title"] = "中國，開發銀行：Rate,Cut"
+    second_news["title"] = "中国开发银行 Rate Cut"
+    await asyncio.to_thread(
+        first_fixture.write_text,
+        json.dumps(first_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    await asyncio.to_thread(
+        second_fixture.write_text,
+        json.dumps(second_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    first_provider = provider_cls(first_fixture)
+    region = next(iter(first_provider.region_set()))
+    query = NewsQuery(
+        regions={region},
+        published_from=datetime(2026, 7, 22, tzinfo=UTC),
+        published_to=datetime(2026, 7, 24, tzinfo=UTC),
+        as_of=context.as_of,
+        content_mode=ContentMode.SNIPPET,
+    )
+    first = await first_provider.fetch_news(query, context)
+    second = await provider_cls(second_fixture).fetch_news(query, context)
+
+    assert first.items[0].canonical_url is None
+    assert first.items[0].news_id == second.items[0].news_id
+    assert first.items[0].cluster_id == second.items[0].cluster_id
+    assert first.items[0].content_hash_sha256 != second.items[0].content_hash_sha256
 
 
 def _canonical_items(items: Sequence[StrictModel]) -> list[dict[str, object]]:

@@ -48,6 +48,7 @@ from macro_platform.contracts.provider import (
 from macro_platform.normalization.common import (
     canonical_json_checksum,
     canonicalize_url,
+    news_cluster_id,
     normalize_title_for_matching,
 )
 from macro_platform.normalization.common.time import to_utc, utc_now
@@ -783,12 +784,12 @@ class RegionalFixtureProvider:
                 str(canonical_url) if canonical_url is not None else normalized_title,
                 _utc_z(published_at),
             ),
-            cluster_id=_hex_id(
-                "cluster",
-                self.region.value,
-                normalized_title,
-                ",".join(entity_ids),
-                _date_from_datetime(published_at).isoformat(),
+            cluster_id=news_cluster_id(
+                canonical_url=str(canonical_url) if canonical_url is not None else None,
+                content_hash_sha256=content_hash,
+                title=title,
+                entity_ids=entity_ids,
+                published_at=published_at,
             ),
             title=title,
             summary=summary,
