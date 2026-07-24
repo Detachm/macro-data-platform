@@ -329,8 +329,11 @@ def test_us_fixture_provider_news_fingerprint_normalizes_news_003_title_variants
 
     full_width = provider._parse_news({**daily_news, "title": "ＣＰＩ，   JUNE 2026！"})
     normalized_spacing = provider._parse_news({**daily_news, "title": "cpi: June—2026"})
+    positive_change = provider._parse_news({**daily_news, "title": "利润+10%"})
+    negative_change = provider._parse_news({**daily_news, "title": "利润-10%"})
 
     assert full_width.content_hash_sha256 == normalized_spacing.content_hash_sha256
+    assert positive_change.content_hash_sha256 != negative_change.content_hash_sha256
 
 
 @pytest.mark.asyncio
