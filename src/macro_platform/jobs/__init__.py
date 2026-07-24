@@ -1,3 +1,3 @@
-from macro_platform.jobs.runner import IngestJobHandler, JobRunner
+from macro_platform.jobs.runner import CheckpointedIngestJobHandler, IngestJobHandler, JobRunner
 
-__all__ = ["IngestJobHandler", "JobRunner"]
+__all__ = ["CheckpointedIngestJobHandler", "IngestJobHandler", "JobRunner"]

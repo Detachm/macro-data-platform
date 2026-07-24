@@ -49,10 +49,8 @@ providers, not live CN/HK adapters. Registry roles are declared for structure-fi
 fixture-only datasets must be rejected by `assert_production_dataset_supported`; live-ready
 datasets follow the frozen capability matrix and must not be scheduled as live providers.
 
-Reserved cases remain `xfail` until their named follow-up Issue is complete. The fixture-provider
-cases (`PRV-003`–`006`, `PRV-015`) are tracked by #21; persistence/audit cases
-(`PRV-011`, `PRV-012`, `PRV-014`, `PRV-016`) are tracked by #20. Each case's blocker and deferred
-reason are mirrored in `CONTRACT_CASES` and both regional manifests. When its follow-up lands:
+Only fixture-protocol cases remain `xfail`; each has a concrete follow-up Issue #21. Their blocker
+and deferred reason are mirrored in `CONTRACT_CASES` and both regional manifests.
 
 | Case | Blocker | Deferred reason |
 | --- | --- | --- |
@@ -60,11 +58,7 @@ reason are mirrored in `CONTRACT_CASES` and both regional manifests. When its fo
 | PRV-004 | #21 | requires boundary-record fixture |
 | PRV-005 | #21 | requires unordered upstream page fixture |
 | PRV-006 | #21 | requires fixture quarantine behaviour |
-| PRV-011 | #20 | requires persisted unsupported-PIT evidence |
-| PRV-012 | #20 | requires raw-timezone audit persistence |
-| PRV-014 | #20 | requires transactional retry persistence |
 | PRV-015 | #21 | requires fixture cursor continuation protocol |
-| PRV-016 | #20 | requires committed provider watermark recovery |
 
 1. Add the real provider fixture set under `tests/fixtures/{cn,hk}/<provider_name>/`.
 2. Keep assertions in `tests/contract/provider_suite.py`; add only provider parameters or fixtures.
@@ -77,16 +71,15 @@ PR description seed:
 
 ```text
 Implemented test IDs:
-- PRV-001, PRV-002, PRV-007, PRV-008, PRV-009, PRV-010, PRV-013, PRV-017,
-  PRV-018, PRV-019, PRV-020
+- PRV-001, PRV-002, PRV-007, PRV-008, PRV-009, PRV-010, PRV-011, PRV-012,
+  PRV-013, PRV-014, PRV-016, PRV-017, PRV-018, PRV-019, PRV-020
 - NEWS-002, NEWS-003, NEWS-012, NEWS-013, NEWS-017
 - PIT-AVAILABLE-AT-AS-OF
 
 Still blocked:
-- PRV-003, PRV-004, PRV-005, PRV-006, PRV-011, PRV-012, PRV-014,
-  PRV-015, PRV-016
+- PRV-003, PRV-004, PRV-005, PRV-006, PRV-015
 
-Blocked by: #20 or #21 as recorded in tests/fixtures/{cn,hk}/manifest.json.
+Blocked by: #21 as recorded in tests/fixtures/{cn,hk}/manifest.json.
 ```
 
 ## CN/HK contract matrix
@@ -108,10 +101,12 @@ Blocked by: #20 or #21 as recorded in tests/fixtures/{cn,hk}/manifest.json.
   `external_llm_allowed=false` 的新闻输出 headline-only，
   不返回受限 summary/body。
 
-保留为 `xfail` 的入口：`PRV-003`、`PRV-004`、`PRV-005`、`PRV-006`、`PRV-011`、
-`PRV-012`、`PRV-014`、`PRV-015`、`PRV-016`，原因均写在测试和
-manifest 中，
-由 #20（持久化/audit）或 #21（fixture-provider contract）分别跟踪。
+已实现的 `PRV-011`、`PRV-012`、`PRV-014`、`PRV-016` 由 #20 的真实 PostgreSQL
+handler 回归覆盖：分别验证外层回滚后 PIT 审计仍保留、原始时区审计、并发 reservation/
+重试幂等，以及 cursor 过期后从 committed watermark 恢复且不重复写入。
+
+保留为 `xfail` 的入口仅为：`PRV-003`、`PRV-004`、`PRV-005`、`PRV-006`、`PRV-015`；
+每项的原因均写在测试和 manifest 中，统一由 #21（fixture-provider contract）跟踪。
 
 ## 完成 #20 / #21 后解除 xfail
 

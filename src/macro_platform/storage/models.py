@@ -254,6 +254,32 @@ class JobWatermarkRow(Base):
     )
 
 
+class IngestPageCommitRow(Base):
+    __tablename__ = "ingest_page_commits"
+
+    provider_role: Mapped[str] = mapped_column(String(64), primary_key=True)
+    dataset: Mapped[str] = mapped_column(String(64), primary_key=True)
+    region: Mapped[str] = mapped_column(String(8), primary_key=True)
+    page_fingerprint: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source_watermark: Mapped[str | None] = mapped_column(Text, nullable=True)
+    next_cursor: Mapped[str | None] = mapped_column(Text, nullable=True)
+    accepted_record_ids: Mapped[list[str]] = mapped_column(JSONB)
+    committed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class IngestAuditRow(Base):
+    __tablename__ = "ingest_audits"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    run_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), index=True)
+    provider_id: Mapped[str] = mapped_column(String(64), index=True)
+    audit_kind: Mapped[str] = mapped_column(String(64))
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class IngestRejectionRow(Base):
     __tablename__ = "ingest_rejections"
 
