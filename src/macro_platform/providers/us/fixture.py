@@ -250,12 +250,14 @@ _SEC_FORM_TOPICS: dict[str, tuple[str, ...]] = {
     "10-Q": ("filing", "quarterly_report"),
     "8-K": ("filing", "corporate_action"),
 }
+_MAX_CONSECUTIVE_EMPTY_PAGES = 2
 
 
 @dataclass(frozen=True)
 class _FixtureCursor:
     raw_cursor: str | None
     offset: int = 0
+    empty_pages: int = 0
 
 
 @dataclass(frozen=True)
@@ -294,7 +296,7 @@ class UsFixtureProvider:
             supports_point_in_time=True,
             supports_revisions=True,
             supports_full_text=False,
-            external_llm_allowed=False,
+            external_llm_allowed=True,
         )
 
     def assert_production_dataset_supported(self, dataset: Dataset) -> None:
@@ -303,13 +305,16 @@ class UsFixtureProvider:
         )
 
     async def healthcheck(self) -> ProviderHealth:
-        configured = self._fixture_path.exists()
+        fixture_exists = self._fixture_path.exists()
+        message = "fixture-only provider cannot be scheduled for production ingestion"
+        if not fixture_exists:
+            message = f"{message}; fixture not found: {self._fixture_path}"
         return ProviderHealth(
             provider_id=US_PROVIDER_ID,
-            status="ok" if configured else "not_configured",
+            status="not_configured",
             checked_at=self._clock(),
             latency_ms=0,
-            message=None if configured else f"fixture not found: {self._fixture_path}",
+            message=message,
         )
 
     async def aclose(self) -> None:
@@ -522,9 +527,10 @@ class UsFixtureProvider:
             f"pages.{dataset.value}.items",
         )
         next_cursor = _optional_str(raw_page, "next_cursor")
-        if not raw_items and next_cursor is not None:
+        empty_pages = cursor.empty_pages + 1 if not raw_items else 0
+        if not raw_items and next_cursor is not None and empty_pages > _MAX_CONSECUTIVE_EMPTY_PAGES:
             raise ProviderCursorError(
-                f"empty fixture page for {dataset.value} must not advance to another cursor",
+                f"empty fixture page threshold exceeded for {dataset.value}",
                 code="INVALID_PAGINATION",
             )
         self._ensure_no_duplicate_raw_records(raw_items, dataset)
@@ -555,7 +561,7 @@ class UsFixtureProvider:
             next_cursor=(
                 _encode_cursor(
                     dataset,
-                    _FixtureCursor(raw_cursor=next_cursor),
+                    _FixtureCursor(raw_cursor=next_cursor, empty_pages=empty_pages),
                     cursor_fingerprint,
                 )
                 if next_cursor is not None
@@ -708,6 +714,11 @@ class UsFixtureProvider:
             ),
             source_symbol=alias.source_symbol,
         )
+        available_at, availability_basis = _availability_with_evidence(
+            raw,
+            path="bar",
+            evidence_at=source.provider_updated_at,
+        )
         return MarketBar(
             bar_id=_stable_id(
                 "bar_us",
@@ -732,15 +743,8 @@ class UsFixtureProvider:
             turnover=_optional_decimal(raw, "turnover"),
             currency=currency,
             adjustment=adjustment,
-            available_at=_datetime(
-                _required(raw, "available_at", "bar.available_at"), "bar.available_at"
-            ),
-            availability_basis=AvailabilityBasis(
-                _str(
-                    _required(raw, "availability_basis", "bar.availability_basis"),
-                    "bar.availability_basis",
-                )
-            ),
+            available_at=available_at,
+            availability_basis=availability_basis,
             source=source,
             quality_flags=_str_list(
                 _required(raw, "quality_flags", "bar.quality_flags"), "bar.quality_flags"
@@ -755,6 +759,16 @@ class UsFixtureProvider:
             "market_observation",
         )
         unit_value = _unit_value(raw, "value", "unit", value_optional=True)
+        scope_type = ScopeType(
+            _str(
+                _required(raw, "scope_type", "market_observation.scope_type"),
+                "market_observation.scope_type",
+            )
+        )
+        scope_id = _str(
+            _required(raw, "scope_id", "market_observation.scope_id"),
+            "market_observation.scope_id",
+        )
         metric_code = _str(
             _required(raw, "metric_code", "market_observation.metric_code"),
             "market_observation.metric_code",
@@ -767,26 +781,24 @@ class UsFixtureProvider:
             raw,
             provider_record_id=f"{US_PROVIDER_ID}:{metric_code}:{observed_at.isoformat()}",
         )
+        available_at, availability_basis = _availability_with_evidence(
+            raw,
+            path="market_observation",
+            evidence_at=source.provider_updated_at,
+        )
         return MarketObservation(
             observation_id=_stable_id(
                 "obs_us",
                 Region.US.value,
-                raw["scope_id"],
+                scope_type.value,
+                scope_id,
                 metric_code,
                 observed_at,
                 source.provider_id,
             ),
             region=Region.US,
-            scope_type=ScopeType(
-                _str(
-                    _required(raw, "scope_type", "market_observation.scope_type"),
-                    "market_observation.scope_type",
-                )
-            ),
-            scope_id=_str(
-                _required(raw, "scope_id", "market_observation.scope_id"),
-                "market_observation.scope_id",
-            ),
+            scope_type=scope_type,
+            scope_id=scope_id,
             metric_code=metric_code,
             value=unit_value.value,
             unit=unit_value.unit,
@@ -800,16 +812,8 @@ class UsFixtureProvider:
                 "market_observation.period_end",
             ),
             observed_at=observed_at,
-            available_at=_datetime(
-                _required(raw, "available_at", "market_observation.available_at"),
-                "market_observation.available_at",
-            ),
-            availability_basis=AvailabilityBasis(
-                _str(
-                    _required(raw, "availability_basis", "market_observation.availability_basis"),
-                    "market_observation.availability_basis",
-                )
-            ),
+            available_at=available_at,
+            availability_basis=availability_basis,
             dimensions=_str_mapping(
                 _required(raw, "dimensions", "market_observation.dimensions"),
                 "market_observation.dimensions",
@@ -889,6 +893,12 @@ class UsFixtureProvider:
             raw,
             provider_record_id=f"{US_PROVIDER_ID}:{series_id}:{period_end.isoformat()}:{vintage_id}",
         )
+        released_at = _optional_datetime(raw, "released_at")
+        available_at, availability_basis = _availability_with_evidence(
+            raw,
+            path="macro_observation",
+            evidence_at=source.provider_updated_at or released_at,
+        )
         return MacroObservation(
             observation_id=_stable_id(
                 "mobs_us", series_id, period_end, vintage_id, source.provider_id
@@ -906,17 +916,9 @@ class UsFixtureProvider:
                 _required(raw, "transformation", "macro_observation.transformation"),
                 "macro_observation.transformation",
             ),
-            released_at=_optional_datetime(raw, "released_at"),
-            available_at=_datetime(
-                _required(raw, "available_at", "macro_observation.available_at"),
-                "macro_observation.available_at",
-            ),
-            availability_basis=AvailabilityBasis(
-                _str(
-                    _required(raw, "availability_basis", "macro_observation.availability_basis"),
-                    "macro_observation.availability_basis",
-                )
-            ),
+            released_at=released_at,
+            available_at=available_at,
+            availability_basis=availability_basis,
             vintage_id=vintage_id,
             revision_no=_int(
                 _required(raw, "revision_no", "macro_observation.revision_no"),
@@ -961,6 +963,13 @@ class UsFixtureProvider:
                 f"{US_PROVIDER_ID}:{series_id}:{scheduled_at.isoformat()}:{period_end.isoformat()}"
             ),
         )
+        released_at = _optional_datetime(raw, "released_at")
+        available_at, _availability_basis = _availability_with_evidence(
+            raw,
+            path="macro_release",
+            evidence_at=source.provider_updated_at or released_at,
+            require_basis=False,
+        )
         return MacroRelease(
             release_id=_stable_id(
                 "mrel_us", series_id, scheduled_at, period_end, source.provider_id
@@ -972,11 +981,8 @@ class UsFixtureProvider:
                 "macro_release.release_name",
             ),
             scheduled_at=scheduled_at,
-            released_at=_optional_datetime(raw, "released_at"),
-            available_at=_datetime(
-                _required(raw, "available_at", "macro_release.available_at"),
-                "macro_release.available_at",
-            ),
+            released_at=released_at,
+            available_at=available_at,
             period_start=_date(
                 _required(raw, "period_start", "macro_release.period_start"),
                 "macro_release.period_start",
@@ -999,7 +1005,15 @@ class UsFixtureProvider:
         _ensure_keys(
             raw,
             _SEC_NEWS_KEYS,
-            _SEC_NEWS_KEYS - {"summary", "provider_updated_at", "acceptance_datetime"},
+            _SEC_NEWS_KEYS
+            - {
+                "summary",
+                "provider_updated_at",
+                "acceptance_datetime",
+                "first_seen_at",
+                "available_at",
+                "availability_basis",
+            },
             "news",
         )
         accession = _str(
@@ -1011,14 +1025,26 @@ class UsFixtureProvider:
             _required(raw, "company_name", "news.company_name"), "news.company_name"
         )
         title = f"SEC filing: {form} {company_name}"
-        filing_date = _date(_required(raw, "filing_date", "news.filing_date"), "news.filing_date")
+        _date(_required(raw, "filing_date", "news.filing_date"), "news.filing_date")
         published_at = _optional_datetime(raw, "acceptance_datetime")
+        retrieved_at = _datetime(
+            _required(raw, "retrieved_at", "news.retrieved_at"), "news.retrieved_at"
+        )
         quality_flags = _str_list(
             _required(raw, "quality_flags", "news.quality_flags"), "news.quality_flags"
         )
         if published_at is None:
-            published_at = datetime.combine(filing_date, datetime.min.time(), tzinfo=UTC)
-            quality_flags.append("PUBLISHED_AT_DATE_ONLY")
+            # A filing date proves the calendar day, not an instant. Do not invent
+            # midnight precision: the record only becomes queryable when retrieved.
+            published_at = retrieved_at
+            quality_flags.append("PUBLISHED_AT_FALLBACK_TO_FIRST_SEEN")
+            first_seen_at = retrieved_at
+            available_at = retrieved_at
+            availability_basis = AvailabilityBasis.FIRST_SEEN
+        else:
+            first_seen_at = _optional_datetime(raw, "first_seen_at") or retrieved_at
+            available_at = published_at
+            availability_basis = AvailabilityBasis.PROVIDER_DISSEMINATED
         if form not in _SEC_FORM_TOPICS:
             quality_flags.append("SEC_FORM_UNMAPPED")
         return _news_event(
@@ -1029,6 +1055,9 @@ class UsFixtureProvider:
             published_at=published_at,
             provider_record_id=accession,
             quality_flags=quality_flags,
+            first_seen_at=first_seen_at,
+            available_at=available_at,
+            availability_basis=availability_basis,
         )
 
 
@@ -1079,6 +1108,9 @@ def _news_event(
     published_at: datetime,
     provider_record_id: str,
     quality_flags: list[str],
+    first_seen_at: datetime | None = None,
+    available_at: datetime | None = None,
+    availability_basis: AvailabilityBasis | None = None,
 ) -> NewsEvent:
     rights = _mapping(_required(raw, "rights", "news.rights"), "news.rights")
     _ensure_keys(rights, _RIGHTS_KEYS, _RIGHTS_KEYS - {"content_expires_at"}, "news.rights")
@@ -1099,13 +1131,12 @@ def _news_event(
         ),
         canonical_url=canonical_url,
         published_at=published_at,
-        first_seen_at=_datetime(
-            _required(raw, "first_seen_at", "news.first_seen_at"), "news.first_seen_at"
-        ),
-        available_at=_datetime(
-            _required(raw, "available_at", "news.available_at"), "news.available_at"
-        ),
-        availability_basis=AvailabilityBasis(
+        first_seen_at=first_seen_at
+        or _datetime(_required(raw, "first_seen_at", "news.first_seen_at"), "news.first_seen_at"),
+        available_at=available_at
+        or _datetime(_required(raw, "available_at", "news.available_at"), "news.available_at"),
+        availability_basis=availability_basis
+        or AvailabilityBasis(
             _str(
                 _required(raw, "availability_basis", "news.availability_basis"),
                 "news.availability_basis",
@@ -1148,9 +1179,8 @@ def _news_event(
 
 
 def register_us_provider_roles(registry: ProviderRegistry, provider: UsFixtureProvider) -> None:
+    """Register fixture capabilities without enabling fixture-only primary roles."""
     registry.register(provider)
-    for role, provider_id in US_ROLE_BINDINGS.items():
-        registry.bind_role(role, provider_id)
 
 
 def _cursor_fingerprint(query: StrictModel, context: FetchContext) -> str:
@@ -1180,7 +1210,11 @@ def _canonical_cursor_value(value: object) -> object:
 
 def _encode_cursor(dataset: Dataset, cursor: _FixtureCursor, fingerprint: str) -> str:
     payload = json.dumps(
-        {"raw_cursor": cursor.raw_cursor, "offset": cursor.offset},
+        {
+            "raw_cursor": cursor.raw_cursor,
+            "offset": cursor.offset,
+            "empty_pages": cursor.empty_pages,
+        },
         separators=(",", ":"),
         sort_keys=True,
     )
@@ -1214,7 +1248,10 @@ def _decode_cursor(cursor: object, dataset: Dataset, fingerprint: str) -> _Fixtu
     except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
         raise ProviderCursorError("fixture cursor is malformed") from exc
     _ensure_keys(
-        payload, frozenset({"raw_cursor", "offset"}), {"raw_cursor", "offset"}, "fixture cursor"
+        payload,
+        frozenset({"raw_cursor", "offset", "empty_pages"}),
+        {"raw_cursor", "offset", "empty_pages"},
+        "fixture cursor",
     )
     raw_cursor = payload["raw_cursor"]
     if raw_cursor is not None:
@@ -1222,7 +1259,10 @@ def _decode_cursor(cursor: object, dataset: Dataset, fingerprint: str) -> _Fixtu
     offset = _int(payload["offset"], "fixture cursor.offset")
     if offset < 0:
         raise ProviderCursorError("fixture cursor offset must not be negative")
-    return _FixtureCursor(raw_cursor=raw_cursor, offset=offset)
+    empty_pages = _int(payload["empty_pages"], "fixture cursor.empty_pages")
+    if empty_pages < 0:
+        raise ProviderCursorError("fixture cursor empty_pages must not be negative")
+    return _FixtureCursor(raw_cursor=raw_cursor, offset=offset, empty_pages=empty_pages)
 
 
 def _fixture_page(
@@ -1370,11 +1410,7 @@ def _source(
     provider_record_id: str,
     source_symbol: str | None = None,
 ) -> SourceRef:
-    business_payload = {
-        key: value
-        for key, value in raw.items()
-        if key not in {"retrieved_at", "provider_updated_at"}
-    }
+    business_payload = {key: value for key, value in raw.items() if key != "retrieved_at"}
     _str(_required(raw, "record_id", "source.record_id"), "source.record_id")
     return SourceRef(
         provider_id=US_PROVIDER_ID,
@@ -1388,6 +1424,38 @@ def _source(
         provider_updated_at=_optional_datetime(raw, "provider_updated_at"),
         checksum_sha256=canonical_json_checksum(business_payload),
     )
+
+
+def _availability_with_evidence(
+    raw: Mapping[str, object],
+    *,
+    path: str,
+    evidence_at: datetime | None,
+    require_basis: bool = True,
+) -> tuple[datetime, AvailabilityBasis]:
+    """Accept provider timing only when the fixture carries a source-time witness."""
+    retrieved_at = _datetime(
+        _required(raw, "retrieved_at", f"{path}.retrieved_at"), f"{path}.retrieved_at"
+    )
+    reported_at = _datetime(
+        _required(raw, "available_at", f"{path}.available_at"), f"{path}.available_at"
+    )
+    if not require_basis:
+        if evidence_at is not None:
+            return reported_at, AvailabilityBasis.PROVIDER_DISSEMINATED
+        return retrieved_at, AvailabilityBasis.FIRST_SEEN
+    reported_basis = AvailabilityBasis(
+        _str(
+            _required(raw, "availability_basis", f"{path}.availability_basis"),
+            f"{path}.availability_basis",
+        )
+    )
+    if evidence_at is not None and reported_basis in {
+        AvailabilityBasis.PROVIDER_DISSEMINATED,
+        AvailabilityBasis.EXCHANGE_PUBLISHED,
+    }:
+        return reported_at, reported_basis
+    return retrieved_at, AvailabilityBasis.FIRST_SEEN
 
 
 def _currency_value(raw: Mapping[str, object], key: str, currency: str) -> Decimal:
@@ -1456,7 +1524,11 @@ def _limited_page[T: StrictModel](
     if end < len(items):
         next_cursor = _encode_cursor(
             fixture_page.dataset,
-            _FixtureCursor(raw_cursor=fixture_page.cursor.raw_cursor, offset=end),
+            _FixtureCursor(
+                raw_cursor=fixture_page.cursor.raw_cursor,
+                offset=end,
+                empty_pages=fixture_page.cursor.empty_pages,
+            ),
             fixture_page.fingerprint,
         )
         complete = False

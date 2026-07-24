@@ -36,7 +36,7 @@ from macro_platform.providers.base import (
     ProviderTimeoutError,
     UnsupportedCapabilityError,
 )
-from macro_platform.providers.registry import ProviderRegistry
+from macro_platform.providers.registry import ProviderRegistry, ProviderRegistryError
 from macro_platform.providers.us import (
     US_PROVIDER_ID,
     US_ROLE_BINDINGS,
@@ -67,8 +67,11 @@ async def test_us_fixture_provider_maps_all_vertical_slice_datasets(
     provider: UsFixtureProvider,
 ) -> None:
     instruments = await provider.fetch_instruments(InstrumentQuery(regions={Region.US}), CONTEXT)
-    assert len(instruments.items) == 1
-    instrument = instruments.items[0]
+    assert len(instruments.items) == 2
+    instrument = next(item for item in instruments.items if item.canonical_symbol == "XNAS:AAPL")
+    index_instrument = next(
+        item for item in instruments.items if item.canonical_symbol == "BATS:SPX"
+    )
     assert instrument.canonical_symbol == "XNAS:AAPL"
     assert instrument.source.source_symbol == "aapl"
     assert instrument.source.provider_record_id == f"{US_PROVIDER_ID}:aapl:1980-12-12"
@@ -100,9 +103,16 @@ async def test_us_fixture_provider_maps_all_vertical_slice_datasets(
     assert bars.items[0].source.provider_record_id == (
         f"{US_PROVIDER_ID}:aapl:1d:2026-07-22T13:30:00+00:00:raw"
     )
+    assert "/v2/aggs/ticker/AAPL/" in str(bars.items[0].source.source_url)
     assert_page_contract(bars)
     assert_stable_page(bars, repeated_bars)
     assert bar_query == original_bar_query
+
+    index_bars = await provider.fetch_bars(
+        bar_query.model_copy(update={"instrument_ids": [index_instrument.instrument_id]}), CONTEXT
+    )
+    assert [item.canonical_symbol for item in index_bars.items] == ["BATS:SPX"]
+    assert "/v2/aggs/ticker/I:SPX/" in str(index_bars.items[0].source.source_url)
 
     observations = await provider.fetch_market_observations(
         MarketObservationQuery(
@@ -168,7 +178,16 @@ async def test_us_fixture_provider_maps_all_vertical_slice_datasets(
     assert "000032019326000001" in str(news.items[0].source.source_url)
     assert "000032019326000001" in str(news.items[0].canonical_url)
     assert news.items[0].body is None
-    assert news.items[0].usage_rights.external_llm_allowed is False
+    assert news.items[0].usage_rights.external_llm_allowed is True
+    assert news.items[0].available_at == datetime(2026, 7, 22, 20, 15, tzinfo=UTC)
+    assert news.items[0].availability_basis.value == "provider_disseminated"
+    assert {
+        item.title.split()[2] for item in news.items if item.title.startswith("SEC filing:")
+    } == {
+        "8-K",
+        "10-Q",
+        "10-K",
+    }
     daily_news = next(
         item for item in news.items if item.source.provider_record_id.endswith("bls-cpi-june-2026")
     )
@@ -185,13 +204,14 @@ def test_us_fixture_provider_declares_stable_roles_and_capabilities(
     assert capabilities.regions == {Region.US}
     assert capabilities.datasets == set(Dataset)
     assert capabilities.supports_full_text is False
-    assert capabilities.external_llm_allowed is False
+    assert capabilities.external_llm_allowed is True
     assert_capabilities_contract(provider)
 
     registry = ProviderRegistry()
     register_us_provider_roles(registry, provider)
     for role in US_ROLE_BINDINGS:
-        assert registry.resolve(role) is provider
+        with pytest.raises(ProviderRegistryError, match="not bound"):
+            registry.resolve(role)
 
 
 def test_us_fixture_provider_implements_all_required_provider_protocols(
@@ -290,10 +310,47 @@ async def test_us_fixture_source_checksum_excludes_retrieved_at(tmp_path: Path) 
     original_page = await original.fetch_instruments(query, CONTEXT)
     changed_page = await changed.fetch_instruments(query, CONTEXT)
 
-    assert (
-        original_page.items[0].source.checksum_sha256
-        == changed_page.items[0].source.checksum_sha256
+    original_apple = next(
+        item for item in original_page.items if item.canonical_symbol == "XNAS:AAPL"
     )
+    changed_apple = next(
+        item for item in changed_page.items if item.canonical_symbol == "XNAS:AAPL"
+    )
+    assert original_apple.source.checksum_sha256 == changed_apple.source.checksum_sha256
+
+
+@pytest.mark.asyncio
+async def test_us_fixture_source_checksum_includes_provider_updated_at(tmp_path: Path) -> None:
+    source_fixture = UsFixtureProvider.fixture_dir / "success.json"
+    changed_fixture = tmp_path / "changed-provider-updated-at.json"
+    payload = json.loads(source_fixture.read_text(encoding="utf-8"))
+    payload["pages"]["instruments"]["items"][0]["provider_updated_at"] = "2026-07-23T07:55:00Z"
+    changed_fixture.write_text(json.dumps(payload), encoding="utf-8")
+
+    original = UsFixtureProvider.from_fixture("success", clock=lambda: NOW)
+    changed = UsFixtureProvider(changed_fixture, clock=lambda: NOW)
+    query = InstrumentQuery(regions={Region.US})
+
+    original_page = await original.fetch_instruments(query, CONTEXT)
+    changed_page = await changed.fetch_instruments(query, CONTEXT)
+
+    original_apple = next(
+        item for item in original_page.items if item.canonical_symbol == "XNAS:AAPL"
+    )
+    changed_apple = next(
+        item for item in changed_page.items if item.canonical_symbol == "XNAS:AAPL"
+    )
+    assert original_apple.source.checksum_sha256 != changed_apple.source.checksum_sha256
+
+
+@pytest.mark.asyncio
+async def test_us_fixture_provider_reports_fixture_only_as_not_configured(
+    provider: UsFixtureProvider,
+) -> None:
+    health = await provider.healthcheck()
+
+    assert health.status == "not_configured"
+    assert health.message == "fixture-only provider cannot be scheduled for production ingestion"
 
 
 @pytest.mark.asyncio
@@ -460,7 +517,7 @@ async def test_us_fixture_provider_quarantines_bad_records_when_a_page_has_valid
 
     page = await provider.fetch_instruments(InstrumentQuery(regions={Region.US}), CONTEXT)
 
-    assert [item.canonical_symbol for item in page.items] == ["XNAS:AAPL"]
+    assert [item.canonical_symbol for item in page.items] == ["BATS:SPX", "XNAS:AAPL"]
     assert [warning.code for warning in page.warnings] == ["PROVIDER_RECORD_QUARANTINED"]
 
 
@@ -507,14 +564,114 @@ async def test_us_fixture_provider_rejects_an_empty_page_that_advances_cursor(
     source_fixture = UsFixtureProvider.fixture_dir / "success.json"
     changed_fixture = tmp_path / "empty-page-with-cursor.json"
     payload = json.loads(source_fixture.read_text(encoding="utf-8"))
-    payload["pages"] = {"instruments": {"next_cursor": "again", "items": []}}
+    payload["pages"] = {
+        "instruments": [
+            {"cursor": None, "next_cursor": "empty-2", "items": []},
+            {"cursor": "empty-2", "next_cursor": "empty-3", "items": []},
+            {"cursor": "empty-3", "next_cursor": "empty-4", "items": []},
+        ]
+    }
     changed_fixture.write_text(json.dumps(payload), encoding="utf-8")
     provider = UsFixtureProvider(changed_fixture, clock=lambda: NOW)
 
+    first_page = await provider.fetch_instruments(InstrumentQuery(regions={Region.US}), CONTEXT)
+    second_page = await provider.fetch_instruments(
+        InstrumentQuery(regions={Region.US}, cursor=first_page.next_cursor), CONTEXT
+    )
     with pytest.raises(ProviderCursorError, match="empty fixture page") as error:
-        await provider.fetch_instruments(InstrumentQuery(regions={Region.US}), CONTEXT)
+        await provider.fetch_instruments(
+            InstrumentQuery(regions={Region.US}, cursor=second_page.next_cursor), CONTEXT
+        )
 
     assert error.value.code == "INVALID_PAGINATION"
+
+
+def test_us_fixture_market_observation_id_includes_scope_type(
+    provider: UsFixtureProvider,
+) -> None:
+    payload = json.loads(
+        (UsFixtureProvider.fixture_dir / "success.json").read_text(encoding="utf-8")
+    )
+    raw = payload["pages"]["market_observations"]["items"][0]
+    same_scope_id_different_type = {
+        **raw,
+        "record_id": "h15-exchange-fed-funds",
+        "scope_type": "exchange",
+    }
+
+    market_observation = provider._parse_market_observation(raw)
+    exchange_observation = provider._parse_market_observation(same_scope_id_different_type)
+
+    assert market_observation.observation_id != exchange_observation.observation_id
+
+
+@pytest.mark.asyncio
+async def test_us_fixture_provider_falls_back_to_retrieved_at_without_availability_evidence(
+    tmp_path: Path,
+) -> None:
+    source_fixture = UsFixtureProvider.fixture_dir / "success.json"
+    unproven_fixture = tmp_path / "unproven-availability.json"
+    payload = json.loads(source_fixture.read_text(encoding="utf-8"))
+    payload["pages"]["bars"]["items"][0].pop("provider_updated_at")
+    payload["pages"]["market_observations"]["items"][0].pop("provider_updated_at")
+    payload["pages"]["macro_observations"]["items"][0].pop("provider_updated_at")
+    payload["pages"]["macro_observations"]["items"][0].pop("released_at")
+    payload["pages"]["macro_releases"]["items"][0].pop("provider_updated_at")
+    payload["pages"]["macro_releases"]["items"][0].pop("released_at")
+    unproven_fixture.write_text(json.dumps(payload), encoding="utf-8")
+    provider = UsFixtureProvider(unproven_fixture, clock=lambda: NOW)
+    apple = next(
+        item
+        for item in (
+            await provider.fetch_instruments(InstrumentQuery(regions={Region.US}), CONTEXT)
+        ).items
+        if item.canonical_symbol == "XNAS:AAPL"
+    )
+
+    bars = await provider.fetch_bars(
+        BarQuery(
+            instrument_ids=[apple.instrument_id],
+            interval=Interval.D1,
+            start=datetime(2026, 7, 22, tzinfo=UTC),
+            end=datetime(2026, 7, 23, tzinfo=UTC),
+            as_of=NOW,
+        ),
+        CONTEXT,
+    )
+    observations = await provider.fetch_market_observations(
+        MarketObservationQuery(
+            regions={Region.US},
+            metric_codes=["rate.fed_funds.effective"],
+            start=datetime(2026, 7, 21, tzinfo=UTC),
+            end=datetime(2026, 7, 24, tzinfo=UTC),
+            as_of=NOW,
+        ),
+        CONTEXT,
+    )
+    macro_observations = await provider.fetch_macro_observations(
+        MacroObservationQuery(
+            series_ids=["macro:US:BLS:CPI_ALL_ITEMS"],
+            period_from=date(2026, 6, 1),
+            period_to=date(2026, 6, 30),
+            as_of=NOW,
+        ),
+        CONTEXT,
+    )
+    releases = await provider.fetch_macro_releases(
+        MacroReleaseQuery(
+            regions={Region.US},
+            scheduled_from=datetime(2026, 7, 1, tzinfo=UTC),
+            scheduled_to=datetime(2026, 8, 1, tzinfo=UTC),
+            as_of=NOW,
+        ),
+        CONTEXT,
+    )
+
+    for item in [*bars.items, *observations.items, *macro_observations.items, *releases.items]:
+        assert item.available_at == NOW
+
+    for item in [*bars.items, *observations.items, *macro_observations.items]:
+        assert item.availability_basis.value == "first_seen"
 
 
 @pytest.mark.asyncio
@@ -634,7 +791,7 @@ async def test_us_fixture_provider_requires_sec_form_metadata(tmp_path: Path) ->
         CONTEXT,
     )
 
-    assert [item.title for item in page.items] == ["Consumer Price Index, June 2026"]
+    assert "SEC filing: 10-Q Apple Inc." not in [item.title for item in page.items]
     assert [warning.code for warning in page.warnings] == ["PROVIDER_RECORD_QUARANTINED"]
 
 
@@ -660,8 +817,11 @@ async def test_us_fixture_provider_marks_date_only_sec_filing_timestamps(tmp_pat
     filing = next(
         item for item in page.items if item.source.provider_record_id == "0000320193-26-000001"
     )
-    assert filing.published_at == datetime(2026, 7, 22, tzinfo=UTC)
-    assert "PUBLISHED_AT_DATE_ONLY" in filing.quality_flags
+    assert filing.published_at == NOW
+    assert "PUBLISHED_AT_FALLBACK_TO_FIRST_SEEN" in filing.quality_flags
+    assert filing.first_seen_at == NOW
+    assert filing.available_at == NOW
+    assert filing.availability_basis.value == "first_seen"
 
 
 @pytest.mark.asyncio
