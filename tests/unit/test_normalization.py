@@ -33,6 +33,12 @@ def test_news_003_title_normalization_handles_width_case_and_spacing() -> None:
     assert normalize_title_for_matching(" ＡＢＣ  Rate\nCUT ") == "abc rate cut"
 
 
+def test_news_003_title_normalization_preserves_numeric_punctuation() -> None:
+    assert normalize_title_for_matching("Inflation 1.0%") != normalize_title_for_matching(
+        "Inflation 10%"
+    )
+
+
 def test_time_001_to_utc_converts_aware_datetime() -> None:
     value = datetime(2026, 7, 23, 16, tzinfo=timezone(timedelta(hours=8)))
     assert to_utc(value) == datetime(2026, 7, 23, 8, tzinfo=UTC)

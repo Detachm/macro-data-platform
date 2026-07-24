@@ -13,6 +13,7 @@ from macro_platform.contracts.editor import EditorContextRequest
 from macro_platform.contracts.market import InstrumentQuery
 from macro_platform.contracts.news import ContentMode, NewsQuery
 from macro_platform.contracts.provider import Dataset, FetchContext
+from macro_platform.normalization.common import canonical_json_checksum
 from macro_platform.providers.base import (
     ProviderAuthenticationError,
     ProviderAuthorizationError,
@@ -145,6 +146,8 @@ async def test_news_002_003_provider_identity_uses_canonical_url_title_and_entit
     source_fixture = FIXTURE_ROOT / "cn" / "synthetic" / "success.json"
     original_fixture = tmp_path / "success_original_news_identity_inputs.json"
     changed_fixture = tmp_path / "success_changed_news_identity_inputs.json"
+    fallback_original_fixture = tmp_path / "success_original_news_title_fallback.json"
+    fallback_changed_fixture = tmp_path / "success_changed_news_title_fallback.json"
     payload = json.loads(source_fixture.read_text(encoding="utf-8"))
     changed_payload = deepcopy(payload)
 
@@ -164,6 +167,16 @@ async def test_news_002_003_provider_identity_uses_canonical_url_title_and_entit
     ]
     original_fixture.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     changed_fixture.write_text(json.dumps(changed_payload, ensure_ascii=False), encoding="utf-8")
+    fallback_payload = deepcopy(payload)
+    fallback_changed_payload = deepcopy(changed_payload)
+    del fallback_payload["pages"]["news"]["items"][0]["canonical_url"]
+    del fallback_changed_payload["pages"]["news"]["items"][0]["canonical_url"]
+    fallback_original_fixture.write_text(
+        json.dumps(fallback_payload, ensure_ascii=False), encoding="utf-8"
+    )
+    fallback_changed_fixture.write_text(
+        json.dumps(fallback_changed_payload, ensure_ascii=False), encoding="utf-8"
+    )
 
     query = NewsQuery(
         regions={Region.CN},
@@ -174,10 +187,26 @@ async def test_news_002_003_provider_identity_uses_canonical_url_title_and_entit
     )
     original = await CnSyntheticProvider(original_fixture).fetch_news(query, context)
     changed = await CnSyntheticProvider(changed_fixture).fetch_news(query, context)
+    fallback_original = await CnSyntheticProvider(fallback_original_fixture).fetch_news(
+        query, context
+    )
+    fallback_changed = await CnSyntheticProvider(fallback_changed_fixture).fetch_news(
+        query, context
+    )
 
     assert str(original.items[0].canonical_url) == "https://example.test/cn/news/001?a=1&b=2"
     assert original.items[0].news_id == changed.items[0].news_id
     assert original.items[0].cluster_id == changed.items[0].cluster_id
+    assert original.items[0].content_hash_sha256 != changed.items[0].content_hash_sha256
+    assert original.items[0].content_hash_sha256 == canonical_json_checksum(
+        {
+            "title": original_news["title"],
+            "summary": original_news["summary"],
+            "body": original_news["body"],
+            "language": original_news["language"],
+        }
+    )
+    assert fallback_original.items[0].news_id == fallback_changed.items[0].news_id
 
 
 @pytest.mark.asyncio
