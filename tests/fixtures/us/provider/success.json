@@ -9,7 +9,7 @@
         {
           "record_id": "nasdaq-aapl",
           "source_name": "Nasdaq Trader Symbol Directory",
-          "source_url": "https://example.test/us/instruments/aapl",
+          "source_url": "https://www.nasdaqtrader.com/dynamic/symdir/nasdaqlisted.txt",
           "retrieved_at": "2026-07-23T08:00:00Z",
           "provider_updated_at": "2026-07-23T07:50:00Z",
           "symbol": "aapl",
@@ -34,7 +34,7 @@
         {
           "record_id": "polygon-aapl-2026-07-22",
           "source_name": "Polygon/Massive Aggregate Fixture",
-          "source_url": "https://example.test/us/bars/aapl/2026-07-22",
+          "source_url": "https://polygon.io/docs/rest/stocks/aggregates",
           "retrieved_at": "2026-07-23T08:00:00Z",
           "provider_updated_at": "2026-07-22T20:05:00Z",
           "symbol": "aapl",
@@ -67,7 +67,7 @@
         {
           "record_id": "h15-fed-funds-2026-07-22",
           "source_name": "Federal Reserve H.15",
-          "source_url": "https://example.test/us/h15/fed-funds/2026-07-22",
+          "source_url": "https://www.federalreserve.gov/releases/h15/",
           "retrieved_at": "2026-07-23T08:00:00Z",
           "provider_updated_at": "2026-07-22T21:00:00Z",
           "scope_type": "market",
@@ -91,7 +91,7 @@
         {
           "record_id": "bls-cpi-all-items",
           "source_name": "BLS Public Data API",
-          "source_url": "https://example.test/us/bls/CPI_ALL_ITEMS",
+          "source_url": "https://api.bls.gov/publicAPI/v2/timeseries/data/",
           "retrieved_at": "2026-07-23T08:00:00Z",
           "provider_updated_at": "2026-07-10T12:30:00Z",
           "series_id": "macro:US:BLS:CPI_ALL_ITEMS",
@@ -112,7 +112,7 @@
         {
           "record_id": "bls-cpi-all-items-2026-06",
           "source_name": "BLS Public Data API",
-          "source_url": "https://example.test/us/bls/CPI_ALL_ITEMS/2026-06",
+          "source_url": "https://api.bls.gov/publicAPI/v2/timeseries/data/CPI_ALL_ITEMS",
           "retrieved_at": "2026-07-23T08:00:00Z",
           "provider_updated_at": "2026-07-10T12:31:00Z",
           "series_id": "macro:US:BLS:CPI_ALL_ITEMS",
@@ -137,7 +137,7 @@
         {
           "record_id": "bls-cpi-release-2026-06",
           "source_name": "BLS Release Calendar",
-          "source_url": "https://example.test/us/bls/releases/cpi-2026-06",
+          "source_url": "https://www.bls.gov/schedule/news_release/cpi.htm",
           "retrieved_at": "2026-07-23T08:00:00Z",
           "provider_updated_at": "2026-07-10T12:31:00Z",
           "series_id": "macro:US:BLS:CPI_ALL_ITEMS",
@@ -161,16 +161,18 @@
         {
           "record_id": "sec-0000320193-26-000001",
           "source_name": "SEC EDGAR",
-          "source_url": "https://example.test/us/sec/0000320193-26-000001",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/320193/000032019326000001/",
           "retrieved_at": "2026-07-23T08:00:00Z",
           "provider_updated_at": "2026-07-22T20:15:00Z",
           "accession_number": "0000320193-26-000001",
-          "title": "Apple Inc. files Form 10-Q",
+          "form": "10-Q",
+          "company_name": "Apple Inc.",
+          "filing_date": "2026-07-22",
+          "acceptance_datetime": "2026-07-22T20:15:00Z",
           "summary": "Synthetic filing metadata only; no filing body is retained.",
           "language": "en",
           "source_tier": "official",
-          "canonical_url": "https://example.test/us/sec/0000320193-26-000001?utm_source=fixture",
-          "published_at": "2026-07-22T20:15:00Z",
+          "canonical_url": "https://www.sec.gov/Archives/edgar/data/320193/000032019326000001/",
           "first_seen_at": "2026-07-22T20:16:00Z",
           "available_at": "2026-07-22T20:16:00Z",
           "availability_basis": "first_seen",
@@ -182,7 +184,6 @@
               "confidence": "1"
             }
           ],
-          "topics": ["filing"],
           "rights": {
             "storage_allowed": true,
             "internal_analysis_allowed": true,
@@ -191,6 +192,32 @@
             "redistribution_allowed": false
           },
           "quality_flags": ["synthetic", "metadata_only"]
+        },
+        {
+          "record_id": "bls-cpi-june-2026",
+          "source_name": "BLS News Releases",
+          "source_url": "https://www.bls.gov/news.release/cpi.nr0.htm",
+          "retrieved_at": "2026-07-23T08:00:00Z",
+          "provider_updated_at": "2026-07-10T12:30:00Z",
+          "title": "Consumer Price Index, June 2026",
+          "summary": "Synthetic headline and snippet only; no restricted news body is retained.",
+          "language": "en",
+          "source_tier": "official",
+          "canonical_url": "https://www.bls.gov/news.release/cpi.nr0.htm?utm_source=fixture",
+          "published_at": "2026-07-10T12:30:00Z",
+          "first_seen_at": "2026-07-10T12:31:00Z",
+          "available_at": "2026-07-10T12:31:00Z",
+          "availability_basis": "provider_disseminated",
+          "entities": [],
+          "topics": ["macro", "cpi"],
+          "rights": {
+            "storage_allowed": true,
+            "internal_analysis_allowed": true,
+            "external_llm_allowed": false,
+            "embedding_allowed": false,
+            "redistribution_allowed": false
+          },
+          "quality_flags": ["synthetic", "headline_snippet_only"]
         }
       ]
     }

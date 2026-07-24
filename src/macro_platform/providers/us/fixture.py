@@ -1,9 +1,20 @@
-"""Offline US provider vertical slice backed only by synthetic fixtures."""
+"""Offline US provider vertical slice backed only by synthetic fixtures.
+
+Module boundary rationale (Engineering Spec §18.4): this module deliberately
+keeps the fixture transport, pagination and seven dataset mappers together.
+They share one strict fixture envelope, cursor format, PIT handling and the
+frozen source-identity rules from ADR 0001; splitting by dataset would either
+duplicate those contract-critical checks or make the fixture adapter harder to
+audit. A production network adapter must be introduced as separate provider
+modules rather than extending this fixture-only vertical slice.
+"""
 
 from __future__ import annotations
 
+import base64
 import json
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from hashlib import sha256
@@ -201,22 +212,28 @@ _MACRO_RELEASE_KEYS = _SOURCE_KEYS | frozenset(
 )
 _NEWS_KEYS = _SOURCE_KEYS | frozenset(
     {
-        "accession_number",
-        "title",
         "summary",
         "language",
         "source_tier",
         "canonical_url",
-        "published_at",
         "first_seen_at",
         "available_at",
         "availability_basis",
         "entities",
-        "topics",
         "rights",
         "quality_flags",
     }
 )
+_SEC_NEWS_KEYS = _NEWS_KEYS | frozenset(
+    {
+        "accession_number",
+        "form",
+        "company_name",
+        "filing_date",
+        "acceptance_datetime",
+    }
+)
+_DAILY_NEWS_KEYS = _NEWS_KEYS | frozenset({"title", "published_at", "topics"})
 _ENTITY_KEYS = frozenset({"entity_type", "entity_id", "mention", "confidence"})
 _RIGHTS_KEYS = frozenset(
     {
@@ -228,6 +245,25 @@ _RIGHTS_KEYS = frozenset(
         "content_expires_at",
     }
 )
+_SEC_FORM_TOPICS: dict[str, tuple[str, ...]] = {
+    "10-K": ("filing", "annual_report"),
+    "10-Q": ("filing", "quarterly_report"),
+    "8-K": ("filing", "corporate_action"),
+}
+
+
+@dataclass(frozen=True)
+class _FixtureCursor:
+    raw_cursor: str | None
+    offset: int = 0
+
+
+@dataclass(frozen=True)
+class _QueryFixturePage[T: StrictModel]:
+    dataset: Dataset
+    page: ProviderPage[T]
+    cursor: _FixtureCursor
+    fingerprint: str
 
 
 class UsFixtureProvider:
@@ -282,7 +318,10 @@ class UsFixtureProvider:
     async def fetch_instruments(
         self, query: InstrumentQuery, context: FetchContext
     ) -> ProviderPage[Instrument]:
-        page = self._page_for_query(Dataset.INSTRUMENTS, self._parse_instrument, query, context)
+        fixture_page = self._page_for_query(
+            Dataset.INSTRUMENTS, self._parse_instrument, query, context
+        )
+        page = fixture_page.page
         items = [
             item
             for item in page.items
@@ -294,8 +333,11 @@ class UsFixtureProvider:
             and item.source.retrieved_at <= context.as_of
         ]
         return _limited_page(
-            page,
-            sorted(items, key=lambda item: (item.canonical_symbol, item.valid_from)),
+            fixture_page,
+            sorted(
+                items,
+                key=lambda item: (item.canonical_symbol, item.valid_from, item.instrument_id),
+            ),
             query.limit,
         )
 
@@ -304,7 +346,8 @@ class UsFixtureProvider:
             raise UnsupportedCapabilityError(
                 "the US fixture vertical slice supports raw daily bars only"
             )
-        page = self._page_for_query(Dataset.BARS, self._parse_bar, query, context)
+        fixture_page = self._page_for_query(Dataset.BARS, self._parse_bar, query, context)
+        page = fixture_page.page
         items = [
             item
             for item in page.items
@@ -315,7 +358,7 @@ class UsFixtureProvider:
             and _is_available(item.available_at, query.as_of, context)
         ]
         return _limited_page(
-            page,
+            fixture_page,
             sorted(items, key=lambda item: (item.bar_end, item.instrument_id, item.bar_id)),
             query.limit,
         )
@@ -323,12 +366,13 @@ class UsFixtureProvider:
     async def fetch_market_observations(
         self, query: MarketObservationQuery, context: FetchContext
     ) -> ProviderPage[MarketObservation]:
-        page = self._page_for_query(
+        fixture_page = self._page_for_query(
             Dataset.MARKET_OBSERVATIONS,
             self._parse_market_observation,
             query,
             context,
         )
+        page = fixture_page.page
         items = [
             item
             for item in page.items
@@ -339,7 +383,7 @@ class UsFixtureProvider:
             and _is_available(item.available_at, query.as_of, context)
         ]
         return _limited_page(
-            page,
+            fixture_page,
             sorted(items, key=lambda item: (item.observed_at, item.observation_id)),
             query.limit,
         )
@@ -347,7 +391,10 @@ class UsFixtureProvider:
     async def fetch_macro_series(
         self, query: MacroSeriesQuery, context: FetchContext
     ) -> ProviderPage[MacroSeries]:
-        page = self._page_for_query(Dataset.MACRO_SERIES, self._parse_macro_series, query, context)
+        fixture_page = self._page_for_query(
+            Dataset.MACRO_SERIES, self._parse_macro_series, query, context
+        )
+        page = fixture_page.page
         items = [
             item
             for item in page.items
@@ -355,17 +402,20 @@ class UsFixtureProvider:
             and (not query.series_ids or item.series_id in query.series_ids)
             and item.source.retrieved_at <= context.as_of
         ]
-        return _limited_page(page, sorted(items, key=lambda item: item.series_id), query.limit)
+        return _limited_page(
+            fixture_page, sorted(items, key=lambda item: item.series_id), query.limit
+        )
 
     async def fetch_macro_observations(
         self, query: MacroObservationQuery, context: FetchContext
     ) -> ProviderPage[MacroObservation]:
-        page = self._page_for_query(
+        fixture_page = self._page_for_query(
             Dataset.MACRO_OBSERVATIONS,
             self._parse_macro_observation,
             query,
             context,
         )
+        page = fixture_page.page
         items = [
             item
             for item in page.items
@@ -375,7 +425,7 @@ class UsFixtureProvider:
         ]
         selected_revisions = _select_macro_revisions(items, query.revision_policy)
         return _limited_page(
-            page,
+            fixture_page,
             sorted(
                 selected_revisions,
                 key=lambda item: (item.period_end, item.series_id, item.available_at),
@@ -386,12 +436,13 @@ class UsFixtureProvider:
     async def fetch_macro_releases(
         self, query: MacroReleaseQuery, context: FetchContext
     ) -> ProviderPage[MacroRelease]:
-        page = self._page_for_query(
+        fixture_page = self._page_for_query(
             Dataset.MACRO_RELEASES,
             self._parse_macro_release,
             query,
             context,
         )
+        page = fixture_page.page
         items = [
             item
             for item in page.items
@@ -400,11 +451,18 @@ class UsFixtureProvider:
             and _is_available(item.available_at, query.as_of, context)
         ]
         return _limited_page(
-            page, sorted(items, key=lambda item: (item.scheduled_at, item.release_id)), query.limit
+            fixture_page,
+            sorted(items, key=lambda item: (item.scheduled_at, item.release_id)),
+            query.limit,
         )
 
     async def fetch_news(self, query: NewsQuery, context: FetchContext) -> ProviderPage[NewsEvent]:
-        page = self._page_for_query(Dataset.NEWS, self._parse_news, query, context)
+        if query.content_mode is ContentMode.FULL_TEXT:
+            raise UnsupportedCapabilityError(
+                "the US fixture vertical slice does not support full-text news"
+            )
+        fixture_page = self._page_for_query(Dataset.NEWS, self._parse_news, query, context)
+        page = fixture_page.page
         items = [
             item
             for item in page.items
@@ -424,7 +482,7 @@ class UsFixtureProvider:
             and _content_satisfies(query.content_mode, item.content_mode)
         ]
         return _limited_page(
-            page,
+            fixture_page,
             sorted(items, key=lambda item: (item.published_at, item.news_id), reverse=True),
             query.limit,
         )
@@ -435,28 +493,30 @@ class UsFixtureProvider:
         parser: Callable[[Mapping[str, object]], T],
         query: StrictModel,
         context: FetchContext,
-    ) -> ProviderPage[T]:
+    ) -> _QueryFixturePage[T]:
         fingerprint = _cursor_fingerprint(query, context)
-        return self._page(
+        cursor = _decode_cursor(query.model_dump().get("cursor"), dataset, fingerprint)
+        page = self._page(
             dataset,
             parser,
-            cursor=_decode_cursor(query.model_dump().get("cursor"), dataset, fingerprint),
+            cursor=cursor,
             cursor_fingerprint=fingerprint,
         )
+        return _QueryFixturePage(dataset=dataset, page=page, cursor=cursor, fingerprint=fingerprint)
 
     def _page[T: StrictModel](
         self,
         dataset: Dataset,
         parser: Callable[[Mapping[str, object]], T],
         *,
-        cursor: str | None,
+        cursor: _FixtureCursor,
         cursor_fingerprint: str,
     ) -> ProviderPage[T]:
         payload = self._payload()
         _ensure_keys(payload, _ENVELOPE_KEYS, {"status", "fetched_at", "pages"}, "$")
         pages = _mapping(_required(payload, "pages", "pages"), "pages")
         _ensure_keys(pages, _DATASET_PAGE_KEYS, {dataset.value}, "pages")
-        raw_page = _fixture_page(pages, dataset, cursor)
+        raw_page = _fixture_page(pages, dataset, cursor.raw_cursor)
         raw_items = _list(
             _required(raw_page, "items", f"pages.{dataset.value}.items"),
             f"pages.{dataset.value}.items",
@@ -467,13 +527,15 @@ class UsFixtureProvider:
                 f"empty fixture page for {dataset.value} must not advance to another cursor",
                 code="INVALID_PAGINATION",
             )
-        self._ensure_no_duplicate_records(raw_items, dataset)
+        self._ensure_no_duplicate_raw_records(raw_items, dataset)
         items: list[T] = []
         warnings: list[WarningItem] = []
         for index, raw_item in enumerate(raw_items):
             try:
                 item = parser(_mapping(raw_item, f"pages.{dataset.value}.items[{index}]"))
             except ProviderSchemaError as exc:
+                if exc.code == "PROVIDER_SCHEMA_UNKNOWN_FIELD":
+                    raise
                 warnings.append(_quarantine_warning(dataset, index, exc))
             except (TimezoneRequiredError, UsNormalizationError, ValueError) as exc:
                 warnings.append(
@@ -487,10 +549,15 @@ class UsFixtureProvider:
                 items.append(item)
         if raw_items and not items:
             raise ProviderSchemaError(f"all records in {dataset.value} fixture page were rejected")
+        self._ensure_no_duplicate_records(items, pages, dataset, cursor.raw_cursor, parser)
         return ProviderPage[T](
             items=items,
             next_cursor=(
-                _encode_cursor(dataset, next_cursor, cursor_fingerprint)
+                _encode_cursor(
+                    dataset,
+                    _FixtureCursor(raw_cursor=next_cursor),
+                    cursor_fingerprint,
+                )
                 if next_cursor is not None
                 else None
             ),
@@ -500,14 +567,24 @@ class UsFixtureProvider:
             warnings=warnings,
         )
 
-    def _ensure_no_duplicate_records(self, raw_items: Sequence[object], dataset: Dataset) -> None:
-        record_ids = [
-            record_id
-            for item in raw_items
-            if isinstance(item, dict)
-            and isinstance((record_id := item.get("record_id")), str)
-            and record_id.strip()
-        ]
+    def _ensure_no_duplicate_records(
+        self,
+        items: Sequence[StrictModel],
+        pages: Mapping[str, object],
+        dataset: Dataset,
+        cursor: str | None,
+        parser: Callable[[Mapping[str, object]], StrictModel],
+    ) -> None:
+        record_ids = _provider_record_ids(items) + _previous_provider_record_ids(
+            pages, dataset, cursor, parser
+        )
+        if len(record_ids) != len(set(record_ids)):
+            raise ProviderCursorError(f"duplicate record id across {dataset.value} fixture pages")
+
+    def _ensure_no_duplicate_raw_records(
+        self, raw_items: Sequence[object], dataset: Dataset
+    ) -> None:
+        record_ids = _raw_record_ids(raw_items)
         if len(record_ids) != len(set(record_ids)):
             raise ProviderCursorError(f"duplicate record id in {dataset.value} fixture page")
 
@@ -516,7 +593,8 @@ class UsFixtureProvider:
             text = self._fixture_path.read_text(encoding="utf-8")
         except OSError as exc:
             raise ProviderUnavailableError(f"fixture unavailable: {self._fixture_path}") from exc
-        if "<html" in text[:200].lower():
+        leading_payload = text[:200].lstrip().lower()
+        if "<html" in leading_payload or "<!doctype html" in leading_payload:
             raise ProviderAuthorizationError(
                 "provider returned a login, auth-wall, or risk-control page"
             )
@@ -593,7 +671,11 @@ class UsFixtureProvider:
             lot_size=_optional_decimal(raw, "lot_size"),
             valid_from=alias.valid_from,
             valid_to=alias.valid_to,
-            source=_source(raw, source_symbol=alias.source_symbol),
+            source=_source(
+                raw,
+                provider_record_id=f"{US_PROVIDER_ID}:{alias.source_symbol}:{alias.valid_from.isoformat()}",
+                source_symbol=alias.source_symbol,
+            ),
         )
 
     def _parse_bar(self, raw: Mapping[str, object]) -> MarketBar:
@@ -618,7 +700,14 @@ class UsFixtureProvider:
         adjustment = Adjustment(
             _str(_required(raw, "adjustment", "bar.adjustment"), "bar.adjustment")
         )
-        source = _source(raw, source_symbol=alias.source_symbol)
+        source = _source(
+            raw,
+            provider_record_id=(
+                f"{US_PROVIDER_ID}:{alias.source_symbol}:{interval.value}:"
+                f"{bar_start.isoformat()}:{adjustment.value}"
+            ),
+            source_symbol=alias.source_symbol,
+        )
         return MarketBar(
             bar_id=_stable_id(
                 "bar_us",
@@ -666,17 +755,24 @@ class UsFixtureProvider:
             "market_observation",
         )
         unit_value = _unit_value(raw, "value", "unit", value_optional=True)
-        source = _source(raw)
+        metric_code = _str(
+            _required(raw, "metric_code", "market_observation.metric_code"),
+            "market_observation.metric_code",
+        )
         observed_at = _datetime(
             _required(raw, "observed_at", "market_observation.observed_at"),
             "market_observation.observed_at",
+        )
+        source = _source(
+            raw,
+            provider_record_id=f"{US_PROVIDER_ID}:{metric_code}:{observed_at.isoformat()}",
         )
         return MarketObservation(
             observation_id=_stable_id(
                 "obs_us",
                 Region.US.value,
                 raw["scope_id"],
-                raw["metric_code"],
+                metric_code,
                 observed_at,
                 source.provider_id,
             ),
@@ -691,10 +787,7 @@ class UsFixtureProvider:
                 _required(raw, "scope_id", "market_observation.scope_id"),
                 "market_observation.scope_id",
             ),
-            metric_code=_str(
-                _required(raw, "metric_code", "market_observation.metric_code"),
-                "market_observation.metric_code",
-            ),
+            metric_code=metric_code,
             value=unit_value.value,
             unit=unit_value.unit,
             currency=_optional_str(raw, "currency") or unit_value.currency,
@@ -735,15 +828,17 @@ class UsFixtureProvider:
             _MACRO_SERIES_KEYS - {"description", "provider_updated_at"},
             "macro_series",
         )
+        authority = _str(
+            _required(raw, "authority", "macro_series.authority"), "macro_series.authority"
+        )
+        code = _str(_required(raw, "code", "macro_series.code"), "macro_series.code")
         return MacroSeries(
             series_id=_str(
                 _required(raw, "series_id", "macro_series.series_id"), "macro_series.series_id"
             ),
             region=Region.US,
-            authority=_str(
-                _required(raw, "authority", "macro_series.authority"), "macro_series.authority"
-            ),
-            code=_str(_required(raw, "code", "macro_series.code"), "macro_series.code"),
+            authority=authority,
+            code=code,
             name=_str(_required(raw, "name", "macro_series.name"), "macro_series.name"),
             description=_optional_str(raw, "description"),
             frequency=Frequency(
@@ -766,7 +861,7 @@ class UsFixtureProvider:
                     "macro_series.seasonal_adjustment",
                 ),
             ),
-            source=_source(raw),
+            source=_source(raw, provider_record_id=f"{US_PROVIDER_ID}:{authority}-{code}"),
         )
 
     def _parse_macro_observation(self, raw: Mapping[str, object]) -> MacroObservation:
@@ -790,7 +885,10 @@ class UsFixtureProvider:
             _required(raw, "vintage_id", "macro_observation.vintage_id"),
             "macro_observation.vintage_id",
         )
-        source = _source(raw)
+        source = _source(
+            raw,
+            provider_record_id=f"{US_PROVIDER_ID}:{series_id}:{period_end.isoformat()}:{vintage_id}",
+        )
         return MacroObservation(
             observation_id=_stable_id(
                 "mobs_us", series_id, period_end, vintage_id, source.provider_id
@@ -857,7 +955,12 @@ class UsFixtureProvider:
         period_end = _date(
             _required(raw, "period_end", "macro_release.period_end"), "macro_release.period_end"
         )
-        source = _source(raw)
+        source = _source(
+            raw,
+            provider_record_id=(
+                f"{US_PROVIDER_ID}:{series_id}:{scheduled_at.isoformat()}:{period_end.isoformat()}"
+            ),
+        )
         return MacroRelease(
             release_id=_stable_id(
                 "mrel_us", series_id, scheduled_at, period_end, source.provider_id
@@ -890,82 +993,158 @@ class UsFixtureProvider:
         )
 
     def _parse_news(self, raw: Mapping[str, object]) -> NewsEvent:
-        _ensure_keys(raw, _NEWS_KEYS, _NEWS_KEYS - {"summary", "provider_updated_at"}, "news")
-        rights = _mapping(_required(raw, "rights", "news.rights"), "news.rights")
-        _ensure_keys(rights, _RIGHTS_KEYS, _RIGHTS_KEYS - {"content_expires_at"}, "news.rights")
+        if "accession_number" not in raw:
+            return _parse_daily_news(raw)
+
+        _ensure_keys(
+            raw,
+            _SEC_NEWS_KEYS,
+            _SEC_NEWS_KEYS - {"summary", "provider_updated_at", "acceptance_datetime"},
+            "news",
+        )
         accession = _str(
             _required(raw, "accession_number", "news.accession_number"), "news.accession_number"
         )
-        title = _str(_required(raw, "title", "news.title"), "news.title")
-        summary = _optional_str(raw, "summary")
-        canonical_url = canonicalize_url(
-            _str(_required(raw, "canonical_url", "news.canonical_url"), "news.canonical_url")
+        _ensure_sec_archive_urls(raw, accession)
+        form = _str(_required(raw, "form", "news.form"), "news.form").upper()
+        company_name = _str(
+            _required(raw, "company_name", "news.company_name"), "news.company_name"
         )
-        return NewsEvent(
+        title = f"SEC filing: {form} {company_name}"
+        filing_date = _date(_required(raw, "filing_date", "news.filing_date"), "news.filing_date")
+        published_at = _optional_datetime(raw, "acceptance_datetime")
+        quality_flags = _str_list(
+            _required(raw, "quality_flags", "news.quality_flags"), "news.quality_flags"
+        )
+        if published_at is None:
+            published_at = datetime.combine(filing_date, datetime.min.time(), tzinfo=UTC)
+            quality_flags.append("PUBLISHED_AT_DATE_ONLY")
+        if form not in _SEC_FORM_TOPICS:
+            quality_flags.append("SEC_FORM_UNMAPPED")
+        return _news_event(
+            raw,
             news_id=f"news_us_sec_{accession.replace('-', '').lower()}",
             title=title,
-            summary=summary,
-            body=None,
-            content_mode=ContentMode.SNIPPET if summary is not None else ContentMode.HEADLINE,
-            language=_str(_required(raw, "language", "news.language"), "news.language"),
-            source_name=_str(_required(raw, "source_name", "news.source_name"), "news.source_name"),
-            source_tier=SourceTier(
-                _str(_required(raw, "source_tier", "news.source_tier"), "news.source_tier")
-            ),
-            canonical_url=canonical_url,
-            published_at=_datetime(
-                _required(raw, "published_at", "news.published_at"), "news.published_at"
-            ),
-            first_seen_at=_datetime(
-                _required(raw, "first_seen_at", "news.first_seen_at"), "news.first_seen_at"
-            ),
-            available_at=_datetime(
-                _required(raw, "available_at", "news.available_at"), "news.available_at"
-            ),
-            availability_basis=AvailabilityBasis(
-                _str(
-                    _required(raw, "availability_basis", "news.availability_basis"),
-                    "news.availability_basis",
-                )
-            ),
-            regions=[Region.US],
-            entities=_news_entities(_required(raw, "entities", "news.entities")),
-            topics=_str_list(_required(raw, "topics", "news.topics"), "news.topics"),
-            content_hash_sha256=canonical_json_checksum(
-                {"title": title, "summary": summary, "url": canonical_url}
-            ),
-            usage_rights=UsageRights(
-                storage_allowed=_bool(
-                    _required(rights, "storage_allowed", "news.rights.storage_allowed"),
-                    "news.rights.storage_allowed",
-                ),
-                internal_analysis_allowed=_bool(
-                    _required(
-                        rights, "internal_analysis_allowed", "news.rights.internal_analysis_allowed"
-                    ),
-                    "news.rights.internal_analysis_allowed",
-                ),
-                external_llm_allowed=_bool(
-                    _required(rights, "external_llm_allowed", "news.rights.external_llm_allowed"),
-                    "news.rights.external_llm_allowed",
-                ),
-                embedding_allowed=_bool(
-                    _required(rights, "embedding_allowed", "news.rights.embedding_allowed"),
-                    "news.rights.embedding_allowed",
-                ),
-                redistribution_allowed=_bool(
-                    _required(
-                        rights, "redistribution_allowed", "news.rights.redistribution_allowed"
-                    ),
-                    "news.rights.redistribution_allowed",
-                ),
-                content_expires_at=_optional_datetime(rights, "content_expires_at"),
-            ),
-            source=_source(raw),
-            quality_flags=_str_list(
-                _required(raw, "quality_flags", "news.quality_flags"), "news.quality_flags"
-            ),
+            topics=list(_SEC_FORM_TOPICS.get(form, ("filing",))),
+            published_at=published_at,
+            provider_record_id=accession,
+            quality_flags=quality_flags,
         )
+
+
+def _parse_daily_news(raw: Mapping[str, object]) -> NewsEvent:
+    _ensure_keys(
+        raw,
+        _DAILY_NEWS_KEYS,
+        _DAILY_NEWS_KEYS - {"summary", "provider_updated_at"},
+        "news",
+    )
+    record_id = _str(_required(raw, "record_id", "news.record_id"), "news.record_id")
+    provider_record_id = f"{US_PROVIDER_ID}:{record_id}"
+    return _news_event(
+        raw,
+        news_id=_stable_id("news_us", provider_record_id),
+        title=_str(_required(raw, "title", "news.title"), "news.title"),
+        topics=_str_list(_required(raw, "topics", "news.topics"), "news.topics"),
+        published_at=_datetime(
+            _required(raw, "published_at", "news.published_at"), "news.published_at"
+        ),
+        provider_record_id=provider_record_id,
+        quality_flags=_str_list(
+            _required(raw, "quality_flags", "news.quality_flags"), "news.quality_flags"
+        ),
+    )
+
+
+def _ensure_sec_archive_urls(raw: Mapping[str, object], accession: str) -> None:
+    expected_accession = accession.replace("-", "").lower()
+    for key in ("source_url", "canonical_url"):
+        url = _str(_required(raw, key, f"news.{key}"), f"news.{key}")
+        normalized_url = url.lower()
+        if (
+            not normalized_url.startswith("https://www.sec.gov/archives/edgar/data/")
+            or expected_accession not in normalized_url
+        ):
+            raise ProviderSchemaError(
+                f"news.{key} must be the SEC archive URL for its accession number"
+            )
+
+
+def _news_event(
+    raw: Mapping[str, object],
+    *,
+    news_id: str,
+    title: str,
+    topics: list[str],
+    published_at: datetime,
+    provider_record_id: str,
+    quality_flags: list[str],
+) -> NewsEvent:
+    rights = _mapping(_required(raw, "rights", "news.rights"), "news.rights")
+    _ensure_keys(rights, _RIGHTS_KEYS, _RIGHTS_KEYS - {"content_expires_at"}, "news.rights")
+    summary = _optional_str(raw, "summary")
+    canonical_url = canonicalize_url(
+        _str(_required(raw, "canonical_url", "news.canonical_url"), "news.canonical_url")
+    )
+    return NewsEvent(
+        news_id=news_id,
+        title=title,
+        summary=summary,
+        body=None,
+        content_mode=ContentMode.SNIPPET if summary is not None else ContentMode.HEADLINE,
+        language=_str(_required(raw, "language", "news.language"), "news.language"),
+        source_name=_str(_required(raw, "source_name", "news.source_name"), "news.source_name"),
+        source_tier=SourceTier(
+            _str(_required(raw, "source_tier", "news.source_tier"), "news.source_tier")
+        ),
+        canonical_url=canonical_url,
+        published_at=published_at,
+        first_seen_at=_datetime(
+            _required(raw, "first_seen_at", "news.first_seen_at"), "news.first_seen_at"
+        ),
+        available_at=_datetime(
+            _required(raw, "available_at", "news.available_at"), "news.available_at"
+        ),
+        availability_basis=AvailabilityBasis(
+            _str(
+                _required(raw, "availability_basis", "news.availability_basis"),
+                "news.availability_basis",
+            )
+        ),
+        regions=[Region.US],
+        entities=_news_entities(_required(raw, "entities", "news.entities")),
+        topics=topics,
+        content_hash_sha256=canonical_json_checksum(
+            {"title": title, "summary": summary, "url": canonical_url}
+        ),
+        usage_rights=UsageRights(
+            storage_allowed=_bool(
+                _required(rights, "storage_allowed", "news.rights.storage_allowed"),
+                "news.rights.storage_allowed",
+            ),
+            internal_analysis_allowed=_bool(
+                _required(
+                    rights, "internal_analysis_allowed", "news.rights.internal_analysis_allowed"
+                ),
+                "news.rights.internal_analysis_allowed",
+            ),
+            external_llm_allowed=_bool(
+                _required(rights, "external_llm_allowed", "news.rights.external_llm_allowed"),
+                "news.rights.external_llm_allowed",
+            ),
+            embedding_allowed=_bool(
+                _required(rights, "embedding_allowed", "news.rights.embedding_allowed"),
+                "news.rights.embedding_allowed",
+            ),
+            redistribution_allowed=_bool(
+                _required(rights, "redistribution_allowed", "news.rights.redistribution_allowed"),
+                "news.rights.redistribution_allowed",
+            ),
+            content_expires_at=_optional_datetime(rights, "content_expires_at"),
+        ),
+        source=_source(raw, provider_record_id=provider_record_id),
+        quality_flags=quality_flags,
+    )
 
 
 def register_us_provider_roles(registry: ProviderRegistry, provider: UsFixtureProvider) -> None:
@@ -999,27 +1178,51 @@ def _canonical_cursor_value(value: object) -> object:
     return value
 
 
-def _encode_cursor(dataset: Dataset, raw_cursor: str, fingerprint: str) -> str:
-    return f"fixture-v1:{dataset.value}:{fingerprint}:{raw_cursor}"
+def _encode_cursor(dataset: Dataset, cursor: _FixtureCursor, fingerprint: str) -> str:
+    payload = json.dumps(
+        {"raw_cursor": cursor.raw_cursor, "offset": cursor.offset},
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    encoded_payload = base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii").rstrip("=")
+    return f"fixture-v1:{dataset.value}:{fingerprint}:{encoded_payload}"
 
 
-def _decode_cursor(cursor: object, dataset: Dataset, fingerprint: str) -> str | None:
+def _decode_cursor(cursor: object, dataset: Dataset, fingerprint: str) -> _FixtureCursor:
     if cursor is None:
-        return None
+        return _FixtureCursor(raw_cursor=None)
     if not isinstance(cursor, str):
         raise ProviderCursorError("fixture cursor must be a string")
     try:
-        version, encoded_dataset, encoded_fingerprint, raw_cursor = cursor.split(":", maxsplit=3)
+        version, encoded_dataset, encoded_fingerprint, encoded_payload = cursor.split(
+            ":", maxsplit=3
+        )
     except ValueError as exc:
         raise ProviderCursorError("fixture cursor is malformed") from exc
     if (
         version != "fixture-v1"
         or encoded_dataset != dataset.value
         or encoded_fingerprint != fingerprint
-        or not raw_cursor
     ):
         raise ProviderCursorError("fixture cursor is not valid for this query snapshot")
-    return raw_cursor
+    try:
+        padded_payload = encoded_payload + "=" * (-len(encoded_payload) % 4)
+        payload = _mapping(
+            json.loads(base64.urlsafe_b64decode(padded_payload).decode("utf-8")),
+            "fixture cursor",
+        )
+    except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
+        raise ProviderCursorError("fixture cursor is malformed") from exc
+    _ensure_keys(
+        payload, frozenset({"raw_cursor", "offset"}), {"raw_cursor", "offset"}, "fixture cursor"
+    )
+    raw_cursor = payload["raw_cursor"]
+    if raw_cursor is not None:
+        raw_cursor = _str(raw_cursor, "fixture cursor.raw_cursor")
+    offset = _int(payload["offset"], "fixture cursor.offset")
+    if offset < 0:
+        raise ProviderCursorError("fixture cursor offset must not be negative")
+    return _FixtureCursor(raw_cursor=raw_cursor, offset=offset)
 
 
 def _fixture_page(
@@ -1046,6 +1249,56 @@ def _fixture_page(
         )
         if _optional_str(raw_page, "cursor") == cursor:
             return raw_page
+    raise ProviderCursorError(f"unknown fixture cursor for {dataset.value}: {cursor}")
+
+
+def _raw_record_ids(raw_items: Sequence[object]) -> list[str]:
+    return [
+        record_id
+        for item in raw_items
+        if isinstance(item, dict)
+        and isinstance((record_id := item.get("record_id")), str)
+        and record_id.strip()
+    ]
+
+
+def _provider_record_ids(items: Sequence[StrictModel]) -> list[str]:
+    record_ids: list[str] = []
+    for item in items:
+        source = getattr(item, "source", None)
+        if not isinstance(source, SourceRef):
+            raise ProviderSchemaError("fixture provider records must retain SourceRef provenance")
+        record_ids.append(source.provider_record_id)
+    return record_ids
+
+
+def _previous_provider_record_ids(
+    pages: Mapping[str, object],
+    dataset: Dataset,
+    cursor: str | None,
+    parser: Callable[[Mapping[str, object]], StrictModel],
+) -> list[str]:
+    raw_dataset_page = _required(pages, dataset.value, f"pages.{dataset.value}")
+    if isinstance(raw_dataset_page, dict):
+        return []
+
+    record_ids: list[str] = []
+    for index, raw_page_value in enumerate(_list(raw_dataset_page, f"pages.{dataset.value}")):
+        raw_page = _mapping(raw_page_value, f"pages.{dataset.value}[{index}]")
+        if _optional_str(raw_page, "cursor") == cursor:
+            return record_ids
+        raw_items = _list(
+            _required(raw_page, "items", f"pages.{dataset.value}[{index}].items"),
+            f"pages.{dataset.value}[{index}].items",
+        )
+        for item_index, raw_item in enumerate(raw_items):
+            try:
+                item = parser(
+                    _mapping(raw_item, f"pages.{dataset.value}[{index}].items[{item_index}]")
+                )
+            except (ProviderSchemaError, TimezoneRequiredError, UsNormalizationError, ValueError):
+                continue
+            record_ids.extend(_provider_record_ids([item]))
     raise ProviderCursorError(f"unknown fixture cursor for {dataset.value}: {cursor}")
 
 
@@ -1111,16 +1364,21 @@ def _news_entities(value: object) -> list[EntityRef]:
     return entities
 
 
-def _source(raw: Mapping[str, object], *, source_symbol: str | None = None) -> SourceRef:
+def _source(
+    raw: Mapping[str, object],
+    *,
+    provider_record_id: str,
+    source_symbol: str | None = None,
+) -> SourceRef:
     business_payload = {
         key: value
         for key, value in raw.items()
         if key not in {"retrieved_at", "provider_updated_at"}
     }
-    record_id = _str(_required(raw, "record_id", "source.record_id"), "source.record_id")
+    _str(_required(raw, "record_id", "source.record_id"), "source.record_id")
     return SourceRef(
         provider_id=US_PROVIDER_ID,
-        provider_record_id=f"{US_PROVIDER_ID}:{record_id}",
+        provider_record_id=provider_record_id,
         source_name=_str(_required(raw, "source_name", "source.source_name"), "source.source_name"),
         source_url=_str(_required(raw, "source_url", "source.source_url"), "source.source_url"),
         source_symbol=source_symbol,
@@ -1187,19 +1445,30 @@ def _select_macro_revisions(
 
 
 def _limited_page[T: StrictModel](
-    page: ProviderPage[T], items: list[T], limit: int
+    fixture_page: _QueryFixturePage[T], items: list[T], limit: int
 ) -> ProviderPage[T]:
-    if len(items) > limit:
-        raise UnsupportedCapabilityError(
-            "fixture page exceeds query limit; request a larger limit or use an approved "
-            "fixture cursor"
+    page = fixture_page.page
+    start = fixture_page.cursor.offset
+    end = start + limit
+    if start > len(items):
+        raise ProviderCursorError("fixture cursor offset exceeds the query result set")
+    next_cursor: str | None
+    if end < len(items):
+        next_cursor = _encode_cursor(
+            fixture_page.dataset,
+            _FixtureCursor(raw_cursor=fixture_page.cursor.raw_cursor, offset=end),
+            fixture_page.fingerprint,
         )
+        complete = False
+    else:
+        next_cursor = page.next_cursor
+        complete = page.complete
     return ProviderPage[T](
-        items=items,
-        next_cursor=page.next_cursor,
+        items=items[start:end],
+        next_cursor=next_cursor,
         source_watermark=page.source_watermark,
         fetched_at=page.fetched_at,
-        complete=page.complete,
+        complete=complete,
         warnings=page.warnings,
     )
 
@@ -1234,7 +1503,10 @@ def _ensure_keys(
     unknown = set(raw) - allowed
     missing = required - set(raw)
     if unknown:
-        raise ProviderSchemaError(f"unexpected fields at {path}: {sorted(unknown)}")
+        raise ProviderSchemaError(
+            f"unexpected fields at {path}: {sorted(unknown)}",
+            code="PROVIDER_SCHEMA_UNKNOWN_FIELD",
+        )
     if missing:
         raise ProviderSchemaError(f"missing fields at {path}: {sorted(missing)}")
 
