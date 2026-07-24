@@ -327,8 +327,8 @@ def test_us_fixture_provider_news_fingerprint_normalizes_news_003_title_variants
         item for item in payload["pages"]["news"]["items"] if "accession_number" not in item
     )
 
-    full_width = provider._parse_news({**daily_news, "title": "ＣＰＩ，   JUNE 2026"})
-    normalized_spacing = provider._parse_news({**daily_news, "title": "cpi, June\t2026"})
+    full_width = provider._parse_news({**daily_news, "title": "ＣＰＩ，   JUNE 2026！"})
+    normalized_spacing = provider._parse_news({**daily_news, "title": "cpi: June—2026"})
 
     assert full_width.content_hash_sha256 == normalized_spacing.content_hash_sha256
 
