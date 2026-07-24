@@ -797,9 +797,10 @@ class RegionalFixtureProvider:
         content_mode = ContentMode(_str(raw["content_mode"], "news.content_mode"))
         body = _optional_str(raw, "body")
         quality_flags = _str_list(raw["quality_flags"], "news.quality_flags")
-        if body is not None and (
-            content_mode is not ContentMode.FULL_TEXT or not rights.storage_allowed
-        ):
+        body_allowed = (
+            rights.storage_allowed and rights.external_llm_allowed and rights.embedding_allowed
+        )
+        if body is not None and (content_mode is not ContentMode.FULL_TEXT or not body_allowed):
             body = None
             quality_flags = [*quality_flags, "body_omitted_by_rights"]
         summary = _optional_str(raw, "summary")

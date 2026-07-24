@@ -169,6 +169,52 @@ async def test_news_017_editor_context_omits_restricted_summary_and_body(
     await assert_restricted_news_editor_context_contract(provider_cls, context)
 
 
+@pytest.mark.asyncio
+async def test_full_text_news_requires_all_body_usage_rights(
+    tmp_path: Path,
+    context: FetchContext,
+) -> None:
+    source_fixture = FIXTURE_ROOT / "cn" / "synthetic" / "success.json"
+    restricted_fixture = tmp_path / "full_text_without_external_rights.json"
+    payload = json.loads(source_fixture.read_text(encoding="utf-8"))
+    news = payload["pages"]["news"]["items"][0]
+    news["body"] = "Synthetic full text that must not be retained."
+    news["content_mode"] = "full_text"
+    news["rights"] = {
+        **news["rights"],
+        "external_llm_allowed": False,
+        "embedding_allowed": False,
+    }
+    restricted_fixture.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    page = await CnSyntheticProvider(restricted_fixture).fetch_news(
+        NewsQuery(
+            regions={Region.CN},
+            published_from=datetime(2026, 7, 22, tzinfo=UTC),
+            published_to=datetime(2026, 7, 24, tzinfo=UTC),
+            as_of=context.as_of,
+            content_mode=ContentMode.SNIPPET,
+        ),
+        context,
+    )
+
+    assert page.items[0].body is None
+    assert page.items[0].content_mode is ContentMode.SNIPPET
+    assert "body_omitted_by_rights" in page.items[0].quality_flags
+
+
+@pytest.mark.parametrize("provider_cls", [CnSyntheticProvider, HkSyntheticProvider])
+@pytest.mark.asyncio
+async def test_fixture_only_provider_health_is_not_configured(
+    provider_cls: type[RegionalFixtureProvider],
+) -> None:
+    health = await provider_cls.from_fixture("success").healthcheck()
+
+    assert health.status == "not_configured"
+    assert health.message is not None
+    assert health.message.startswith("fixture-only provider:")
+
+
 @pytest.mark.parametrize(
     ("provider_cls", "source_fixture"),
     [

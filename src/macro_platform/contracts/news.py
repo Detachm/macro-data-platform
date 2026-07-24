@@ -88,6 +88,10 @@ class NewsEvent(StrictModel):
             raise ValueError("body requires content_mode=full_text")
         if self.body is not None and not self.usage_rights.storage_allowed:
             raise ValueError("body cannot be retained when storage is not allowed")
+        if self.body is not None and not self.usage_rights.external_llm_allowed:
+            raise ValueError("body cannot be retained when external LLM use is not allowed")
+        if self.body is not None and not self.usage_rights.embedding_allowed:
+            raise ValueError("body cannot be retained when embedding is not allowed")
         if self.available_at < self.published_at:
             raise ValueError("available_at cannot precede published_at")
         return self
