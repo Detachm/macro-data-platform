@@ -22,6 +22,7 @@ from macro_platform.contracts.market import (
 )
 from macro_platform.contracts.news import ContentMode, NewsQuery
 from macro_platform.contracts.provider import FetchContext
+from macro_platform.normalization.common import canonical_json_checksum
 from macro_platform.providers.base import (
     ProviderAuthenticationError,
     ProviderAuthorizationError,
@@ -74,8 +75,33 @@ def _write_fixture(tmp_path: Path, name: str, payload: dict) -> UsFixtureProvide
     return UsFixtureProvider(fixture_path, clock=lambda: NOW)
 
 
+def _news_query() -> NewsQuery:
+    return NewsQuery(
+        regions={Region.US},
+        published_from=datetime(2026, 7, 1, tzinfo=UTC),
+        published_to=datetime(2026, 8, 1, tzinfo=UTC),
+        as_of=NOW,
+    )
+
+
+def _daily_news(payload: dict) -> dict:
+    return next(
+        item for item in payload["pages"]["news"]["items"] if "accession_number" not in item
+    )
+
+
+@pytest.mark.parametrize(
+    "_test_id",
+    [
+        pytest.param("PRV-001", id="PRV-001"),
+        pytest.param("PRV-002", id="PRV-002"),
+        pytest.param("PRV-005", id="PRV-005"),
+        pytest.param("PRV-013", id="PRV-013"),
+    ],
+)
 async def test_us_fixture_provider_passes_shared_contract_suite(
     provider: UsFixtureProvider,
+    _test_id: str,
 ) -> None:
     assert_capabilities_contract(provider)
 
@@ -163,15 +189,15 @@ async def test_us_fixture_provider_passes_shared_contract_suite(
 @pytest.mark.parametrize(
     ("fixture_name", "error_type"),
     [
-        ("auth_failure", ProviderAuthenticationError),
-        ("forbidden", ProviderAuthorizationError),
-        ("rate_limited", ProviderRateLimitError),
-        ("timeout", ProviderTimeoutError),
-        ("missing_fields", ProviderSchemaError),
-        ("schema_changed", ProviderSchemaError),
-        ("malformed_json", ProviderSchemaError),
-        ("html_login", ProviderAuthorizationError),
-        ("duplicate_page", ProviderCursorError),
+        pytest.param("auth_failure", ProviderAuthenticationError, id="PRV-008-auth"),
+        pytest.param("forbidden", ProviderAuthorizationError, id="PRV-008-forbidden"),
+        pytest.param("rate_limited", ProviderRateLimitError, id="PRV-007"),
+        pytest.param("timeout", ProviderTimeoutError, id="PRV-010"),
+        pytest.param("missing_fields", ProviderSchemaError, id="PRV-009-missing-fields"),
+        pytest.param("schema_changed", ProviderSchemaError, id="PRV-020"),
+        pytest.param("malformed_json", ProviderSchemaError, id="PRV-021"),
+        pytest.param("html_login", ProviderAuthorizationError, id="PRV-019"),
+        pytest.param("duplicate_page", ProviderCursorError, id="invalid-same-page-duplicate"),
     ],
 )
 async def test_us_fixture_provider_contract_failures_are_never_empty_pages(
@@ -184,8 +210,13 @@ async def test_us_fixture_provider_contract_failures_are_never_empty_pages(
         await provider.fetch_instruments(InstrumentQuery(regions={Region.US}), CONTEXT)
 
 
+@pytest.mark.parametrize(
+    "_test_id",
+    [pytest.param("PRV-004", id="PRV-004"), pytest.param("PRV-005", id="PRV-005")],
+)
 async def test_us_fixture_provider_contract_honors_half_open_ranges_and_stable_order(
     tmp_path: Path,
+    _test_id: str,
 ) -> None:
     payload = _success_payload()
     end_bar = {
@@ -220,9 +251,18 @@ async def test_us_fixture_provider_contract_honors_half_open_ranges_and_stable_o
     )
 
 
-async def test_us_fixture_provider_contract_parses_dst_offset_bar_fixture() -> None:
+@pytest.mark.parametrize(
+    "_test_id",
+    [pytest.param("PRV-012", id="PRV-012"), pytest.param("TIME-005", id="TIME-005")],
+)
+async def test_us_fixture_provider_contract_parses_dst_offset_bar_fixture(
+    _test_id: str,
+) -> None:
     provider = UsFixtureProvider.from_fixture("dst_offset", clock=lambda: NOW)
     aapl_id = "ins_us_5249d2b8f8155772"
+    raw_bar = json.loads((FIXTURE_DIR / "dst_offset.json").read_text(encoding="utf-8"))["pages"][
+        "bars"
+    ]["items"][0]
 
     page = await provider.fetch_bars(
         BarQuery(
@@ -238,49 +278,293 @@ async def test_us_fixture_provider_contract_parses_dst_offset_bar_fixture() -> N
 
     assert page.items[0].bar_start == datetime(2026, 3, 9, 13, 30, tzinfo=UTC)
     assert page.items[0].trading_date == date(2026, 3, 9)
+    assert raw_bar["bar_start"] == "2026-03-09T09:30:00-04:00"
+    assert raw_bar["bar_end"] == "2026-03-09T16:00:00-04:00"
+    assert page.items[0].source.checksum_sha256 == canonical_json_checksum(
+        {key: value for key, value in raw_bar.items() if key != "retrieved_at"}
+    )
 
 
+@pytest.mark.parametrize(
+    "test_id",
+    [
+        pytest.param("NEWS-002", id="NEWS-002"),
+        pytest.param("NEWS-003", id="NEWS-003"),
+        pytest.param("NEWS-012", id="NEWS-012"),
+        pytest.param("NEWS-013", id="NEWS-013"),
+        pytest.param("NEWS-017", id="NEWS-017"),
+    ],
+)
 async def test_us_fixture_provider_contract_covers_news_002_003_012_013_and_017(
-    provider: UsFixtureProvider,
+    tmp_path: Path,
+    test_id: str,
 ) -> None:
     payload = _success_payload()
-    daily_news = next(
-        item for item in payload["pages"]["news"]["items"] if "accession_number" not in item
+    daily_news = _daily_news(payload)
+    if test_id == "NEWS-002":
+        daily_news.update(
+            record_id="news-002",
+            canonical_url="HTTPS://www.bls.gov/news.release/cpi.nr0.htm?utm_source=x",
+        )
+    elif test_id == "NEWS-003":
+        daily_news.update(record_id="news-003-full-width", title="ＣＰＩ：  June—2026！")
+        payload["pages"]["news"]["items"].append(
+            {
+                **daily_news,
+                "record_id": "news-003-normalized",
+                "title": "cpi, June 2026",
+            }
+        )
+    elif test_id == "NEWS-012":
+        daily_news.update(record_id="news-012")
+        daily_news.pop("summary")
+    elif test_id == "NEWS-013":
+        daily_news.update(record_id="news-013")
+    else:
+        daily_news.update(
+            record_id="news-017",
+            rights={**daily_news["rights"], "external_llm_allowed": False},
+        )
+
+    provider = _write_fixture(tmp_path, f"{test_id}.json", payload)
+    query = _news_query()
+    if test_id == "NEWS-012":
+        query = query.model_copy(update={"content_mode": ContentMode.HEADLINE})
+    page = await provider.fetch_news(query, CONTEXT)
+
+    if test_id == "NEWS-002":
+        event = next(
+            item for item in page.items if item.source.provider_record_id.endswith(":news-002")
+        )
+        assert str(event.canonical_url) == "https://www.bls.gov/news.release/cpi.nr0.htm"
+    elif test_id == "NEWS-003":
+        variants = [
+            item
+            for item in page.items
+            if item.source.provider_record_id.endswith(
+                (":news-003-full-width", ":news-003-normalized")
+            )
+        ]
+        assert len(variants) == 2
+        assert len({item.content_hash_sha256 for item in variants}) == 1
+    elif test_id == "NEWS-012":
+        event = next(
+            item for item in page.items if item.source.provider_record_id.endswith(":news-012")
+        )
+        assert event.content_mode is ContentMode.HEADLINE
+    elif test_id == "NEWS-013":
+        event = next(
+            item for item in page.items if item.source.provider_record_id.endswith(":news-013")
+        )
+        assert event.vendor_annotations == []
+    else:
+        restricted = next(
+            item for item in page.items if item.source.provider_record_id.endswith(":news-017")
+        )
+        events = await NewsService(FixtureNewsRepository([restricted])).events(
+            _news_query(), for_external_llm=True
+        )
+        assert events[0].summary is None
+        assert events[0].content_mode is ContentMode.HEADLINE
+
+
+@pytest.mark.parametrize("_test_id", [pytest.param("PRV-017", id="PRV-017")])
+async def test_us_fixture_provider_contract_uses_canonical_source_checksum(
+    tmp_path: Path,
+    _test_id: str,
+) -> None:
+    payload = _success_payload()
+    original = _write_fixture(tmp_path, "checksum-original.json", payload)
+    reordered_path = tmp_path / "checksum-reordered.json"
+    reordered_path.write_text(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
     )
-    tracking_variant = provider._parse_news(
-        {**daily_news, "canonical_url": "HTTPS://www.bls.gov/news.release/cpi.nr0.htm?utm_source=x"}
+    reordered = UsFixtureProvider(reordered_path, clock=lambda: NOW)
+
+    original_page = await original.fetch_instruments(InstrumentQuery(regions={Region.US}), CONTEXT)
+    reordered_page = await reordered.fetch_instruments(
+        InstrumentQuery(regions={Region.US}), CONTEXT
     )
-    canonical_variant = provider._parse_news(
-        {**daily_news, "canonical_url": "https://www.bls.gov/news.release/cpi.nr0.htm"}
+    original_aapl = next(
+        item for item in original_page.items if item.canonical_symbol == "XNAS:AAPL"
     )
-    title_variant = provider._parse_news({**daily_news, "title": "ＣＰＩ：  June—2026！"})
-    normalized_title = provider._parse_news({**daily_news, "title": "cpi, June 2026"})
-    headline_only = provider._parse_news(
-        {key: value for key, value in daily_news.items() if key != "summary"}
-    )
-    restricted = provider._parse_news(
-        {
-            **daily_news,
-            "rights": {**daily_news["rights"], "external_llm_allowed": False},
-        }
+    reordered_aapl = next(
+        item for item in reordered_page.items if item.canonical_symbol == "XNAS:AAPL"
     )
 
-    assert tracking_variant.canonical_url == canonical_variant.canonical_url
-    assert title_variant.content_hash_sha256 == normalized_title.content_hash_sha256
-    assert headline_only.content_mode is ContentMode.HEADLINE
-    assert headline_only.vendor_annotations == []
+    assert original_aapl.source.checksum_sha256 == reordered_aapl.source.checksum_sha256
 
-    events = await NewsService(FixtureNewsRepository([restricted])).events(
-        NewsQuery(
-            regions={Region.US},
-            published_from=datetime(2026, 7, 1, tzinfo=UTC),
-            published_to=datetime(2026, 8, 1, tzinfo=UTC),
+
+@pytest.mark.parametrize("_test_id", [pytest.param("PIT-009", id="PIT-009")])
+async def test_us_fixture_provider_contract_filters_future_records_from_every_pit_dataset(
+    tmp_path: Path,
+    _test_id: str,
+) -> None:
+    payload = _success_payload()
+    future = "2026-07-23T08:01:00Z"
+    future_bar = {
+        **payload["pages"]["bars"]["items"][0],
+        "record_id": "future-bar",
+        "provider_updated_at": future,
+        "bar_start": "2026-07-23T13:30:00Z",
+        "bar_end": "2026-07-23T20:00:00Z",
+        "trading_date": "2026-07-23",
+        "available_at": future,
+    }
+    future_observation = {
+        **payload["pages"]["market_observations"]["items"][0],
+        "record_id": "future-observation",
+        "provider_updated_at": future,
+        "period_start": "2026-07-23T00:00:00Z",
+        "period_end": "2026-07-24T00:00:00Z",
+        "observed_at": "2026-07-23T08:00:00Z",
+        "available_at": future,
+    }
+    future_macro_observation = {
+        **payload["pages"]["macro_observations"]["items"][0],
+        "record_id": "future-macro-observation",
+        "provider_updated_at": future,
+        "released_at": future,
+        "available_at": future,
+        "vintage_id": future,
+        "revision_no": 1,
+    }
+    future_release = {
+        **payload["pages"]["macro_releases"]["items"][0],
+        "record_id": "future-macro-release",
+        "provider_updated_at": future,
+        "scheduled_at": "2026-07-23T08:00:00Z",
+        "released_at": future,
+        "available_at": future,
+    }
+    future_news = {
+        **_daily_news(payload),
+        "record_id": "future-news",
+        "provider_updated_at": future,
+        "published_at": "2026-07-22T12:30:00Z",
+        "first_seen_at": future,
+        "available_at": future,
+    }
+    payload["pages"]["bars"]["items"].append(future_bar)
+    payload["pages"]["market_observations"]["items"].append(future_observation)
+    payload["pages"]["macro_observations"]["items"].append(future_macro_observation)
+    payload["pages"]["macro_releases"]["items"].append(future_release)
+    payload["pages"]["news"]["items"].append(future_news)
+    provider = _write_fixture(tmp_path, "future-pit.json", payload)
+
+    instruments = await provider.fetch_instruments(InstrumentQuery(regions={Region.US}), CONTEXT)
+    bars = await provider.fetch_bars(
+        BarQuery(
+            instrument_ids=[item.instrument_id for item in instruments.items],
+            interval=Interval.D1,
+            start=datetime(2026, 7, 21, tzinfo=UTC),
+            end=datetime(2026, 7, 24, tzinfo=UTC),
+            adjustment=Adjustment.RAW,
             as_of=NOW,
         ),
-        for_external_llm=True,
+        CONTEXT,
     )
-    assert events[0].summary is None
-    assert events[0].content_mode is ContentMode.HEADLINE
+    observations = await provider.fetch_market_observations(
+        MarketObservationQuery(
+            regions={Region.US},
+            metric_codes=["rate.fed_funds.effective"],
+            start=datetime(2026, 7, 21, tzinfo=UTC),
+            end=datetime(2026, 7, 24, tzinfo=UTC),
+            as_of=NOW,
+        ),
+        CONTEXT,
+    )
+    macro_observations = await provider.fetch_macro_observations(
+        MacroObservationQuery(
+            series_ids=["macro:US:BLS:CPI_ALL_ITEMS"],
+            period_from=date(2026, 6, 1),
+            period_to=date(2026, 6, 30),
+            as_of=NOW,
+        ),
+        CONTEXT,
+    )
+    releases = await provider.fetch_macro_releases(
+        MacroReleaseQuery(
+            regions={Region.US},
+            scheduled_from=datetime(2026, 7, 1, tzinfo=UTC),
+            scheduled_to=datetime(2026, 8, 1, tzinfo=UTC),
+            as_of=NOW,
+        ),
+        CONTEXT,
+    )
+    news = await provider.fetch_news(_news_query(), CONTEXT)
+
+    for page in [bars, observations, macro_observations, releases, news]:
+        assert_pit_contract(page, as_of=NOW)
+        assert page.warnings == []
+    assert len(bars.items) == 2
+    assert len(observations.items) == 1
+    assert len(macro_observations.items) == 1
+    assert len(releases.items) == 1
+    assert len(news.items) == 4
+
+
+@pytest.mark.parametrize("_test_id", [pytest.param("PRV-003", id="PRV-003")])
+async def test_us_fixture_provider_contract_rejects_cross_page_duplicate_records(
+    tmp_path: Path,
+    _test_id: str,
+) -> None:
+    payload = _success_payload()
+    first = payload["pages"]["news"]["items"][0]
+    payload["pages"] = {
+        "news": [
+            {"cursor": None, "next_cursor": "news-page-2", "items": [first]},
+            {
+                "cursor": "news-page-2",
+                "next_cursor": None,
+                "items": [{**first, "record_id": "replayed-with-new-raw-record-id"}],
+            },
+        ]
+    }
+    provider = _write_fixture(tmp_path, "cross-page-duplicate.json", payload)
+    first_page = await provider.fetch_news(_news_query(), CONTEXT)
+
+    with pytest.raises(ProviderCursorError, match="duplicate record id"):
+        await provider.fetch_news(
+            _news_query().model_copy(update={"cursor": first_page.next_cursor}), CONTEXT
+        )
+
+
+@pytest.mark.parametrize("_test_id", [pytest.param("PRV-014", id="PRV-014")])
+async def test_us_fixture_provider_contract_replays_a_page_without_new_business_records(
+    tmp_path: Path,
+    _test_id: str,
+) -> None:
+    payload = _success_payload()
+    first = _daily_news(payload)
+    second = {
+        **first,
+        "record_id": "replay-page-two",
+        "canonical_url": "https://www.bls.gov/news.release/cpi.page-two.htm",
+    }
+    payload["pages"] = {
+        "news": [
+            {"cursor": None, "next_cursor": "news-page-2", "items": [first]},
+            {"cursor": "news-page-2", "next_cursor": None, "items": [second]},
+        ]
+    }
+    provider = _write_fixture(tmp_path, "page-replay.json", payload)
+    query = _news_query()
+    first_page = await provider.fetch_news(query, CONTEXT)
+    replayed_page = await provider.fetch_news(query, CONTEXT)
+    second_page = await provider.fetch_news(
+        query.model_copy(update={"cursor": first_page.next_cursor}), CONTEXT
+    )
+
+    assert first_page.next_cursor is not None
+    assert_stable_page(first_page, replayed_page)
+    assert replayed_page.next_cursor == first_page.next_cursor
+    assert second_page.next_cursor is None
+    provider_record_ids = [
+        item.source.provider_record_id for item in [*first_page.items, *second_page.items]
+    ]
+    assert len(provider_record_ids) == len(set(provider_record_ids))
 
 
 def test_us_fixture_manifest_matches_the_offline_fixture_set() -> None:

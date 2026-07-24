@@ -404,18 +404,26 @@ Test IDs required downstream:
 uv run pytest tests/unit tests/contract -m "not live" -q
 ```
 
+合同用例通过 pytest 参数 ID 直接暴露其测试编号；可用
+`pytest tests/contract/test_us_fixture_provider_contract.py --collect-only -q`
+追溯每个 `PRV-*`、`PIT-009`、`TIME-005` 和 `NEWS-*` 证据。临时生成的
+两页、重放、字段重排和未来记录 fixture 只在测试目录中创建，不会成为可被
+生产调度使用的数据源。
+
 | Test ID | Evidence |
 |---|---|
 | `PRV-001`、`PRV-002`、`PRV-005`、`PRV-013` | 共享 suite 对全纵向切片的稳定输出、provenance、checksum 和 query 不变性断言。 |
-| `PRV-003`、`PRV-014`、`PRV-015`、`PRV-016` | cursor chain、跨页重复、空页阈值和无效 cursor fixture/unit tests。 |
+| `PRV-003`、`PRV-014` | 公开 `fetch_news` 两页回归：跨页重复 provider record 会被拒绝；重试同一页保持同一业务记录 ID，再取下一页不会产生重复。 |
+| `PRV-015`、`PRV-016` | 空页阈值和无效 cursor fixture/unit tests。 |
 | `PRV-004` | shared contract test 验证 bars 的 `[start, end)` 边界。 |
 | `PRV-006` | mixed invalid record 被 quarantine，合法记录继续输出。 |
 | `PRV-007`～`PRV-010`、`PRV-019`～`PRV-021` | 离线 error fixture 必须抛显式错误，绝不能变成空页。 |
 | `PRV-011` | 不适用：本 fixture adapter 声明 `supports_point_in_time=true`；未来不支持历史 PIT 的 live adapter 在启用前必须新增该 case。 |
-| `PRV-012`、`TIME-005` | `dst_offset.json` 使用 `America/New_York` 夏令时 `09:30-04:00`，输出为 UTC 并保持正确 trading date。 |
-| `PRV-017`、`PRV-018` | canonical checksum / fixture-only `not_configured` health regression tests。 |
-| `NEWS-002`、`NEWS-003`、`NEWS-012`、`NEWS-013`、`NEWS-017` | canonical URL、标题 fingerprint、headline-only、空 vendor annotations、外部 LLM 权利清洗测试。 |
-| PIT | all pages with `available_at` use shared `available_at <= as_of` assertion. |
+| `PRV-012`、`TIME-005` | `dst_offset.json` 是保留原始 `America/New_York` 夏令时 `09:30-04:00` 值的 fixture raw/audit 层；测试同时断言 UTC 输出、trading date，以及输出 `source.checksum_sha256` 对原始时间字段的 canonical 追溯。 |
+| `PRV-017` | 同一 provider fixture 用原始及递归 JSON key 重排文本各执行一次公开 fetch，输出 checksum 必须相同。 |
+| `PRV-018` | fixture-only `not_configured` health regression test。 |
+| `NEWS-002`、`NEWS-003`、`NEWS-012`、`NEWS-013`、`NEWS-017` | 仅经公开 `fetch_news` 验证 canonical URL、标题 fingerprint、headline-only、空 vendor annotations、外部 LLM 权利清洗。 |
+| `PIT-009` | 为 bars、market observations、macro observations、macro releases、news 分别注入未来 `available_at` 记录，以较早 `as_of` 查询；每个输出都必须过滤未来记录。 |
 
 默认 CI 不运行 live smoke；仅在 Phase 2 获得来源批准和显式凭据后，才可执行
 `pytest -m live` 中定义的最小请求。
