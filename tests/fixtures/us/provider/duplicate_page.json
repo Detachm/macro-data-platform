@@ -1,0 +1,10 @@
+{
+  "status": "ok",
+  "fetched_at": "2026-07-23T08:00:00Z",
+  "pages": {
+    "instruments": {
+      "next_cursor": "duplicate-cursor",
+      "items": [{"record_id": "duplicate"}, {"record_id": "duplicate"}]
+    }
+  }
+}

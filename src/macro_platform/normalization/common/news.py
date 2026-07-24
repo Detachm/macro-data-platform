@@ -32,5 +32,7 @@ def canonicalize_url(url: str) -> str:
 
 def normalize_title_for_matching(title: str) -> str:
     normalized = unicodedata.normalize("NFKC", title).casefold()
-    normalized = re.sub(r"\s+", " ", normalized)
+    normalized = re.sub(r"\+(?=\d)", " plus ", normalized)
+    normalized = re.sub(r"[-−](?=\d)", " minus ", normalized)
+    normalized = re.sub(r"[\W_]+", " ", normalized)
     return normalized.strip()

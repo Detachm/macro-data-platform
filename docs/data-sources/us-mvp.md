@@ -362,6 +362,9 @@ Any row without a trustworthy availability proof must use `availability_basis=fi
 | Stale official release | coverage=`stale`; no fake current value | retry by schedule |
 | Upstream source conflict | preserve both records and provenance | no arbitrary overwrite |
 
+Fixture-only adapter 只能绑定 `us.<domain>.fixture_contract` 角色以运行合同测试；不得绑定
+`us.*.primary`，生产调度必须拒绝该 adapter。
+
 ## Fixtures 与测试
 
 Fixture directories for follow-up issues:

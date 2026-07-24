@@ -1,0 +1,13 @@
+{
+  "status": "ok",
+  "fetched_at": "2026-07-23T08:00:00Z",
+  "pages": {
+    "instruments": {"next_cursor": null, "items": []},
+    "bars": {"next_cursor": null, "items": []},
+    "market_observations": {"next_cursor": null, "items": []},
+    "macro_series": {"next_cursor": null, "items": []},
+    "macro_observations": {"next_cursor": null, "items": []},
+    "macro_releases": {"next_cursor": null, "items": []},
+    "news": {"next_cursor": null, "items": []}
+  }
+}
