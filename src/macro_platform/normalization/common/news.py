@@ -46,9 +46,7 @@ def normalize_title_for_matching(title: str) -> str:
     formatting variants comparable without collapsing ``1-0`` into ``10``.
     """
 
-    normalized = _TRADITIONAL_TO_SIMPLIFIED.convert(
-        unicodedata.normalize("NFKC", title)
-    ).casefold()
+    normalized = _TRADITIONAL_TO_SIMPLIFIED.convert(unicodedata.normalize("NFKC", title)).casefold()
     normalized = re.sub(r"\+(?=\d)", " plus ", normalized)
     normalized = re.sub(r"[-−](?=\d)", " minus ", normalized)
     characters: list[str] = []

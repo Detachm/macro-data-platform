@@ -246,13 +246,12 @@ class RegionalFixtureProvider:
             )
 
     async def healthcheck(self) -> ProviderHealth:
-        configured = self._fixture_path.exists()
         return ProviderHealth(
             provider_id=self.provider_id,
-            status="ok" if configured else "not_configured",
+            status="not_configured",
             checked_at=utc_now(),
             latency_ms=0,
-            message=None if configured else f"fixture not found: {self._fixture_path}",
+            message=f"fixture-only provider: {self._fixture_path}",
         )
 
     async def aclose(self) -> None:

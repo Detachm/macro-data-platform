@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
@@ -8,9 +7,6 @@ from uuid import UUID
 import pytest
 
 from macro_platform.contracts.common import Region
-from macro_platform.contracts.editor import EditorContextRequest
-from macro_platform.contracts.market import InstrumentQuery
-from macro_platform.contracts.news import ContentMode, NewsQuery
 from macro_platform.contracts.provider import Dataset, FetchContext
 from macro_platform.providers.base import (
     ProviderAuthenticationError,
@@ -19,16 +15,9 @@ from macro_platform.providers.base import (
     ProviderRateLimitError,
     ProviderSchemaError,
     ProviderTimeoutError,
-    UnsupportedCapabilityError,
 )
 from macro_platform.providers.cn import CN_PROVIDER_ID, CN_ROLE_BINDINGS, CnSyntheticProvider
 from macro_platform.providers.hk import HK_PROVIDER_ID, HK_ROLE_BINDINGS, HkSyntheticProvider
-from macro_platform.providers.registry import ProviderRegistry
-from macro_platform.services.editor_context_service import EditorContextService
-from macro_platform.services.macro_service import MacroService
-from macro_platform.services.market_service import MarketService
-from macro_platform.services.news_service import NewsService
-from macro_platform.storage.repositories import EmptyDataRepository
 from tests.contract.provider_suite import (
     CONTRACT_CASES,
     ContractCase,
@@ -36,9 +25,15 @@ from tests.contract.provider_suite import (
     assert_canonical_checksum_contract,
     assert_empty_fixture_is_explicit,
     assert_error_fixture_raises,
-    assert_fixture_manifest_contract,
+    assert_fixture_manifest_case_contract,
+    assert_fixture_only_health_contract,
+    assert_fixture_only_scheduling_contract,
+    assert_full_text_storage_rights_contract,
     assert_news_identity_contract,
     assert_news_normalization_contract,
+    assert_registry_role_contract,
+    assert_restricted_news_editor_context_contract,
+    assert_source_checksum_excludes_retrieved_at_contract,
     assert_success_fixture_contract,
     assert_title_fallback_news_identity_contract,
     assert_title_only_news_contract,
@@ -47,14 +42,6 @@ from tests.contract.provider_suite import (
 FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures"
 NOW = datetime(2026, 7, 23, 8, 0, tzinfo=UTC)
 REQUEST_ID = UUID("00000000-0000-4000-8000-000000000005")
-
-
-class NewsOnlyRepository(EmptyDataRepository):
-    def __init__(self, events: list) -> None:
-        self._events = events
-
-    async def list_news(self, query: NewsQuery) -> list:
-        return self._events
 
 
 @pytest.fixture
@@ -80,11 +67,7 @@ def test_cn_hk_fixture_manifests_cover_contract_matrix(
     region: Region,
     case: ContractCase,
 ) -> None:
-    manifest = assert_fixture_manifest_contract(manifest_path)
-    assert manifest["provider_id"] == provider_id
-    assert manifest["region"] == region.value
-    if case.status == "xfail":
-        pytest.xfail(case.xfail_reason)
+    assert_fixture_manifest_case_contract(manifest_path, provider_id, region.value, case)
 
 
 @pytest.mark.parametrize("provider_cls", [CnSyntheticProvider, HkSyntheticProvider])
@@ -177,68 +160,35 @@ async def test_news_003_title_fallback_is_shared_by_cn_and_hk(
     )
 
 
+@pytest.mark.parametrize("provider_cls", [CnSyntheticProvider, HkSyntheticProvider])
 @pytest.mark.asyncio
 async def test_news_017_editor_context_omits_restricted_summary_and_body(
     context: FetchContext,
+    provider_cls: type[RegionalFixtureProvider],
 ) -> None:
-    query = NewsQuery(
-        regions={Region.CN},
-        published_from=datetime(2026, 7, 22, tzinfo=UTC),
-        published_to=datetime(2026, 7, 24, tzinfo=UTC),
-        as_of=context.as_of,
-        content_mode=ContentMode.SNIPPET,
-    )
-    news = await CnSyntheticProvider.from_fixture("success").fetch_news(query, context)
-    assert news.items[0].summary is not None
-    assert news.items[0].usage_rights.external_llm_allowed is False
-
-    repository = NewsOnlyRepository(news.items)
-    service = EditorContextService(
-        market_service=MarketService(repository),
-        macro_service=MacroService(repository),
-        news_service=NewsService(repository),
-    )
-    editor_context = await service.build(EditorContextRequest(regions={Region.CN}, as_of=NOW))
-
-    assert len(editor_context.news_events) == 1
-    event = editor_context.news_events[0]
-    assert event.content_mode is ContentMode.HEADLINE
-    assert event.summary is None
-    assert event.body is None
+    await assert_restricted_news_editor_context_contract(provider_cls, context)
 
 
+@pytest.mark.parametrize(
+    ("provider_cls", "source_fixture"),
+    [
+        (CnSyntheticProvider, FIXTURE_ROOT / "cn" / "synthetic" / "success.json"),
+        (HkSyntheticProvider, FIXTURE_ROOT / "hk" / "synthetic" / "success.json"),
+    ],
+)
 @pytest.mark.asyncio
 async def test_full_text_news_can_be_saved_without_external_or_embedding_rights(
     tmp_path: Path,
     context: FetchContext,
+    provider_cls: type[RegionalFixtureProvider],
+    source_fixture: Path,
 ) -> None:
-    source_fixture = FIXTURE_ROOT / "cn" / "synthetic" / "success.json"
-    restricted_fixture = tmp_path / "full_text_without_external_rights.json"
-    payload = json.loads(source_fixture.read_text(encoding="utf-8"))
-    news = payload["pages"]["news"]["items"][0]
-    news["body"] = "Synthetic full text retained for internal storage."
-    news["content_mode"] = "full_text"
-    news["rights"] = {
-        **news["rights"],
-        "external_llm_allowed": False,
-        "embedding_allowed": False,
-    }
-    restricted_fixture.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-
-    page = await CnSyntheticProvider(restricted_fixture).fetch_news(
-        NewsQuery(
-            regions={Region.CN},
-            published_from=datetime(2026, 7, 22, tzinfo=UTC),
-            published_to=datetime(2026, 7, 24, tzinfo=UTC),
-            as_of=context.as_of,
-            content_mode=ContentMode.SNIPPET,
-        ),
+    await assert_full_text_storage_rights_contract(
+        provider_cls,
+        source_fixture,
+        tmp_path,
         context,
     )
-
-    assert page.items[0].body == "Synthetic full text retained for internal storage."
-    assert page.items[0].content_mode is ContentMode.FULL_TEXT
-    assert "body_omitted_by_rights" not in page.items[0].quality_flags
 
 
 @pytest.mark.parametrize("provider_cls", [CnSyntheticProvider, HkSyntheticProvider])
@@ -246,11 +196,7 @@ async def test_full_text_news_can_be_saved_without_external_or_embedding_rights(
 async def test_fixture_only_provider_health_is_not_configured(
     provider_cls: type[RegionalFixtureProvider],
 ) -> None:
-    health = await provider_cls.from_fixture("success").healthcheck()
-
-    assert health.status == "not_configured"
-    assert health.message is not None
-    assert health.message.startswith("fixture-only provider:")
+    await assert_fixture_only_health_contract(provider_cls.from_fixture("success"))
 
 
 @pytest.mark.parametrize(
@@ -282,25 +228,31 @@ def test_fixture_only_sources_are_guarded_from_production_scheduling(
     provider_cls: type[RegionalFixtureProvider],
     fixture_only_datasets: set[Dataset],
 ) -> None:
-    provider = provider_cls.from_fixture("success")
-    for dataset in fixture_only_datasets:
-        with pytest.raises(UnsupportedCapabilityError):
-            provider.assert_production_dataset_supported(dataset)
+    assert_fixture_only_scheduling_contract(
+        provider_cls.from_fixture("success"), fixture_only_datasets
+    )
 
 
+@pytest.mark.parametrize(
+    ("provider_cls", "source_fixture"),
+    [
+        (CnSyntheticProvider, FIXTURE_ROOT / "cn" / "synthetic" / "success.json"),
+        (HkSyntheticProvider, FIXTURE_ROOT / "hk" / "synthetic" / "success.json"),
+    ],
+)
 @pytest.mark.asyncio
-async def test_source_checksum_excludes_retrieved_at(tmp_path: Path, context: FetchContext) -> None:
-    source_fixture = FIXTURE_ROOT / "cn" / "synthetic" / "success.json"
-    changed_fixture = tmp_path / "success_changed_retrieved_at.json"
-    payload = json.loads(source_fixture.read_text(encoding="utf-8"))
-    payload["pages"]["instruments"]["items"][0]["retrieved_at"] = "2026-07-23T07:30:00Z"
-    changed_fixture.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-
-    query = InstrumentQuery(regions={Region.CN})
-    original = await CnSyntheticProvider.from_fixture("success").fetch_instruments(query, context)
-    changed = await CnSyntheticProvider(changed_fixture).fetch_instruments(query, context)
-
-    assert original.items[0].source.checksum_sha256 == changed.items[0].source.checksum_sha256
+async def test_source_checksum_excludes_retrieved_at(
+    tmp_path: Path,
+    context: FetchContext,
+    provider_cls: type[RegionalFixtureProvider],
+    source_fixture: Path,
+) -> None:
+    await assert_source_checksum_excludes_retrieved_at_contract(
+        provider_cls,
+        source_fixture,
+        tmp_path,
+        context,
+    )
 
 
 def test_news_normalization_and_checksum_entrypoints() -> None:
@@ -328,9 +280,4 @@ def test_cn_hk_registry_roles_are_declared(
     role_bindings: dict[str, str],
     role: str,
 ) -> None:
-    registry = ProviderRegistry()
-    registry.register(provider)
-    for role_name, provider_id in role_bindings.items():
-        registry.bind_role(role_name, provider_id)
-
-    assert registry.resolve(role) is provider
+    assert_registry_role_contract(provider, role_bindings, role)

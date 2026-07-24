@@ -47,11 +47,24 @@ uv run pytest tests/contract/test_cn_hk_providers.py -ra
 The synthetic providers use only `tests/fixtures/{cn,hk}/synthetic/*`. They are fake fixture
 providers, not live CN/HK adapters. Registry roles are declared for structure-first loading only;
 fixture-only datasets must be rejected by `assert_production_dataset_supported`; live-ready
-datasets follow the #1 capability freeze and still require #3 normalization before final
-acceptance.
+datasets follow the frozen capability matrix and must not be scheduled as live providers.
 
-Reserved but incomplete cases are `xfail` with `blocked by #5`, `blocked by #1`, or `blocked by #3`
-recorded in both the pytest reason and the regional manifest. After #5 lands:
+Reserved cases remain `xfail` until their named follow-up Issue is complete. The fixture-provider
+cases (`PRV-003`–`006`, `PRV-015`) are tracked by #21; persistence/audit cases
+(`PRV-011`, `PRV-012`, `PRV-014`, `PRV-016`) are tracked by #20. Each case's blocker and deferred
+reason are mirrored in `CONTRACT_CASES` and both regional manifests. When its follow-up lands:
+
+| Case | Blocker | Deferred reason |
+| --- | --- | --- |
+| PRV-003 | #21 | requires fixture pagination protocol |
+| PRV-004 | #21 | requires boundary-record fixture |
+| PRV-005 | #21 | requires unordered upstream page fixture |
+| PRV-006 | #21 | requires fixture quarantine behaviour |
+| PRV-011 | #20 | requires persisted unsupported-PIT evidence |
+| PRV-012 | #20 | requires raw-timezone audit persistence |
+| PRV-014 | #20 | requires transactional retry persistence |
+| PRV-015 | #21 | requires fixture cursor continuation protocol |
+| PRV-016 | #20 | requires committed provider watermark recovery |
 
 1. Add the real provider fixture set under `tests/fixtures/{cn,hk}/<provider_name>/`.
 2. Keep assertions in `tests/contract/provider_suite.py`; add only provider parameters or fixtures.
@@ -73,7 +86,7 @@ Still blocked:
 - PRV-003, PRV-004, PRV-005, PRV-006, PRV-011, PRV-012, PRV-014,
   PRV-015, PRV-016
 
-Blocked by: #5/#1/#3 as recorded in tests/fixtures/{cn,hk}/manifest.json.
+Blocked by: #20 or #21 as recorded in tests/fixtures/{cn,hk}/manifest.json.
 ```
 
 ## CN/HK contract matrix
@@ -98,9 +111,9 @@ Blocked by: #5/#1/#3 as recorded in tests/fixtures/{cn,hk}/manifest.json.
 保留为 `xfail` 的入口：`PRV-003`、`PRV-004`、`PRV-005`、`PRV-006`、`PRV-011`、
 `PRV-012`、`PRV-014`、`PRV-015`、`PRV-016`，原因均写在测试和
 manifest 中，
-blocked by #5/#1/#3。
+由 #20（持久化/audit）或 #21（fixture-provider contract）分别跟踪。
 
-## 接入 #5 后解除 xfail
+## 完成 #20 / #21 后解除 xfail
 
 1. 在 `tests/fixtures/{cn,hk}/<real_provider>/` 增加真实 provider 的脱敏 fixture，并在
    manifest 中登记真实 provider ID。

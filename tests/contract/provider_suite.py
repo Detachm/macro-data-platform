@@ -7,7 +7,10 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Literal
 
+import pytest
+
 from macro_platform.contracts.common import SourceRef, StrictModel
+from macro_platform.contracts.editor import EditorContextRequest
 from macro_platform.contracts.macro import (
     MacroObservationQuery,
     MacroReleaseQuery,
@@ -20,8 +23,9 @@ from macro_platform.contracts.market import (
     Interval,
     MarketObservationQuery,
 )
-from macro_platform.contracts.news import ContentMode, NewsQuery
+from macro_platform.contracts.news import ContentMode, NewsEvent, NewsQuery
 from macro_platform.contracts.provider import (
+    Dataset,
     FetchContext,
     ProviderCapabilities,
     ProviderPage,
@@ -32,9 +36,24 @@ from macro_platform.normalization.common import (
     normalize_title_for_matching,
 )
 from macro_platform.providers._regional_fixture import RegionalFixtureProvider
-from macro_platform.providers.base import BaseProvider
+from macro_platform.providers.base import BaseProvider, UnsupportedCapabilityError
+from macro_platform.providers.registry import ProviderRegistry
+from macro_platform.services.editor_context_service import EditorContextService
+from macro_platform.services.macro_service import MacroService
+from macro_platform.services.market_service import MarketService
+from macro_platform.services.news_service import NewsService
+from macro_platform.storage.repositories import EmptyDataRepository
 
 ContractStatus = Literal["implemented", "xfail"]
+
+
+class _NewsOnlyRepository(EmptyDataRepository):
+    def __init__(self, events: list[NewsEvent]) -> None:
+        self._events = events
+
+    async def list_news(self, query: NewsQuery) -> list[NewsEvent]:
+        return self._events
+
 
 REQUIRED_CONTRACT_CASE_IDS = tuple(f"PRV-{index:03d}" for index in range(1, 21)) + (
     "NEWS-002",
@@ -51,10 +70,12 @@ class ContractCase:
     case_id: str
     status: ContractStatus
     blocked_by: tuple[str, ...] = ()
+    deferred_reason: str | None = None
 
     @property
     def xfail_reason(self) -> str:
-        return f"{self.case_id} blocked by {', '.join(self.blocked_by)}"
+        assert self.deferred_reason is not None
+        return f"{self.case_id} deferred to {', '.join(self.blocked_by)}: {self.deferred_reason}"
 
 
 CONTRACT_CASES = {
@@ -62,10 +83,10 @@ CONTRACT_CASES = {
     for case in (
         ContractCase("PRV-001", "implemented"),
         ContractCase("PRV-002", "implemented"),
-        ContractCase("PRV-003", "xfail", ("#5",)),
-        ContractCase("PRV-004", "xfail", ("#5",)),
-        ContractCase("PRV-005", "xfail", ("#5",)),
-        ContractCase("PRV-006", "xfail", ("#5", "#3")),
+        ContractCase("PRV-003", "xfail", ("#21",), "requires fixture pagination protocol"),
+        ContractCase("PRV-004", "xfail", ("#21",), "requires boundary-record fixture"),
+        ContractCase("PRV-005", "xfail", ("#21",), "requires unordered upstream page fixture"),
+        ContractCase("PRV-006", "xfail", ("#21",), "requires fixture quarantine behaviour"),
         ContractCase("PRV-007", "implemented"),
         ContractCase("PRV-008", "implemented"),
         ContractCase("PRV-009", "implemented"),
@@ -153,7 +174,21 @@ def assert_fixture_manifest_contract(manifest_path: Path) -> dict[str, object]:
         assert entry["status"] == case.status
         if case.status == "xfail":
             assert entry["blocked_by"] == list(case.blocked_by)
+            assert entry["deferred_reason"] == case.deferred_reason
     return manifest
+
+
+def assert_fixture_manifest_case_contract(
+    manifest_path: Path,
+    provider_id: str,
+    region: str,
+    case: ContractCase,
+) -> None:
+    manifest = assert_fixture_manifest_contract(manifest_path)
+    assert manifest["provider_id"] == provider_id
+    assert manifest["region"] == region
+    if case.status == "xfail":
+        pytest.xfail(case.xfail_reason)
 
 
 async def assert_success_fixture_contract(
@@ -332,6 +367,111 @@ async def assert_title_only_news_contract(
     assert item.quality_flags[0] == "synthetic"
 
 
+async def assert_restricted_news_editor_context_contract(
+    provider_cls: type[RegionalFixtureProvider],
+    context: FetchContext,
+) -> None:
+    provider = provider_cls.from_fixture("success")
+    region = next(iter(provider.region_set()))
+    query = NewsQuery(
+        regions={region},
+        published_from=datetime(2026, 7, 22, tzinfo=UTC),
+        published_to=datetime(2026, 7, 24, tzinfo=UTC),
+        as_of=context.as_of,
+        content_mode=ContentMode.SNIPPET,
+    )
+    news = await provider.fetch_news(query, context)
+    assert news.items[0].summary is not None
+    assert news.items[0].usage_rights.external_llm_allowed is False
+
+    repository = _NewsOnlyRepository(news.items)
+    service = EditorContextService(
+        market_service=MarketService(repository),
+        macro_service=MacroService(repository),
+        news_service=NewsService(repository),
+    )
+    editor_context = await service.build(
+        EditorContextRequest(regions={region}, as_of=context.as_of)
+    )
+
+    assert len(editor_context.news_events) == 1
+    event = editor_context.news_events[0]
+    assert event.content_mode is ContentMode.HEADLINE
+    assert event.summary is None
+    assert event.body is None
+
+
+async def assert_full_text_storage_rights_contract(
+    provider_cls: type[RegionalFixtureProvider],
+    source_fixture: Path,
+    temporary_directory: Path,
+    context: FetchContext,
+) -> None:
+    restricted_fixture = _prepare_full_text_storage_rights_fixture(
+        source_fixture,
+        temporary_directory,
+    )
+
+    provider = provider_cls(restricted_fixture)
+    region = next(iter(provider.region_set()))
+    page = await provider.fetch_news(
+        NewsQuery(
+            regions={region},
+            published_from=datetime(2026, 7, 22, tzinfo=UTC),
+            published_to=datetime(2026, 7, 24, tzinfo=UTC),
+            as_of=context.as_of,
+            content_mode=ContentMode.SNIPPET,
+        ),
+        context,
+    )
+    assert page.items[0].body == "Synthetic full text retained for internal storage."
+    assert page.items[0].content_mode is ContentMode.FULL_TEXT
+    assert "body_omitted_by_rights" not in page.items[0].quality_flags
+
+
+async def assert_fixture_only_health_contract(provider: RegionalFixtureProvider) -> None:
+    health = await provider.healthcheck()
+    assert health.status == "not_configured"
+    assert health.message is not None
+    assert health.message.startswith("fixture-only provider:")
+
+
+def assert_fixture_only_scheduling_contract(
+    provider: RegionalFixtureProvider,
+    fixture_only_datasets: set[Dataset],
+) -> None:
+    for dataset in fixture_only_datasets:
+        with pytest.raises(UnsupportedCapabilityError):
+            provider.assert_production_dataset_supported(dataset)
+
+
+async def assert_source_checksum_excludes_retrieved_at_contract(
+    provider_cls: type[RegionalFixtureProvider],
+    source_fixture: Path,
+    temporary_directory: Path,
+    context: FetchContext,
+) -> None:
+    changed_fixture = _prepare_retrieved_at_checksum_fixture(source_fixture, temporary_directory)
+    original_provider = provider_cls.from_fixture("success")
+    region = next(iter(original_provider.region_set()))
+    query = InstrumentQuery(regions={region})
+    original = await original_provider.fetch_instruments(query, context)
+    changed = await provider_cls(changed_fixture).fetch_instruments(query, context)
+    assert original.items[0].source.checksum_sha256 == changed.items[0].source.checksum_sha256
+
+
+def assert_registry_role_contract(
+    provider: RegionalFixtureProvider,
+    role_bindings: dict[str, str],
+    role: str,
+) -> None:
+    registry = ProviderRegistry()
+    registry.register(provider)
+    for role_name, provider_id in role_bindings.items():
+        registry.bind_role(role_name, provider_id)
+    assert registry.resolve(role) is provider
+
+
 async def assert_news_identity_contract(
     provider_cls: type[RegionalFixtureProvider],
     source_fixture: Path,
@@ -425,6 +565,34 @@ def _prepare_news_identity_fixtures(
     original_fixture.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     changed_fixture.write_text(json.dumps(changed_payload, ensure_ascii=False), encoding="utf-8")
     return original_fixture, changed_fixture, original_news
+
+
+def _prepare_retrieved_at_checksum_fixture(
+    source_fixture: Path,
+    temporary_directory: Path,
+) -> Path:
+    changed_fixture = temporary_directory / "success_changed_retrieved_at.json"
+    payload = json.loads(source_fixture.read_text(encoding="utf-8"))
+    payload["pages"]["instruments"]["items"][0]["retrieved_at"] = "2026-07-23T07:30:00Z"
+    changed_fixture.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    return changed_fixture
+
+
+def _prepare_full_text_storage_rights_fixture(
+    source_fixture: Path,
+    temporary_directory: Path,
+) -> Path:
+    restricted_fixture = temporary_directory / "full_text_without_external_rights.json"
+    payload = json.loads(source_fixture.read_text(encoding="utf-8"))
+    news = payload["pages"]["news"]["items"][0]
+    assert isinstance(news, dict)
+    news["body"] = "Synthetic full text retained for internal storage."
+    news["content_mode"] = "full_text"
+    rights = news["rights"]
+    assert isinstance(rights, dict)
+    news["rights"] = {**rights, "external_llm_allowed": False, "embedding_allowed": False}
+    restricted_fixture.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    return restricted_fixture
 
 
 def _prepare_title_fallback_news_identity_fixtures(
