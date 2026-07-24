@@ -60,7 +60,11 @@ from macro_platform.contracts.provider import (
     ProviderHealth,
     ProviderPage,
 )
-from macro_platform.normalization.common import canonical_json_checksum, canonicalize_url
+from macro_platform.normalization.common import (
+    canonical_json_checksum,
+    canonicalize_url,
+    normalize_title_for_matching,
+)
 from macro_platform.normalization.common.time import TimezoneRequiredError, utc_now
 from macro_platform.normalization.us import (
     UsInstrumentIdentity,
@@ -83,14 +87,25 @@ from macro_platform.providers.base import (
 from macro_platform.providers.registry import ProviderRegistry
 
 US_PROVIDER_ID = "us.fixture.vertical-slice.v1"
-US_ROLE_BINDINGS: dict[str, str] = {
-    "us.instruments.primary": US_PROVIDER_ID,
-    "us.market.primary": US_PROVIDER_ID,
-    "us.rates_fx.primary": US_PROVIDER_ID,
-    "us.macro.primary": US_PROVIDER_ID,
-    "us.filings.primary": US_PROVIDER_ID,
-    "us.news.primary": US_PROVIDER_ID,
+US_PRODUCTION_PRIMARY_ROLES = frozenset(
+    {
+        "us.instruments.primary",
+        "us.market.primary",
+        "us.rates_fx.primary",
+        "us.macro.primary",
+        "us.filings.primary",
+        "us.news.primary",
+    }
+)
+US_FIXTURE_CONTRACT_ROLE_BINDINGS: dict[str, str] = {
+    "us.instruments.fixture_contract": US_PROVIDER_ID,
+    "us.market.fixture_contract": US_PROVIDER_ID,
+    "us.rates_fx.fixture_contract": US_PROVIDER_ID,
+    "us.macro.fixture_contract": US_PROVIDER_ID,
+    "us.filings.fixture_contract": US_PROVIDER_ID,
+    "us.news.fixture_contract": US_PROVIDER_ID,
 }
+
 
 _FIXTURE_DIR = Path(__file__).resolve().parents[4] / "tests" / "fixtures" / "us" / "provider"
 _PAGE_KEYS = frozenset({"next_cursor", "items"})
@@ -425,7 +440,7 @@ class UsFixtureProvider:
             item
             for item in page.items
             if item.series_id in query.series_ids
-            and query.period_from <= item.period_start <= query.period_to
+            and query.period_from <= item.period_end <= query.period_to
             and _is_available(item.available_at, query.as_of, context)
         ]
         selected_revisions = _select_macro_revisions(items, query.revision_policy)
@@ -1146,7 +1161,11 @@ def _news_event(
         entities=_news_entities(_required(raw, "entities", "news.entities")),
         topics=topics,
         content_hash_sha256=canonical_json_checksum(
-            {"title": title, "summary": summary, "url": canonical_url}
+            {
+                "title": normalize_title_for_matching(title),
+                "summary": summary,
+                "url": canonical_url,
+            }
         ),
         usage_rights=UsageRights(
             storage_allowed=_bool(
@@ -1179,8 +1198,10 @@ def _news_event(
 
 
 def register_us_provider_roles(registry: ProviderRegistry, provider: UsFixtureProvider) -> None:
-    """Register fixture capabilities without enabling fixture-only primary roles."""
+    """Bind the fixture adapter only to contract roles, never production roles."""
     registry.register(provider)
+    for role, provider_id in US_FIXTURE_CONTRACT_ROLE_BINDINGS.items():
+        registry.bind_role(role, provider_id)
 
 
 def _cursor_fingerprint(query: StrictModel, context: FetchContext) -> str:

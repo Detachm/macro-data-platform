@@ -38,8 +38,9 @@ from macro_platform.providers.base import (
 )
 from macro_platform.providers.registry import ProviderRegistry, ProviderRegistryError
 from macro_platform.providers.us import (
+    US_FIXTURE_CONTRACT_ROLE_BINDINGS,
+    US_PRODUCTION_PRIMARY_ROLES,
     US_PROVIDER_ID,
-    US_ROLE_BINDINGS,
     UsFixtureProvider,
     register_us_provider_roles,
 )
@@ -209,9 +210,13 @@ def test_us_fixture_provider_declares_stable_roles_and_capabilities(
 
     registry = ProviderRegistry()
     register_us_provider_roles(registry, provider)
-    for role in US_ROLE_BINDINGS:
+    for role in US_FIXTURE_CONTRACT_ROLE_BINDINGS:
+        assert registry.resolve(role) is provider
+    for role in US_PRODUCTION_PRIMARY_ROLES:
         with pytest.raises(ProviderRegistryError, match="not bound"):
             registry.resolve(role)
+    with pytest.raises(UnsupportedCapabilityError, match="fixture-only"):
+        provider.assert_production_dataset_supported(Dataset.MACRO_OBSERVATIONS)
 
 
 def test_us_fixture_provider_implements_all_required_provider_protocols(
@@ -293,6 +298,39 @@ async def test_us_fixture_provider_enforces_pit_and_rejects_unknown_cursors(
         await provider.fetch_instruments(
             InstrumentQuery(regions={Region.US}, cursor="not-a-provider-cursor"), CONTEXT
         )
+
+
+@pytest.mark.asyncio
+async def test_us_fixture_provider_filters_macro_observations_by_period_end(
+    provider: UsFixtureProvider,
+) -> None:
+    page = await provider.fetch_macro_observations(
+        MacroObservationQuery(
+            series_ids=["macro:US:BLS:CPI_ALL_ITEMS"],
+            period_from=date(2026, 6, 30),
+            period_to=date(2026, 6, 30),
+            as_of=NOW,
+        ),
+        CONTEXT,
+    )
+
+    assert [item.period_end for item in page.items] == [date(2026, 6, 30)]
+
+
+def test_us_fixture_provider_news_fingerprint_normalizes_news_003_title_variants(
+    provider: UsFixtureProvider,
+) -> None:
+    payload = json.loads(
+        (UsFixtureProvider.fixture_dir / "success.json").read_text(encoding="utf-8")
+    )
+    daily_news = next(
+        item for item in payload["pages"]["news"]["items"] if "accession_number" not in item
+    )
+
+    full_width = provider._parse_news({**daily_news, "title": "ＣＰＩ，   JUNE 2026"})
+    normalized_spacing = provider._parse_news({**daily_news, "title": "cpi, June\t2026"})
+
+    assert full_width.content_hash_sha256 == normalized_spacing.content_hash_sha256
 
 
 @pytest.mark.asyncio
