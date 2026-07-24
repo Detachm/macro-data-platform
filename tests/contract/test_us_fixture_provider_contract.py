@@ -139,9 +139,14 @@ async def test_us_fixture_provider_passes_shared_contract_suite(
     for page in [instruments, bars, observations, series, macro_observations, releases, news]:
         assert_page_contract(page)
         assert_provenance_contract(page)
+        assert all(item.source.source_url is not None for item in page.items)
     for page in [bars, observations, macro_observations, releases, news]:
         assert_pit_contract(page, as_of=NOW)
     assert_news_contract(news)
+    assert all(item.body is None for item in news.items)
+    assert all(
+        item.content_mode in {ContentMode.HEADLINE, ContentMode.SNIPPET} for item in news.items
+    )
 
     repeated_news = await provider.fetch_news(
         NewsQuery(

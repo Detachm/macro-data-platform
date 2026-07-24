@@ -41,7 +41,8 @@ def assert_provenance_contract(page: ProviderPage[StrictModel]) -> None:
         assert source["provider_record_id"].strip() == source["provider_record_id"]
         assert isinstance(source.get("source_name"), str)
         assert source["source_name"].strip() == source["source_name"]
-        assert source.get("source_url") is not None
+        source_url = source.get("source_url")
+        assert source_url is None or str(source_url).strip() == str(source_url)
         assert isinstance(source.get("checksum_sha256"), str)
         assert len(source["checksum_sha256"]) == 64
         assert all(character in "0123456789abcdef" for character in source["checksum_sha256"])
@@ -57,11 +58,12 @@ def assert_pit_contract(page: ProviderPage[StrictModel], *, as_of: datetime) -> 
 
 def assert_news_contract(page: ProviderPage[NewsEvent]) -> None:
     for event in page.items:
-        assert event.body is None
-        assert event.content_mode in {ContentMode.HEADLINE, ContentMode.SNIPPET}
         assert event.content_hash_sha256
         assert isinstance(event.usage_rights.storage_allowed, bool)
         assert isinstance(event.usage_rights.external_llm_allowed, bool)
+        if event.body is not None:
+            assert event.content_mode is ContentMode.FULL_TEXT
+            assert event.usage_rights.storage_allowed
 
 
 def _canonical_items(items: Sequence[StrictModel]) -> list[dict[str, object]]:
