@@ -51,10 +51,11 @@ def _alias(
     venue_mic: str,
     valid_from: date,
     valid_to: date | None = None,
+    provider_id: str = "registry.synthetic",
 ) -> InstrumentAliasRegistryEntry:
     return InstrumentAliasRegistryEntry(
         instrument_key=instrument_key,
-        provider_id="registry.synthetic",
+        provider_id=provider_id,
         source_symbol=source_symbol,
         venue_mic=venue_mic,
         valid_from=valid_from,
@@ -151,8 +152,21 @@ def test_sym_007_unknown_symbol_without_exchange_is_unresolved() -> None:
 
 def test_sym_008_old_and_new_aliases_keep_one_instrument_id() -> None:
     aliases = (
-        _alias("cn-security-same-company", "600001", "XSHG", date(2000, 1, 1), date(2020, 1, 1)),
-        _alias("cn-security-same-company", "688001", "XSHG", date(2020, 1, 2)),
+        _alias(
+            "cn-security-same-company",
+            "600001",
+            "XSHG",
+            date(2000, 1, 1),
+            date(2020, 1, 1),
+            "sse_public_list",
+        ),
+        _alias(
+            "cn-security-same-company",
+            "688001",
+            "XSHG",
+            date(2020, 1, 1),
+            provider_id="sse_public_list",
+        ),
     )
 
     old = resolve_instrument_alias(
@@ -180,8 +194,8 @@ def test_sym_008_old_and_new_aliases_keep_one_instrument_id() -> None:
 
 def test_sym_009_same_day_alias_to_two_instruments_is_ambiguous() -> None:
     aliases = (
-        _alias("hk-security-a", "700", "XHKG", date(2020, 1, 1)),
-        _alias("hk-security-b", "00700", "XHKG", date(2020, 1, 1)),
+        _alias("hk-security-a", "700", "XHKG", date(2020, 1, 1), provider_id="hkex"),
+        _alias("hk-security-b", "00700", "XHKG", date(2020, 1, 1), provider_id="hkex"),
     )
 
     with pytest.raises(SymbolMappingError, match="ambiguous"):
@@ -190,7 +204,7 @@ def test_sym_009_same_day_alias_to_two_instruments_is_ambiguous() -> None:
             venue_mic="XHKG",
             local_symbol="700.HK",
             as_of=date(2026, 1, 1),
-            provider_id="hkex_securities_lists",
+            provider_id="hkex",
             aliases=aliases,
         )
 
@@ -229,7 +243,16 @@ def test_sym_011_empty_source_symbol_is_quarantined() -> None:
 
 
 def test_sym_012_inactive_alias_requires_include_inactive() -> None:
-    aliases = (_alias("hk-security-oldco", "00123", "XHKG", date(2000, 1, 1), date(2020, 1, 1)),)
+    aliases = (
+        _alias(
+            "hk-security-oldco",
+            "00123",
+            "XHKG",
+            date(2000, 1, 1),
+            date(2020, 1, 1),
+            "hkex_securities_lists",
+        ),
+    )
 
     with pytest.raises(SymbolMappingError, match="inactive"):
         resolve_instrument_alias(
@@ -251,6 +274,99 @@ def test_sym_012_inactive_alias_requires_include_inactive() -> None:
         include_inactive=True,
     )
     assert inactive.canonical_symbol == "XHKG:00123"
+
+
+def test_sym_013_aliases_are_scoped_to_the_requested_provider() -> None:
+    aliases = (
+        _alias(
+            "cn-security-provider-a",
+            "600001",
+            "XSHG",
+            date(2020, 1, 1),
+            provider_id="provider-a",
+        ),
+        _alias(
+            "cn-security-provider-b",
+            "600001",
+            "XSHG",
+            date(2020, 1, 1),
+            provider_id="provider-b",
+        ),
+    )
+
+    resolved = resolve_instrument_alias(
+        region=Region.CN,
+        venue_mic="XSHG",
+        local_symbol="600001",
+        as_of=date(2026, 1, 1),
+        provider_id="provider-b",
+        aliases=aliases,
+    )
+    assert resolved.instrument_key == "cn-security-provider-b"
+    assert resolved.aliases[0].provider_id == "provider-b"
+
+    with pytest.raises(SymbolMappingError, match="unresolved"):
+        resolve_instrument_alias(
+            region=Region.CN,
+            venue_mic="XSHG",
+            local_symbol="600001",
+            as_of=date(2026, 1, 1),
+            provider_id="provider-b",
+            aliases=aliases[:1],
+        )
+
+
+def test_sym_014_alias_valid_to_is_exclusive() -> None:
+    aliases = (
+        _alias(
+            "cn-security-old-symbol",
+            "600001",
+            "XSHG",
+            date(2020, 1, 1),
+            date(2021, 1, 1),
+            "provider-a",
+        ),
+        _alias(
+            "cn-security-new-symbol",
+            "688001",
+            "XSHG",
+            date(2021, 1, 1),
+            provider_id="provider-a",
+        ),
+    )
+
+    with pytest.raises(SymbolMappingError, match="inactive"):
+        resolve_instrument_alias(
+            region=Region.CN,
+            venue_mic="XSHG",
+            local_symbol="600001",
+            as_of=date(2021, 1, 1),
+            provider_id="provider-a",
+            aliases=aliases,
+        )
+
+    resolved = resolve_instrument_alias(
+        region=Region.CN,
+        venue_mic="XSHG",
+        local_symbol="688001",
+        as_of=date(2021, 1, 1),
+        provider_id="provider-a",
+        aliases=aliases,
+    )
+    assert resolved.instrument_key == "cn-security-new-symbol"
+
+
+def test_symbol_alias_rejects_an_empty_effective_interval() -> None:
+    with pytest.raises(SymbolMappingError, match="later than valid_from"):
+        normalize_instrument_symbol(
+            region=Region.CN,
+            venue_mic="XSHG",
+            local_symbol="600001",
+            valid_from=date(2021, 1, 1),
+            valid_to=date(2021, 1, 1),
+            provider_id="provider-a",
+            instrument_key="cn-security-empty-interval",
+        )
 
 
 def test_symbol_normalization_is_deterministic_for_same_registry_identity() -> None:
