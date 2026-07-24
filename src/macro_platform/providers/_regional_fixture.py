@@ -296,7 +296,13 @@ class RegionalFixtureProvider:
                 self.region in query.regions
                 and (not query.venues or item.venue_mic in query.venues)
                 and (not query.asset_classes or item.asset_class in query.asset_classes)
-                and (query.active_on is None or item.valid_from <= query.active_on)
+                and (
+                    query.active_on is None
+                    or (
+                        item.valid_from <= query.active_on
+                        and (item.valid_to is None or query.active_on < item.valid_to)
+                    )
+                )
                 and (
                     query.modified_since is None or item.source.retrieved_at >= query.modified_since
                 )
