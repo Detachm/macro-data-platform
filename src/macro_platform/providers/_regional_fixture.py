@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from hashlib import sha256
@@ -15,6 +16,7 @@ from macro_platform.contracts.common import (
     SourceRef,
     StrictModel,
     UsageRights,
+    WarningItem,
 )
 from macro_platform.contracts.macro import (
     MacroObservation,
@@ -72,6 +74,7 @@ from macro_platform.providers.base import (
 )
 
 _PAGE_KEYS = frozenset({"next_cursor", "items"})
+_PAGINATED_PAGE_KEYS = _PAGE_KEYS | frozenset({"cursor"})
 _ENVELOPE_KEYS = frozenset({"status", "fetched_at", "source_watermark", "pages"})
 _ERROR_ENVELOPE_KEYS = frozenset({"status", "error"})
 _ERROR_KEYS = frozenset({"code", "message", "retry_after_seconds"})
@@ -200,6 +203,13 @@ _RIGHTS_KEYS = frozenset(
         "content_expires_at",
     }
 )
+_MAX_CONSECUTIVE_EMPTY_PAGES = 2
+
+
+@dataclass(frozen=True)
+class _FixtureCursor:
+    raw_cursor: str | None
+    empty_pages: int = 0
 
 
 class RegionalFixtureProvider:
@@ -307,6 +317,7 @@ class RegionalFixtureProvider:
                     query.modified_since is None or item.source.retrieved_at >= query.modified_since
                 )
             ),
+            query.cursor,
         )
         return _limit_page(page, query.limit)
 
@@ -322,6 +333,7 @@ class RegionalFixtureProvider:
                 and item.available_at <= query.as_of
                 and _available_for_context(item.available_at, context)
             ),
+            query.cursor,
         )
         return _limit_page(page, query.limit)
 
@@ -339,6 +351,7 @@ class RegionalFixtureProvider:
                 and item.available_at <= query.as_of
                 and _available_for_context(item.available_at, context)
             ),
+            query.cursor,
         )
         return _limit_page(page, query.limit)
 
@@ -398,6 +411,7 @@ class RegionalFixtureProvider:
                 and item.available_at <= query.as_of
                 and _available_for_context(item.available_at, context)
             ),
+            query.cursor,
         )
         return _limit_page(page, query.limit)
 
@@ -413,6 +427,7 @@ class RegionalFixtureProvider:
                 and item.available_at <= query.as_of
                 and _available_for_context(item.available_at, context)
             ),
+            query.cursor,
         )
         return _limit_page(page, query.limit)
 
@@ -431,6 +446,7 @@ class RegionalFixtureProvider:
                 and _content_satisfies(query.content_mode, item.content_mode)
                 and _available_for_context(item.available_at, context)
             ),
+            query.cursor,
         )
         return _limit_page(page, query.limit)
 
@@ -439,28 +455,48 @@ class RegionalFixtureProvider:
         dataset_key: str,
         parse_item: Callable[[Mapping[str, Any]], T],
         include_item: Callable[[T], bool],
+        cursor: str | None,
     ) -> ProviderPage[T]:
         payload = self._payload()
         _ensure_keys(payload, _ENVELOPE_KEYS, required={"status", "fetched_at", "pages"}, path="$")
         fetched_at = _datetime(_required(payload, "fetched_at", "fetched_at"), "fetched_at")
         pages = _mapping(_required(payload, "pages", "pages"), "pages")
-        page_payload = _mapping(_required(pages, dataset_key, f"pages.{dataset_key}"), dataset_key)
-        _ensure_keys(
-            page_payload,
-            _PAGE_KEYS,
-            required={"next_cursor", "items"},
-            path=f"pages.{dataset_key}",
-        )
+        page_payload = _fixture_page(pages, dataset_key, cursor)
         raw_items = _list(_required(page_payload, "items", f"pages.{dataset_key}.items"), "items")
-        parsed_items = (parse_item(_mapping(raw, dataset_key)) for raw in raw_items)
-        items = [item for item in parsed_items if include_item(item)]
+        empty_pages = _empty_pages_before(pages, dataset_key, cursor) + 1 if not raw_items else 0
         next_cursor = _optional_str(page_payload, "next_cursor")
+        if not raw_items and next_cursor is not None and empty_pages > _MAX_CONSECUTIVE_EMPTY_PAGES:
+            raise ProviderCursorError(
+                f"empty fixture page threshold exceeded for {dataset_key}",
+                code="INVALID_PAGINATION",
+            )
+        _ensure_no_duplicate_raw_records(raw_items, dataset_key)
+        items: list[T] = []
+        warnings: list[WarningItem] = []
+        for index, raw in enumerate(raw_items):
+            try:
+                item = parse_item(_mapping(raw, f"pages.{dataset_key}.items[{index}]"))
+            except (ProviderSchemaError, CnHkNormalizationError, ValueError) as exc:
+                warnings.append(
+                    WarningItem(
+                        code="PROVIDER_RECORD_QUARANTINED",
+                        message=str(exc)[:500],
+                        scope=f"{dataset_key}[{index}]",
+                    )
+                )
+            else:
+                if include_item(item):
+                    items.append(item)
+        if raw_items and not items and warnings:
+            raise ProviderSchemaError(f"all records in {dataset_key} fixture page were rejected")
+        items.sort(key=lambda item: item.source.provider_record_id)  # type: ignore[attr-defined]
         return ProviderPage[T](
             items=items,
             next_cursor=next_cursor,
             source_watermark=_optional_str(payload, "source_watermark"),
             fetched_at=fetched_at,
             complete=next_cursor is None,
+            warnings=warnings,
         )
 
     def _payload(self) -> Mapping[str, Any]:
@@ -1110,12 +1146,70 @@ def _limit_page[T: StrictModel](page: ProviderPage[T], limit: int) -> ProviderPa
     items = page.items[:limit]
     return ProviderPage[T](
         items=items,
-        next_cursor=page.next_cursor if len(page.items) > limit else None,
+        next_cursor=page.next_cursor,
         source_watermark=page.source_watermark,
         fetched_at=page.fetched_at,
-        complete=len(page.items) <= limit and page.complete,
+        complete=page.complete and len(page.items) <= limit,
         warnings=page.warnings,
     )
+
+
+def _fixture_page(
+    pages: Mapping[str, Any], dataset_key: str, cursor: str | None
+) -> Mapping[str, Any]:
+    raw_dataset_page = _required(pages, dataset_key, f"pages.{dataset_key}")
+    if isinstance(raw_dataset_page, dict):
+        if cursor is not None:
+            raise ProviderCursorError(
+                f"fixture dataset {dataset_key} has no continuation cursor: {cursor}",
+                code="INVALID_PAGINATION",
+            )
+        page = _mapping(raw_dataset_page, f"pages.{dataset_key}")
+        _ensure_keys(page, _PAGE_KEYS, required=_PAGE_KEYS, path=f"pages.{dataset_key}")
+        return page
+
+    page_sequence = _list(raw_dataset_page, f"pages.{dataset_key}")
+    for index, raw_page in enumerate(page_sequence):
+        page = _mapping(raw_page, f"pages.{dataset_key}[{index}]")
+        _ensure_keys(
+            page,
+            _PAGINATED_PAGE_KEYS,
+            required=_PAGINATED_PAGE_KEYS,
+            path=f"pages.{dataset_key}[{index}]",
+        )
+        if _optional_str(page, "cursor") == cursor:
+            return page
+    raise ProviderCursorError(
+        f"unknown fixture cursor for {dataset_key}: {cursor}", code="INVALID_PAGINATION"
+    )
+
+
+def _empty_pages_before(pages: Mapping[str, Any], dataset_key: str, cursor: str | None) -> int:
+    raw_dataset_page = _required(pages, dataset_key, f"pages.{dataset_key}")
+    if not isinstance(raw_dataset_page, list):
+        return 0
+    empty_pages = 0
+    for raw_page in raw_dataset_page:
+        page = _mapping(raw_page, f"pages.{dataset_key}")
+        if _optional_str(page, "cursor") == cursor:
+            return empty_pages
+        items = _list(_required(page, "items", f"pages.{dataset_key}.items"), "items")
+        empty_pages = empty_pages + 1 if not items else 0
+    return 0
+
+
+def _ensure_no_duplicate_raw_records(raw_items: Sequence[Any], dataset_key: str) -> None:
+    record_ids = [
+        record_id
+        for raw in raw_items
+        if isinstance(raw, dict)
+        and isinstance((record_id := raw.get("record_id")), str)
+        and record_id.strip()
+    ]
+    if len(record_ids) != len(set(record_ids)):
+        raise ProviderCursorError(
+            f"duplicate record id in {dataset_key} fixture page", code="INVALID_PAGINATION"
+        )
 
 
 def _content_satisfies(requested: ContentMode, actual: ContentMode) -> bool:
