@@ -211,7 +211,8 @@ XNAS:AAPL
 XNYS:BRK.B
 ```
 
-证券更名或换代码时，`instrument_id` 不变；canonical symbol 与供应商 alias 使用 `valid_from/valid_to` 管理。
+证券更名或换代码时，`instrument_id` 不变；canonical symbol 与供应商 alias 使用
+`valid_from/valid_to` 管理，有效区间为 `[valid_from, valid_to)`（`valid_to=null` 表示未结束）。
 
 非证券序列 ID：
 

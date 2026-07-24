@@ -141,8 +141,8 @@ def normalize_instrument_symbol(
         raise SymbolMappingError("provider_id is required", field="provider_id")
     if not clean_instrument_key:
         raise SymbolMappingError("instrument_key is required", field="instrument_key")
-    if valid_to is not None and valid_to < valid_from:
-        raise SymbolMappingError("valid_to must not be earlier than valid_from", field="valid_to")
+    if valid_to is not None and valid_to <= valid_from:
+        raise SymbolMappingError("valid_to must be later than valid_from", field="valid_to")
 
     parsed_venue, parsed_symbol = _split_prefixed_symbol(clean_symbol)
     if parsed_venue is not None:
@@ -192,6 +192,9 @@ def resolve_instrument_alias(
     aliases: tuple[InstrumentAliasRegistryEntry, ...],
     include_inactive: bool = False,
 ) -> NormalizedInstrumentSymbol:
+    clean_provider_id = provider_id.strip()
+    if not clean_provider_id:
+        raise SymbolMappingError("provider_id is required", field="provider_id")
     clean_venue = venue_mic.strip().upper()
     clean_symbol = local_symbol.strip()
     parsed_venue, parsed_symbol = _split_prefixed_symbol(clean_symbol)
@@ -203,7 +206,10 @@ def resolve_instrument_alias(
 
     requested_symbol = _normalize_symbol_for_region(region, clean_venue, clean_symbol)
     matching = tuple(
-        entry for entry in aliases if _alias_matches(region, entry, clean_venue, requested_symbol)
+        entry
+        for entry in aliases
+        if entry.provider_id.strip() == clean_provider_id
+        and _alias_matches(region, entry, clean_venue, requested_symbol)
     )
     active = tuple(entry for entry in matching if _alias_active(entry, as_of))
     candidates = active or (matching if include_inactive else ())
@@ -221,7 +227,7 @@ def resolve_instrument_alias(
         local_symbol=entry.source_symbol,
         valid_from=entry.valid_from,
         valid_to=entry.valid_to,
-        provider_id=provider_id,
+        provider_id=clean_provider_id,
         instrument_key=entry.instrument_key,
     )
 
@@ -427,7 +433,7 @@ def _alias_matches(
 
 
 def _alias_active(entry: InstrumentAliasRegistryEntry, as_of: date) -> bool:
-    return entry.valid_from <= as_of and (entry.valid_to is None or as_of <= entry.valid_to)
+    return entry.valid_from <= as_of and (entry.valid_to is None or as_of < entry.valid_to)
 
 
 def _timezone_for_region(region: Region) -> str:
