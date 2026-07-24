@@ -90,8 +90,9 @@ Blocked by: #5/#1/#3 as recorded in tests/fixtures/{cn,hk}/manifest.json.
   不被当成空数据。
 - `NEWS-002`、`NEWS-003`、`PRV-017`：URL canonicalization、标题 normalization 和
   canonical checksum。
-- `NEWS-012`、`NEWS-013`：title-only 新闻、空 vendor annotation，并保留 rights 字段骨架。
-- `NEWS-017`：EditorContext 对 `external_llm_allowed=false` 的新闻输出 headline-only，
+- `NEWS-012`、`NEWS-013`、`NEWS-017`：title-only 新闻、空 vendor annotation，并保留
+  rights 字段骨架；storage 已许可的正文可内部保存，EditorContext 对
+  `external_llm_allowed=false` 的新闻输出 headline-only，
   不返回受限 summary/body。
 
 保留为 `xfail` 的入口：`PRV-003`、`PRV-004`、`PRV-005`、`PRV-006`、`PRV-011`、

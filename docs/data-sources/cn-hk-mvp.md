@@ -381,7 +381,8 @@ Provider roles: `cn.instruments.primary`, `cn.bars.primary`, `cn.macro.primary`,
 - 对 fixture-only 或 gap 来源，若产生 fixture 记录，`usage_rights.storage_allowed=true` 仅限合成/脱敏 fixture；真实上游正文不得保存。
 - 对 open-data numeric/metadata 来源，`storage_allowed=true`, `internal_analysis_allowed=true`; `external_llm_allowed` 和 `embedding_allowed` 只有在上表明确为 Yes 且有可验证授权依据时才为 true。HKMA Open API 在负责人/法务确认前均为 false；`redistribution_allowed` 只能在上表明确为 Yes 时为 true。
 - 对未采购市场数据，全部 false；不得生成 live provider capabilities。
-- 新闻 `body` 只有在书面合同明确允许 storage、external LLM 和 embedding 时才能非空。
+- 新闻 `body` 只有在书面合同明确允许 storage 时才能非空；external LLM 和 embedding
+  权限分别只限制外发和向量化，不得在公共 `NewsEvent` validation 中解释为禁止内部保存。
 
 ## 稳定 ID 和 checksum 规则
 
