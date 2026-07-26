@@ -1,0 +1,4 @@
+{
+  "status": "error",
+  "error": {"code": "forbidden", "message": "synthetic forbidden response"}
+}

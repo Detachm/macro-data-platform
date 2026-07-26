@@ -1,0 +1,4 @@
+{
+  "status": "error",
+  "error": {"code": "timeout", "message": "synthetic upstream timeout"}
+}

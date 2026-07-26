@@ -1,0 +1,37 @@
+{
+  "status": "ok",
+  "fetched_at": "2026-07-23T08:00:00Z",
+  "source_watermark": "hk-synthetic-headline",
+  "pages": {
+    "news": {
+      "next_cursor": null,
+      "items": [
+        {
+          "record_id": "hk-news-headline-001",
+          "title": "HK synthetic headline only",
+          "content_mode": "headline",
+          "language": "zh-HK",
+          "source_name": "HK Synthetic Wire",
+          "source_tier": "licensed_media",
+          "canonical_url": "https://example.test/hk/news/headline?utm_source=fixture",
+          "published_at": "2026-07-23T01:15:00Z",
+          "first_seen_at": "2026-07-23T01:16:00Z",
+          "available_at": "2026-07-23T01:16:00Z",
+          "availability_basis": "first_seen",
+          "topics": [],
+          "rights": {
+            "storage_allowed": true,
+            "internal_analysis_allowed": true,
+            "external_llm_allowed": false,
+            "embedding_allowed": false,
+            "redistribution_allowed": false
+          },
+          "quality_flags": ["synthetic", "headline_only"],
+          "source_url": "https://example.test/hk/news/headline",
+          "retrieved_at": "2026-07-23T08:00:00Z",
+          "provider_updated_at": "2026-07-23T01:16:00Z"
+        }
+      ]
+    }
+  }
+}
