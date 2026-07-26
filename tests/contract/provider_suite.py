@@ -375,7 +375,8 @@ async def assert_fixture_pagination_contract(
     second = await provider.fetch_instruments(
         InstrumentQuery(regions={region}, cursor=first.next_cursor), context
     )
-    assert first.next_cursor == "next-1"
+    assert first.next_cursor is not None
+    assert first.next_cursor != "next-1"
     assert first.complete is False
     assert second.next_cursor is None
     assert second.complete is True
@@ -395,6 +396,22 @@ async def assert_fixture_pagination_contract(
     )
     ordered_source_ids = [item.source.provider_record_id for item in ordered.items]
     assert ordered_source_ids == sorted(ordered_source_ids)
+
+    limited_provider = provider_cls(unordered_fixture)
+    limited_first = await limited_provider.fetch_instruments(
+        InstrumentQuery(regions={region}, limit=1), context
+    )
+    assert limited_first.next_cursor is not None
+    assert limited_first.complete is False
+    limited_second = await limited_provider.fetch_instruments(
+        InstrumentQuery(regions={region}, limit=1, cursor=limited_first.next_cursor), context
+    )
+    limited_source_ids = [
+        item.source.provider_record_id for item in [*limited_first.items, *limited_second.items]
+    ]
+    assert limited_source_ids == ordered_source_ids
+    assert limited_second.next_cursor is None
+    assert limited_second.complete is True
 
     quarantined = deepcopy(payload)
     quarantined["pages"]["instruments"] = {

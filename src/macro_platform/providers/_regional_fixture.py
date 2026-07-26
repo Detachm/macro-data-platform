@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -209,7 +210,16 @@ _MAX_CONSECUTIVE_EMPTY_PAGES = 2
 @dataclass(frozen=True)
 class _FixtureCursor:
     raw_cursor: str | None
+    offset: int = 0
     empty_pages: int = 0
+
+
+@dataclass(frozen=True)
+class _QueryFixturePage[T: StrictModel]:
+    dataset: Dataset
+    page: ProviderPage[T]
+    cursor: _FixtureCursor
+    fingerprint: str
 
 
 class RegionalFixtureProvider:
@@ -252,13 +262,16 @@ class RegionalFixtureProvider:
         """Return preserved upstream timestamp evidence without normalizing it first."""
         payload = self._payload()
         pages = _mapping(_required(payload, "pages", "pages"), "pages")
-        page = _mapping(
-            _required(pages, "market_observations", "pages.market_observations"),
-            "market_observations",
+        raw_pages = _required(pages, "market_observations", "pages.market_observations")
+        page_values = (
+            [raw_pages] if isinstance(raw_pages, dict) else _list(raw_pages, "market_observations")
         )
-        for raw in _list(_required(page, "items", "market_observations.items"), "items"):
-            record = _mapping(raw, "market_observations")
-            if _str(record["record_id"], "market_observations.record_id") == provider_record_id:
+        for page_index, raw_page in enumerate(page_values):
+            page = _mapping(raw_page, f"market_observations[{page_index}]")
+            for raw in _list(_required(page, "items", "market_observations.items"), "items"):
+                if not isinstance(raw, dict) or raw.get("record_id") != provider_record_id:
+                    continue
+                record = cast(Mapping[str, Any], raw)
                 return (
                     _str(record["raw_observed_at"], "market_observations.raw_observed_at"),
                     _str(record["raw_timezone"], "market_observations.raw_timezone"),
@@ -300,7 +313,7 @@ class RegionalFixtureProvider:
         self, query: InstrumentQuery, context: FetchContext
     ) -> ProviderPage[Instrument]:
         page = self._build_page(
-            "instruments",
+            Dataset.INSTRUMENTS,
             self._parse_instrument,
             lambda item: (
                 self.region in query.regions
@@ -317,13 +330,14 @@ class RegionalFixtureProvider:
                     query.modified_since is None or item.source.retrieved_at >= query.modified_since
                 )
             ),
-            query.cursor,
+            query,
+            context,
         )
         return _limit_page(page, query.limit)
 
     async def fetch_bars(self, query: BarQuery, context: FetchContext) -> ProviderPage[MarketBar]:
         page = self._build_page(
-            "bars",
+            Dataset.BARS,
             self._parse_bar,
             lambda item: (
                 item.instrument_id in query.instrument_ids
@@ -333,7 +347,8 @@ class RegionalFixtureProvider:
                 and item.available_at <= query.as_of
                 and _available_for_context(item.available_at, context)
             ),
-            query.cursor,
+            query,
+            context,
         )
         return _limit_page(page, query.limit)
 
@@ -341,7 +356,7 @@ class RegionalFixtureProvider:
         self, query: MarketObservationQuery, context: FetchContext
     ) -> ProviderPage[MarketObservation]:
         page = self._build_page(
-            "market_observations",
+            Dataset.MARKET_OBSERVATIONS,
             self._parse_market_observation,
             lambda item: (
                 item.region in query.regions
@@ -351,7 +366,8 @@ class RegionalFixtureProvider:
                 and item.available_at <= query.as_of
                 and _available_for_context(item.available_at, context)
             ),
-            query.cursor,
+            query,
+            context,
         )
         return _limit_page(page, query.limit)
 
@@ -403,7 +419,7 @@ class RegionalFixtureProvider:
         self, query: MacroObservationQuery, context: FetchContext
     ) -> ProviderPage[MacroObservation]:
         page = self._build_page(
-            "macro_observations",
+            Dataset.MACRO_OBSERVATIONS,
             self._parse_macro_observation,
             lambda item: (
                 item.series_id in query.series_ids
@@ -411,7 +427,8 @@ class RegionalFixtureProvider:
                 and item.available_at <= query.as_of
                 and _available_for_context(item.available_at, context)
             ),
-            query.cursor,
+            query,
+            context,
         )
         return _limit_page(page, query.limit)
 
@@ -419,7 +436,7 @@ class RegionalFixtureProvider:
         self, query: MacroReleaseQuery, context: FetchContext
     ) -> ProviderPage[MacroRelease]:
         page = self._build_page(
-            "macro_releases",
+            Dataset.MACRO_RELEASES,
             self._parse_macro_release,
             lambda item: (
                 item.region in query.regions
@@ -427,13 +444,14 @@ class RegionalFixtureProvider:
                 and item.available_at <= query.as_of
                 and _available_for_context(item.available_at, context)
             ),
-            query.cursor,
+            query,
+            context,
         )
         return _limit_page(page, query.limit)
 
     async def fetch_news(self, query: NewsQuery, context: FetchContext) -> ProviderPage[NewsEvent]:
         page = self._build_page(
-            "news",
+            Dataset.NEWS,
             self._parse_news,
             lambda item: (
                 self.region in query.regions
@@ -446,26 +464,35 @@ class RegionalFixtureProvider:
                 and _content_satisfies(query.content_mode, item.content_mode)
                 and _available_for_context(item.available_at, context)
             ),
-            query.cursor,
+            query,
+            context,
         )
         return _limit_page(page, query.limit)
 
     def _build_page[T: StrictModel](
         self,
-        dataset_key: str,
+        dataset: Dataset,
         parse_item: Callable[[Mapping[str, Any]], T],
         include_item: Callable[[T], bool],
-        cursor: str | None,
-    ) -> ProviderPage[T]:
+        query: StrictModel,
+        context: FetchContext,
+    ) -> _QueryFixturePage[T]:
+        dataset_key = dataset.value
+        fingerprint = _cursor_fingerprint(query, context)
+        cursor = _decode_cursor(query.model_dump().get("cursor"), dataset, fingerprint)
         payload = self._payload()
         _ensure_keys(payload, _ENVELOPE_KEYS, required={"status", "fetched_at", "pages"}, path="$")
         fetched_at = _datetime(_required(payload, "fetched_at", "fetched_at"), "fetched_at")
         pages = _mapping(_required(payload, "pages", "pages"), "pages")
-        page_payload = _fixture_page(pages, dataset_key, cursor)
+        page_payload = _fixture_page(pages, dataset_key, cursor.raw_cursor)
         raw_items = _list(_required(page_payload, "items", f"pages.{dataset_key}.items"), "items")
-        empty_pages = _empty_pages_before(pages, dataset_key, cursor) + 1 if not raw_items else 0
-        next_cursor = _optional_str(page_payload, "next_cursor")
-        if not raw_items and next_cursor is not None and empty_pages > _MAX_CONSECUTIVE_EMPTY_PAGES:
+        empty_pages = cursor.empty_pages + 1 if not raw_items else 0
+        raw_next_cursor = _optional_str(page_payload, "next_cursor")
+        if (
+            not raw_items
+            and raw_next_cursor is not None
+            and empty_pages > _MAX_CONSECUTIVE_EMPTY_PAGES
+        ):
             raise ProviderCursorError(
                 f"empty fixture page threshold exceeded for {dataset_key}",
                 code="INVALID_PAGINATION",
@@ -490,13 +517,27 @@ class RegionalFixtureProvider:
         if raw_items and not items and warnings:
             raise ProviderSchemaError(f"all records in {dataset_key} fixture page were rejected")
         items.sort(key=lambda item: item.source.provider_record_id)  # type: ignore[attr-defined]
-        return ProviderPage[T](
+        page = ProviderPage[T](
             items=items,
-            next_cursor=next_cursor,
+            next_cursor=(
+                _encode_cursor(
+                    dataset,
+                    _FixtureCursor(raw_cursor=raw_next_cursor, empty_pages=empty_pages),
+                    fingerprint,
+                )
+                if raw_next_cursor is not None
+                else None
+            ),
             source_watermark=_optional_str(payload, "source_watermark"),
             fetched_at=fetched_at,
-            complete=next_cursor is None,
+            complete=raw_next_cursor is None,
             warnings=warnings,
+        )
+        return _QueryFixturePage(
+            dataset=dataset,
+            page=page,
+            cursor=cursor,
+            fingerprint=fingerprint,
         )
 
     def _payload(self) -> Mapping[str, Any]:
@@ -1142,16 +1183,117 @@ class RegionalFixtureProvider:
         return f"macro:{self.region.value}:{self.macro_authority}:{self.macro_code}"
 
 
-def _limit_page[T: StrictModel](page: ProviderPage[T], limit: int) -> ProviderPage[T]:
-    items = page.items[:limit]
+def _limit_page[T: StrictModel](fixture_page: _QueryFixturePage[T], limit: int) -> ProviderPage[T]:
+    page = fixture_page.page
+    start = fixture_page.cursor.offset
+    end = start + limit
+    if start > len(page.items):
+        raise ProviderCursorError("fixture cursor offset exceeds the query result set")
+    next_cursor: str | None
+    if end < len(page.items):
+        next_cursor = _encode_cursor(
+            fixture_page.dataset,
+            _FixtureCursor(
+                raw_cursor=fixture_page.cursor.raw_cursor,
+                offset=end,
+                empty_pages=fixture_page.cursor.empty_pages,
+            ),
+            fixture_page.fingerprint,
+        )
+        complete = False
+    else:
+        next_cursor = page.next_cursor
+        complete = page.complete
     return ProviderPage[T](
-        items=items,
-        next_cursor=page.next_cursor,
+        items=page.items[start:end],
+        next_cursor=next_cursor,
         source_watermark=page.source_watermark,
         fetched_at=page.fetched_at,
-        complete=page.complete and len(page.items) <= limit,
+        complete=complete,
         warnings=page.warnings,
     )
+
+
+def _cursor_fingerprint(query: StrictModel, context: FetchContext) -> str:
+    query_payload = query.model_dump()
+    query_payload.pop("cursor", None)
+    return canonical_json_checksum(
+        {
+            "query": _canonical_cursor_value(query_payload),
+            "context_as_of": context.as_of.isoformat(),
+            "cursor_version": "fixture-v1",
+        }
+    )
+
+
+def _canonical_cursor_value(value: object) -> object:
+    if isinstance(value, dict):
+        return {key: _canonical_cursor_value(item) for key, item in value.items()}
+    if isinstance(value, set):
+        return sorted(
+            (_canonical_cursor_value(item) for item in value),
+            key=canonical_json_checksum,
+        )
+    if isinstance(value, list):
+        return [_canonical_cursor_value(item) for item in value]
+    return value
+
+
+def _encode_cursor(dataset: Dataset, cursor: _FixtureCursor, fingerprint: str) -> str:
+    payload = json.dumps(
+        {
+            "raw_cursor": cursor.raw_cursor,
+            "offset": cursor.offset,
+            "empty_pages": cursor.empty_pages,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    encoded_payload = base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii").rstrip("=")
+    return f"fixture-v1:{dataset.value}:{fingerprint}:{encoded_payload}"
+
+
+def _decode_cursor(cursor: object, dataset: Dataset, fingerprint: str) -> _FixtureCursor:
+    if cursor is None:
+        return _FixtureCursor(raw_cursor=None)
+    if not isinstance(cursor, str):
+        raise ProviderCursorError("fixture cursor must be a string")
+    try:
+        version, encoded_dataset, encoded_fingerprint, encoded_payload = cursor.split(
+            ":", maxsplit=3
+        )
+    except ValueError as exc:
+        raise ProviderCursorError("fixture cursor is malformed") from exc
+    if (
+        version != "fixture-v1"
+        or encoded_dataset != dataset.value
+        or encoded_fingerprint != fingerprint
+    ):
+        raise ProviderCursorError("fixture cursor is not valid for this query snapshot")
+    try:
+        padded_payload = encoded_payload + "=" * (-len(encoded_payload) % 4)
+        payload = _mapping(
+            json.loads(base64.urlsafe_b64decode(padded_payload).decode("utf-8")),
+            "fixture cursor",
+        )
+    except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
+        raise ProviderCursorError("fixture cursor is malformed") from exc
+    _ensure_keys(
+        payload,
+        frozenset({"raw_cursor", "offset", "empty_pages"}),
+        required={"raw_cursor", "offset", "empty_pages"},
+        path="fixture cursor",
+    )
+    raw_cursor = payload["raw_cursor"]
+    if raw_cursor is not None:
+        raw_cursor = _str(raw_cursor, "fixture cursor.raw_cursor")
+    offset = _int(payload["offset"], "fixture cursor.offset")
+    if offset < 0:
+        raise ProviderCursorError("fixture cursor offset must not be negative")
+    empty_pages = _int(payload["empty_pages"], "fixture cursor.empty_pages")
+    if empty_pages < 0:
+        raise ProviderCursorError("fixture cursor empty_pages must not be negative")
+    return _FixtureCursor(raw_cursor=raw_cursor, offset=offset, empty_pages=empty_pages)
 
 
 def _fixture_page(
@@ -1182,20 +1324,6 @@ def _fixture_page(
     raise ProviderCursorError(
         f"unknown fixture cursor for {dataset_key}: {cursor}", code="INVALID_PAGINATION"
     )
-
-
-def _empty_pages_before(pages: Mapping[str, Any], dataset_key: str, cursor: str | None) -> int:
-    raw_dataset_page = _required(pages, dataset_key, f"pages.{dataset_key}")
-    if not isinstance(raw_dataset_page, list):
-        return 0
-    empty_pages = 0
-    for raw_page in raw_dataset_page:
-        page = _mapping(raw_page, f"pages.{dataset_key}")
-        if _optional_str(page, "cursor") == cursor:
-            return empty_pages
-        items = _list(_required(page, "items", f"pages.{dataset_key}.items"), "items")
-        empty_pages = empty_pages + 1 if not items else 0
-    return 0
 
 
 def _ensure_no_duplicate_raw_records(raw_items: Sequence[Any], dataset_key: str) -> None:
