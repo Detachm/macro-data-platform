@@ -36,17 +36,24 @@ uv run pytest -m "not live" --cov=macro_platform --cov-report=term-missing
 
 > 当前目录是可独立建仓的项目根；放在其他仓库子目录中时，内部 `.github/` 工作流和 CODEOWNERS 不会生效。正式开发前请把本目录单独初始化为仓库，并将 CODEOWNERS 占位账号替换为真实 GitHub 账号或团队。
 
-## 当前骨架
+## 当前 MVP
 
 - 严格 Pydantic contracts 与统一 API envelope。
 - Market/Macro/News Provider Protocol 与注册表。
 - FastAPI health、capabilities、数据查询和 EditorContext 路由。
 - PostgreSQL/SQLAlchemy/Alembic 初始结构。
-- worker/job 输入输出、幂等运行记录和 watermark 基础结构。
-- pytest contract/API 测试骨架。
+- worker/job 输入输出、事务幂等、原始时区审计和 watermark 恢复。
+- CN、HK、US 三地区离线 fixture provider 与共享 contract suite。
+- 三地区统一 REST API / EditorContext fixture smoke。
 - Docker Compose、CI、CODEOWNERS、PR/ADR/数据源模板。
 
-区域 provider 和 PostgreSQL 查询/写入实现当前是待实现插槽，默认 `EmptyDataRepository` 会返回空数据并在 EditorContext 中明确标注 `unavailable`。任何 provider 必须先补 fixture 和公共契约测试，不能让 API 临时直连上游。
+本轮完成的是无需真实凭据的 fixture-backed 数据底座；fixture provider 不会绑定生产 role，也不声明 live-ready。默认服务仍使用 `EmptyDataRepository` 并在 EditorContext 中明确标注 `unavailable`。真实供应商适配、完整 PostgreSQL 查询仓库和生产调度属于 Phase 2，API 请求不得临时直连上游。
+
+复现三地区统一接口验收：
+
+```bash
+uv run pytest tests/e2e/test_three_region_api_smoke.py -q
+```
 
 ## US fixture contract evidence
 
