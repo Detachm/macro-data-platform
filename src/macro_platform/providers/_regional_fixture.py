@@ -119,6 +119,8 @@ _MARKET_OBSERVATION_KEYS = _SOURCE_KEYS | frozenset(
         "period_start",
         "period_end",
         "observed_at",
+        "raw_observed_at",
+        "raw_timezone",
         "available_at",
         "availability_basis",
         "dimensions",
@@ -225,6 +227,23 @@ class RegionalFixtureProvider:
 
     def region_set(self) -> set[Region]:
         return {self.region}
+
+    def raw_market_observation_time(self, provider_record_id: str) -> tuple[str, str]:
+        """Return preserved upstream timestamp evidence without normalizing it first."""
+        payload = self._payload()
+        pages = _mapping(_required(payload, "pages", "pages"), "pages")
+        page = _mapping(
+            _required(pages, "market_observations", "pages.market_observations"),
+            "market_observations",
+        )
+        for raw in _list(_required(page, "items", "market_observations.items"), "items"):
+            record = _mapping(raw, "market_observations")
+            if _str(record["record_id"], "market_observations.record_id") == provider_record_id:
+                return (
+                    _str(record["raw_observed_at"], "market_observations.raw_observed_at"),
+                    _str(record["raw_timezone"], "market_observations.raw_timezone"),
+                )
+        raise ProviderSchemaError(f"missing raw timestamp evidence for {provider_record_id}")
 
     def capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities(

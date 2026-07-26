@@ -91,14 +91,12 @@ CONTRACT_CASES = {
         ContractCase("PRV-008", "implemented"),
         ContractCase("PRV-009", "implemented"),
         ContractCase("PRV-010", "implemented"),
-        ContractCase("PRV-011", "xfail", ("#20",), "requires persisted unsupported-PIT evidence"),
-        ContractCase("PRV-012", "xfail", ("#20",), "requires raw-timezone audit persistence"),
+        ContractCase("PRV-011", "implemented"),
+        ContractCase("PRV-012", "implemented"),
         ContractCase("PRV-013", "implemented"),
-        ContractCase("PRV-014", "xfail", ("#20",), "requires transactional retry persistence"),
+        ContractCase("PRV-014", "implemented"),
         ContractCase("PRV-015", "xfail", ("#21",), "requires fixture cursor continuation protocol"),
-        ContractCase(
-            "PRV-016", "xfail", ("#20",), "requires committed provider watermark recovery"
-        ),
+        ContractCase("PRV-016", "implemented"),
         ContractCase("PRV-017", "implemented"),
         ContractCase("PRV-018", "implemented"),
         ContractCase("PRV-019", "implemented"),

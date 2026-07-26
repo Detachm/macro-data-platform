@@ -1126,6 +1126,8 @@ news_event_topics
 provider_capabilities
 provider_runs
 ingest_rejections
+ingest_page_commits
+ingest_audits
 job_watermarks
 context_builds
 ```
@@ -1140,9 +1142,13 @@ macro_observations(series_id, period_end, vintage_id, source.provider_id)
 macro_releases(release_id)
 news_events(news_id)
 provider_runs(run_id)
+ingest_page_commits(provider_role, dataset, region, page_fingerprint)
 ```
 
 `SourceRef` 在数据库拆成独立列或 JSONB 均可，但 provider ID、provider record ID、checksum、retrieved_at 必须可索引和查询。
+`ingest_page_commits` 是同页重试的事务性 reservation：仅 reservation 与业务记录同一事务提交后，
+才更新 `job_watermarks`。`ingest_audits` 保存不支持历史 PIT 与原始时区等可审计证据；拒绝路径
+不得因外层业务事务回滚而丢失该证据。
 
 ### 8.3 关键索引
 
