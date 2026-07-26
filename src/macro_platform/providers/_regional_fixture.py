@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import base64
 import json
-from base64 import b32encode
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from hashlib import sha256
@@ -16,6 +17,7 @@ from macro_platform.contracts.common import (
     SourceRef,
     StrictModel,
     UsageRights,
+    WarningItem,
 )
 from macro_platform.contracts.macro import (
     MacroObservation,
@@ -45,6 +47,15 @@ from macro_platform.contracts.provider import (
     ProviderHealth,
     ProviderPage,
 )
+from macro_platform.normalization.cn_hk import (
+    CnHkNormalizationError,
+    NormalizedInstrumentSymbol,
+    NormalizedUnit,
+    normalize_instrument_symbol,
+    normalize_timestamp,
+    normalize_trading_date,
+    normalize_unit,
+)
 from macro_platform.normalization.common import (
     canonical_json_checksum,
     canonicalize_url,
@@ -64,6 +75,7 @@ from macro_platform.providers.base import (
 )
 
 _PAGE_KEYS = frozenset({"next_cursor", "items"})
+_PAGINATED_PAGE_KEYS = _PAGE_KEYS | frozenset({"cursor"})
 _ENVELOPE_KEYS = frozenset({"status", "fetched_at", "source_watermark", "pages"})
 _ERROR_ENVELOPE_KEYS = frozenset({"status", "error"})
 _ERROR_KEYS = frozenset({"code", "message", "retry_after_seconds"})
@@ -192,6 +204,22 @@ _RIGHTS_KEYS = frozenset(
         "content_expires_at",
     }
 )
+_MAX_CONSECUTIVE_EMPTY_PAGES = 2
+
+
+@dataclass(frozen=True)
+class _FixtureCursor:
+    raw_cursor: str | None
+    offset: int = 0
+    empty_pages: int = 0
+
+
+@dataclass(frozen=True)
+class _QueryFixturePage[T: StrictModel]:
+    dataset: Dataset
+    page: ProviderPage[T]
+    cursor: _FixtureCursor
+    fingerprint: str
 
 
 class RegionalFixtureProvider:
@@ -205,7 +233,9 @@ class RegionalFixtureProvider:
     macro_code: ClassVar[str] = "CPI_YOY"
     macro_series_name: ClassVar[str] = "CPI YoY"
     instrument_listed_on_by_symbol: ClassVar[Mapping[str, date]] = {}
+    instrument_key_by_symbol: ClassVar[Mapping[str, str]] = {}
     live_ready_datasets: ClassVar[frozenset[Dataset]] = frozenset()
+    live_candidate_datasets: ClassVar[frozenset[Dataset]] = frozenset()
     fixture_only_datasets: ClassVar[frozenset[Dataset]] = frozenset(
         {
             Dataset.INSTRUMENTS,
@@ -232,13 +262,16 @@ class RegionalFixtureProvider:
         """Return preserved upstream timestamp evidence without normalizing it first."""
         payload = self._payload()
         pages = _mapping(_required(payload, "pages", "pages"), "pages")
-        page = _mapping(
-            _required(pages, "market_observations", "pages.market_observations"),
-            "market_observations",
+        raw_pages = _required(pages, "market_observations", "pages.market_observations")
+        page_values = (
+            [raw_pages] if isinstance(raw_pages, dict) else _list(raw_pages, "market_observations")
         )
-        for raw in _list(_required(page, "items", "market_observations.items"), "items"):
-            record = _mapping(raw, "market_observations")
-            if _str(record["record_id"], "market_observations.record_id") == provider_record_id:
+        for page_index, raw_page in enumerate(page_values):
+            page = _mapping(raw_page, f"market_observations[{page_index}]")
+            for raw in _list(_required(page, "items", "market_observations.items"), "items"):
+                if not isinstance(raw, dict) or raw.get("record_id") != provider_record_id:
+                    continue
+                record = cast(Mapping[str, Any], raw)
                 return (
                     _str(record["raw_observed_at"], "market_observations.raw_observed_at"),
                     _str(record["raw_timezone"], "market_observations.raw_timezone"),
@@ -280,23 +313,31 @@ class RegionalFixtureProvider:
         self, query: InstrumentQuery, context: FetchContext
     ) -> ProviderPage[Instrument]:
         page = self._build_page(
-            "instruments",
+            Dataset.INSTRUMENTS,
             self._parse_instrument,
             lambda item: (
                 self.region in query.regions
                 and (not query.venues or item.venue_mic in query.venues)
                 and (not query.asset_classes or item.asset_class in query.asset_classes)
-                and (query.active_on is None or item.valid_from <= query.active_on)
+                and (
+                    query.active_on is None
+                    or (
+                        item.valid_from <= query.active_on
+                        and (item.valid_to is None or query.active_on < item.valid_to)
+                    )
+                )
                 and (
                     query.modified_since is None or item.source.retrieved_at >= query.modified_since
                 )
             ),
+            query,
+            context,
         )
         return _limit_page(page, query.limit)
 
     async def fetch_bars(self, query: BarQuery, context: FetchContext) -> ProviderPage[MarketBar]:
         page = self._build_page(
-            "bars",
+            Dataset.BARS,
             self._parse_bar,
             lambda item: (
                 item.instrument_id in query.instrument_ids
@@ -306,6 +347,8 @@ class RegionalFixtureProvider:
                 and item.available_at <= query.as_of
                 and _available_for_context(item.available_at, context)
             ),
+            query,
+            context,
         )
         return _limit_page(page, query.limit)
 
@@ -313,7 +356,7 @@ class RegionalFixtureProvider:
         self, query: MarketObservationQuery, context: FetchContext
     ) -> ProviderPage[MarketObservation]:
         page = self._build_page(
-            "market_observations",
+            Dataset.MARKET_OBSERVATIONS,
             self._parse_market_observation,
             lambda item: (
                 item.region in query.regions
@@ -323,6 +366,8 @@ class RegionalFixtureProvider:
                 and item.available_at <= query.as_of
                 and _available_for_context(item.available_at, context)
             ),
+            query,
+            context,
         )
         return _limit_page(page, query.limit)
 
@@ -374,7 +419,7 @@ class RegionalFixtureProvider:
         self, query: MacroObservationQuery, context: FetchContext
     ) -> ProviderPage[MacroObservation]:
         page = self._build_page(
-            "macro_observations",
+            Dataset.MACRO_OBSERVATIONS,
             self._parse_macro_observation,
             lambda item: (
                 item.series_id in query.series_ids
@@ -382,6 +427,8 @@ class RegionalFixtureProvider:
                 and item.available_at <= query.as_of
                 and _available_for_context(item.available_at, context)
             ),
+            query,
+            context,
         )
         return _limit_page(page, query.limit)
 
@@ -389,7 +436,7 @@ class RegionalFixtureProvider:
         self, query: MacroReleaseQuery, context: FetchContext
     ) -> ProviderPage[MacroRelease]:
         page = self._build_page(
-            "macro_releases",
+            Dataset.MACRO_RELEASES,
             self._parse_macro_release,
             lambda item: (
                 item.region in query.regions
@@ -397,12 +444,14 @@ class RegionalFixtureProvider:
                 and item.available_at <= query.as_of
                 and _available_for_context(item.available_at, context)
             ),
+            query,
+            context,
         )
         return _limit_page(page, query.limit)
 
     async def fetch_news(self, query: NewsQuery, context: FetchContext) -> ProviderPage[NewsEvent]:
         page = self._build_page(
-            "news",
+            Dataset.NEWS,
             self._parse_news,
             lambda item: (
                 self.region in query.regions
@@ -415,36 +464,80 @@ class RegionalFixtureProvider:
                 and _content_satisfies(query.content_mode, item.content_mode)
                 and _available_for_context(item.available_at, context)
             ),
+            query,
+            context,
         )
         return _limit_page(page, query.limit)
 
     def _build_page[T: StrictModel](
         self,
-        dataset_key: str,
+        dataset: Dataset,
         parse_item: Callable[[Mapping[str, Any]], T],
         include_item: Callable[[T], bool],
-    ) -> ProviderPage[T]:
+        query: StrictModel,
+        context: FetchContext,
+    ) -> _QueryFixturePage[T]:
+        dataset_key = dataset.value
+        fingerprint = _cursor_fingerprint(query, context)
+        cursor = _decode_cursor(query.model_dump().get("cursor"), dataset, fingerprint)
         payload = self._payload()
         _ensure_keys(payload, _ENVELOPE_KEYS, required={"status", "fetched_at", "pages"}, path="$")
         fetched_at = _datetime(_required(payload, "fetched_at", "fetched_at"), "fetched_at")
         pages = _mapping(_required(payload, "pages", "pages"), "pages")
-        page_payload = _mapping(_required(pages, dataset_key, f"pages.{dataset_key}"), dataset_key)
-        _ensure_keys(
-            page_payload,
-            _PAGE_KEYS,
-            required={"next_cursor", "items"},
-            path=f"pages.{dataset_key}",
-        )
+        page_payload = _fixture_page(pages, dataset_key, cursor.raw_cursor)
         raw_items = _list(_required(page_payload, "items", f"pages.{dataset_key}.items"), "items")
-        parsed_items = (parse_item(_mapping(raw, dataset_key)) for raw in raw_items)
-        items = [item for item in parsed_items if include_item(item)]
-        next_cursor = _optional_str(page_payload, "next_cursor")
-        return ProviderPage[T](
+        empty_pages = cursor.empty_pages + 1 if not raw_items else 0
+        raw_next_cursor = _optional_str(page_payload, "next_cursor")
+        if (
+            not raw_items
+            and raw_next_cursor is not None
+            and empty_pages > _MAX_CONSECUTIVE_EMPTY_PAGES
+        ):
+            raise ProviderCursorError(
+                f"empty fixture page threshold exceeded for {dataset_key}",
+                code="INVALID_PAGINATION",
+            )
+        _ensure_no_duplicate_raw_records(raw_items, dataset_key)
+        items: list[T] = []
+        warnings: list[WarningItem] = []
+        for index, raw in enumerate(raw_items):
+            try:
+                item = parse_item(_mapping(raw, f"pages.{dataset_key}.items[{index}]"))
+            except (ProviderSchemaError, CnHkNormalizationError, ValueError) as exc:
+                warnings.append(
+                    WarningItem(
+                        code="PROVIDER_RECORD_QUARANTINED",
+                        message=str(exc)[:500],
+                        scope=f"{dataset_key}[{index}]",
+                    )
+                )
+            else:
+                if include_item(item):
+                    items.append(item)
+        if raw_items and not items and warnings:
+            raise ProviderSchemaError(f"all records in {dataset_key} fixture page were rejected")
+        items.sort(key=lambda item: item.source.provider_record_id)  # type: ignore[attr-defined]
+        page = ProviderPage[T](
             items=items,
-            next_cursor=next_cursor,
+            next_cursor=(
+                _encode_cursor(
+                    dataset,
+                    _FixtureCursor(raw_cursor=raw_next_cursor, empty_pages=empty_pages),
+                    fingerprint,
+                )
+                if raw_next_cursor is not None
+                else None
+            ),
             source_watermark=_optional_str(payload, "source_watermark"),
             fetched_at=fetched_at,
-            complete=next_cursor is None,
+            complete=raw_next_cursor is None,
+            warnings=warnings,
+        )
+        return _QueryFixturePage(
+            dataset=dataset,
+            page=page,
+            cursor=cursor,
+            fingerprint=fingerprint,
         )
 
     def _payload(self) -> Mapping[str, Any]:
@@ -512,17 +605,18 @@ class RegionalFixtureProvider:
         mic = _str(raw["mic"], "instrument.mic")
         listed_on = _optional_date(raw, "listed_on")
         valid_from = _date(raw["valid_from"], "instrument.valid_from")
+        normalized = self._normalized_symbol(mic, symbol, listed_on or valid_from)
         return Instrument(
-            instrument_id=self._instrument_id(mic, symbol, listed_on or valid_from),
-            canonical_symbol=f"{mic}:{symbol}",
+            instrument_id=normalized.instrument_id,
+            canonical_symbol=normalized.canonical_symbol,
             region=self.region,
-            venue_mic=mic,
-            local_symbol=symbol,
+            venue_mic=normalized.venue_mic,
+            local_symbol=normalized.local_symbol,
             name=_str(raw["name"], "instrument.name"),
             name_en=_optional_str(raw, "name_en"),
             asset_class=AssetClass(_str(raw["asset_class"], "instrument.asset_class")),
             currency=_str(raw["currency"], "instrument.currency"),
-            timezone=_str(raw["timezone"], "instrument.timezone"),
+            timezone=normalized.timezone,
             status=InstrumentStatus(_str(raw["status"], "instrument.status")),
             listed_on=listed_on,
             delisted_on=_optional_date(raw, "delisted_on"),
@@ -561,15 +655,16 @@ class RegionalFixtureProvider:
         symbol = _str(raw["symbol"], "bar.symbol")
         mic = _str(raw["mic"], "bar.mic")
         source = self._source(raw, source_symbol=symbol)
-        bar_start = _datetime(raw["bar_start"], "bar.bar_start")
-        bar_end = _datetime(raw["bar_end"], "bar.bar_end")
+        bar_start = self._normalized_datetime(raw["bar_start"], "bar.bar_start")
+        bar_end = self._normalized_datetime(raw["bar_end"], "bar.bar_end")
         interval = Interval(_str(raw["interval"], "bar.interval"))
         adjustment = Adjustment(_str(raw["adjustment"], "bar.adjustment"))
-        instrument_id = self._instrument_id(mic, symbol)
+        normalized_symbol = self._normalized_symbol(mic, symbol)
+        trading_date = self._normalized_trading_date(raw["trading_date"], "bar.trading_date")
         return MarketBar(
             bar_id=_hex_id(
                 "bar",
-                instrument_id,
+                normalized_symbol.instrument_id,
                 interval.value,
                 _utc_z(bar_start),
                 _utc_z(bar_end),
@@ -577,24 +672,24 @@ class RegionalFixtureProvider:
                 source.provider_id,
                 source.provider_record_id,
             ),
-            instrument_id=instrument_id,
-            canonical_symbol=f"{mic}:{symbol}",
+            instrument_id=normalized_symbol.instrument_id,
+            canonical_symbol=normalized_symbol.canonical_symbol,
             region=self.region,
             interval=interval,
             bar_start=bar_start,
             bar_end=bar_end,
-            trading_date=_date(raw["trading_date"], "bar.trading_date"),
-            open=_decimal(raw["open"], "bar.open"),
-            high=_decimal(raw["high"], "bar.high"),
-            low=_decimal(raw["low"], "bar.low"),
-            close=_decimal(raw["close"], "bar.close"),
+            trading_date=trading_date,
+            open=self._normalized_unit_value(raw["open"], raw["currency"], "bar.open"),
+            high=self._normalized_unit_value(raw["high"], raw["currency"], "bar.high"),
+            low=self._normalized_unit_value(raw["low"], raw["currency"], "bar.low"),
+            close=self._normalized_unit_value(raw["close"], raw["currency"], "bar.close"),
             volume=_optional_decimal(raw, "volume"),
             turnover=_optional_decimal(raw, "turnover"),
             vwap=_optional_decimal(raw, "vwap"),
             currency=_str(raw["currency"], "bar.currency"),
             adjustment=adjustment,
-            adjustment_as_of=_optional_datetime(raw, "adjustment_as_of"),
-            available_at=_datetime(raw["available_at"], "bar.available_at"),
+            adjustment_as_of=self._optional_normalized_datetime(raw, "adjustment_as_of"),
+            available_at=self._normalized_datetime(raw["available_at"], "bar.available_at"),
             availability_basis=AvailabilityBasis(
                 _str(raw["availability_basis"], "bar.availability_basis")
             ),
@@ -630,13 +725,22 @@ class RegionalFixtureProvider:
             scope_type=ScopeType(_str(raw["scope_type"], "market_observation.scope_type")),
             scope_id=_str(raw["scope_id"], "market_observation.scope_id"),
             metric_code=_str(raw["metric_code"], "market_observation.metric_code"),
-            value=_optional_decimal(raw, "value"),
-            unit=_str(raw["unit"], "market_observation.unit"),
-            currency=_optional_str(raw, "currency"),
-            period_start=_datetime(raw["period_start"], "market_observation.period_start"),
-            period_end=_datetime(raw["period_end"], "market_observation.period_end"),
-            observed_at=_datetime(raw["observed_at"], "market_observation.observed_at"),
-            available_at=_datetime(raw["available_at"], "market_observation.available_at"),
+            value=self._optional_normalized_unit_value(raw, "value", "unit"),
+            unit=self._normalized_unit(raw["unit"], "market_observation.unit").unit,
+            currency=_optional_str(raw, "currency")
+            or self._normalized_unit(raw["unit"], "market_observation.unit").currency,
+            period_start=self._normalized_datetime(
+                raw["period_start"], "market_observation.period_start"
+            ),
+            period_end=self._normalized_datetime(
+                raw["period_end"], "market_observation.period_end"
+            ),
+            observed_at=self._normalized_datetime(
+                raw["observed_at"], "market_observation.observed_at"
+            ),
+            available_at=self._normalized_datetime(
+                raw["available_at"], "market_observation.available_at"
+            ),
             availability_basis=AvailabilityBasis(
                 _str(raw["availability_basis"], "market_observation.availability_basis")
             ),
@@ -681,11 +785,13 @@ class RegionalFixtureProvider:
             region=self.region,
             period_start=_date(raw["period_start"], "macro_observation.period_start"),
             period_end=_date(raw["period_end"], "macro_observation.period_end"),
-            value=_optional_decimal(raw, "value"),
-            unit=_str(raw["unit"], "macro_observation.unit"),
+            value=self._optional_normalized_unit_value(raw, "value", "unit"),
+            unit=self._normalized_unit(raw["unit"], "macro_observation.unit").unit,
             transformation=_str(raw["transformation"], "macro_observation.transformation"),
-            released_at=_optional_datetime(raw, "released_at"),
-            available_at=_datetime(raw["available_at"], "macro_observation.available_at"),
+            released_at=self._optional_normalized_datetime(raw, "released_at"),
+            available_at=self._normalized_datetime(
+                raw["available_at"], "macro_observation.available_at"
+            ),
             availability_basis=AvailabilityBasis(
                 _str(raw["availability_basis"], "macro_observation.availability_basis")
             ),
@@ -720,7 +826,9 @@ class RegionalFixtureProvider:
             release_id=_hex_id(
                 "rel",
                 _str(raw["series_id"], "macro_release.series_id"),
-                _utc_z(_datetime(raw["scheduled_at"], "macro_release.scheduled_at")),
+                _utc_z(
+                    self._normalized_datetime(raw["scheduled_at"], "macro_release.scheduled_at")
+                ),
                 _str(raw["period_start"], "macro_release.period_start"),
                 _str(raw["period_end"], "macro_release.period_end"),
                 _str(raw["release_name"], "macro_release.release_name"),
@@ -728,15 +836,19 @@ class RegionalFixtureProvider:
             series_id=_str(raw["series_id"], "macro_release.series_id"),
             region=self.region,
             release_name=_str(raw["release_name"], "macro_release.release_name"),
-            scheduled_at=_datetime(raw["scheduled_at"], "macro_release.scheduled_at"),
-            released_at=_optional_datetime(raw, "released_at"),
-            available_at=_datetime(raw["available_at"], "macro_release.available_at"),
+            scheduled_at=self._normalized_datetime(
+                raw["scheduled_at"], "macro_release.scheduled_at"
+            ),
+            released_at=self._optional_normalized_datetime(raw, "released_at"),
+            available_at=self._normalized_datetime(
+                raw["available_at"], "macro_release.available_at"
+            ),
             period_start=_date(raw["period_start"], "macro_release.period_start"),
             period_end=_date(raw["period_end"], "macro_release.period_end"),
-            actual=_optional_decimal(raw, "actual"),
-            consensus=_optional_decimal(raw, "consensus"),
-            previous=_optional_decimal(raw, "previous"),
-            unit=_str(raw["unit"], "macro_release.unit"),
+            actual=self._optional_normalized_unit_value(raw, "actual", "unit"),
+            consensus=self._optional_normalized_unit_value(raw, "consensus", "unit"),
+            previous=self._optional_normalized_unit_value(raw, "previous", "unit"),
+            unit=self._normalized_unit(raw["unit"], "macro_release.unit").unit,
             status=cast(Any, _str(raw["status"], "macro_release.status")),
             source=self._source(raw),
         )
@@ -781,7 +893,7 @@ class RegionalFixtureProvider:
             if "canonical_url" in raw and raw["canonical_url"] is not None
             else None
         )
-        published_at = _datetime(raw["published_at"], "news.published_at")
+        published_at = self._normalized_datetime(raw["published_at"], "news.published_at")
         entities = self._entity_refs(raw)
         entity_ids = tuple(sorted(entity.entity_id for entity in entities))
         content_hash = canonical_json_checksum(
@@ -818,8 +930,8 @@ class RegionalFixtureProvider:
             source_tier=SourceTier(_str(raw["source_tier"], "news.source_tier")),
             canonical_url=canonical_url,
             published_at=published_at,
-            first_seen_at=_datetime(raw["first_seen_at"], "news.first_seen_at"),
-            available_at=_datetime(raw["available_at"], "news.available_at"),
+            first_seen_at=self._normalized_datetime(raw["first_seen_at"], "news.first_seen_at"),
+            available_at=self._normalized_datetime(raw["available_at"], "news.available_at"),
             availability_basis=AvailabilityBasis(
                 _str(raw["availability_basis"], "news.availability_basis")
             ),
@@ -845,8 +957,8 @@ class RegionalFixtureProvider:
             source_name=source_name or self.source_name,
             source_url=_str(raw["source_url"], "source.source_url"),
             source_symbol=source_symbol,
-            retrieved_at=_datetime(raw["retrieved_at"], "source.retrieved_at"),
-            provider_updated_at=_optional_datetime(raw, "provider_updated_at"),
+            retrieved_at=self._normalized_datetime(raw["retrieved_at"], "source.retrieved_at"),
+            provider_updated_at=self._optional_normalized_datetime(raw, "provider_updated_at"),
             checksum_sha256=canonical_json_checksum(_source_checksum_payload(raw)),
         )
 
@@ -857,17 +969,23 @@ class RegionalFixtureProvider:
             available_at = _optional_datetime(raw, "available_at") or _datetime(
                 raw["retrieved_at"], "source.retrieved_at"
             )
+            normalized = self._normalized_symbol(mic, symbol)
             trading_date = _str(raw["trading_date"], "source.trading_date")
             interval = _str(raw["interval"], "source.interval")
             adjustment = _str(raw["adjustment"], "source.adjustment")
             available_date = _date_from_datetime(available_at)
             return (
-                f"{self.provider_id}:{mic}:{symbol}:"
+                f"{self.provider_id}:{normalized.canonical_symbol}:"
                 f"{trading_date}:{interval}:{adjustment}:{available_date}"
             )
         if symbol is not None and mic is not None and raw.get("valid_from") is not None:
+            normalized = self._normalized_symbol(
+                mic,
+                symbol,
+                _date(raw["valid_from"], "source.valid_from"),
+            )
             valid_from = _str(raw["valid_from"], "source.valid_from")
-            return f"{self.provider_id}:{mic}:{symbol}:{valid_from}"
+            return f"{self.provider_id}:{normalized.canonical_symbol}:{valid_from}"
         return _str(raw["record_id"], "source.record_id")
 
     def _usage_rights(self, raw: Mapping[str, Any]) -> UsageRights:
@@ -920,32 +1038,306 @@ class RegionalFixtureProvider:
             )
         return entities
 
-    def _instrument_id(self, mic: str, symbol: str, listed_on: date | None = None) -> str:
-        instrument_listed_on = listed_on or self.instrument_listed_on_by_symbol.get(
-            f"{mic}:{symbol}"
-        )
+    def _normalized_symbol(
+        self, mic: str, symbol: str, listed_on: date | None = None
+    ) -> NormalizedInstrumentSymbol:
+        instrument_listed_on = listed_on or self._listed_on_for_symbol(mic, symbol)
         if instrument_listed_on is None:
             raise ProviderSchemaError(
                 f"instrument listed_on is required to derive instrument_id for {mic}:{symbol}"
             )
-        seed = f"{self.region.value}|{mic}|{symbol}|{instrument_listed_on.isoformat()}"
-        digest = b32encode(sha256(seed.encode("utf-8")).digest()).decode("ascii").lower()
-        return f"ins_{digest[:26]}"
+        try:
+            normalize_instrument_symbol(
+                region=self.region,
+                venue_mic=mic,
+                local_symbol=symbol,
+                valid_from=instrument_listed_on,
+                provider_id=self.provider_id,
+                instrument_key="validation",
+            )
+        except CnHkNormalizationError as exc:
+            raise ProviderSchemaError(str(exc)) from exc
+        instrument_key = self._instrument_key_for_symbol(mic, symbol)
+        if instrument_key is None:
+            raise ProviderSchemaError(
+                f"instrument registry key is required to derive instrument_id for {mic}:{symbol}"
+            )
+        try:
+            return normalize_instrument_symbol(
+                region=self.region,
+                venue_mic=mic,
+                local_symbol=symbol,
+                valid_from=instrument_listed_on,
+                provider_id=self.provider_id,
+                instrument_key=instrument_key,
+            )
+        except CnHkNormalizationError as exc:
+            raise ProviderSchemaError(str(exc)) from exc
+
+    def _instrument_key_for_symbol(self, mic: str, symbol: str) -> str | None:
+        direct = self.instrument_key_by_symbol.get(f"{mic}:{symbol}")
+        if direct is not None:
+            return direct
+        for canonical_seed, instrument_key in self.instrument_key_by_symbol.items():
+            seed_mic, _, seed_symbol = canonical_seed.partition(":")
+            listed_on = self.instrument_listed_on_by_symbol.get(canonical_seed)
+            if seed_mic != mic or listed_on is None:
+                continue
+            try:
+                requested = normalize_instrument_symbol(
+                    region=self.region,
+                    venue_mic=mic,
+                    local_symbol=symbol,
+                    valid_from=listed_on,
+                    provider_id=self.provider_id,
+                    instrument_key=instrument_key,
+                )
+                candidate = normalize_instrument_symbol(
+                    region=self.region,
+                    venue_mic=seed_mic,
+                    local_symbol=seed_symbol,
+                    valid_from=listed_on,
+                    provider_id=self.provider_id,
+                    instrument_key=instrument_key,
+                )
+            except CnHkNormalizationError:
+                continue
+            if requested.canonical_symbol == candidate.canonical_symbol:
+                return instrument_key
+        return None
+
+    def _listed_on_for_symbol(self, mic: str, symbol: str) -> date | None:
+        direct = self.instrument_listed_on_by_symbol.get(f"{mic}:{symbol}")
+        if direct is not None:
+            return direct
+        for canonical_seed, listed_on in self.instrument_listed_on_by_symbol.items():
+            seed_mic, _, seed_symbol = canonical_seed.partition(":")
+            if seed_mic != mic:
+                continue
+            try:
+                requested = normalize_instrument_symbol(
+                    region=self.region,
+                    venue_mic=mic,
+                    local_symbol=symbol,
+                    valid_from=listed_on,
+                    provider_id=self.provider_id,
+                    instrument_key="lookup",
+                )
+                candidate = normalize_instrument_symbol(
+                    region=self.region,
+                    venue_mic=seed_mic,
+                    local_symbol=seed_symbol,
+                    valid_from=listed_on,
+                    provider_id=self.provider_id,
+                    instrument_key="lookup",
+                )
+            except CnHkNormalizationError:
+                continue
+            if requested.canonical_symbol == candidate.canonical_symbol:
+                return listed_on
+        return None
+
+    def _normalized_datetime(self, value: Any, path: str) -> datetime:
+        try:
+            return normalize_timestamp(region=self.region, value=_datetime(value, path)).utc
+        except CnHkNormalizationError as exc:
+            raise ProviderSchemaError(str(exc)) from exc
+
+    def _optional_normalized_datetime(self, raw: Mapping[str, Any], key: str) -> datetime | None:
+        if key not in raw or raw[key] is None:
+            return None
+        return self._normalized_datetime(raw[key], key)
+
+    def _normalized_trading_date(self, value: Any, path: str) -> date:
+        try:
+            return normalize_trading_date(region=self.region, value=_date(value, path))
+        except CnHkNormalizationError as exc:
+            raise ProviderSchemaError(str(exc)) from exc
+
+    def _normalized_unit(self, source_unit: Any, path: str) -> NormalizedUnit:
+        try:
+            return normalize_unit(
+                region=self.region, value="0", source_unit=_str(source_unit, path)
+            )
+        except CnHkNormalizationError as exc:
+            raise ProviderSchemaError(str(exc)) from exc
+
+    def _normalized_unit_value(self, value: Any, source_unit: Any, path: str) -> Decimal:
+        try:
+            return normalize_unit(
+                region=self.region,
+                value=_str(value, path),
+                source_unit=_str(source_unit, f"{path}.unit"),
+            ).value
+        except CnHkNormalizationError as exc:
+            raise ProviderSchemaError(str(exc)) from exc
+
+    def _optional_normalized_unit_value(
+        self, raw: Mapping[str, Any], value_key: str, unit_key: str
+    ) -> Decimal | None:
+        if value_key not in raw or raw[value_key] is None:
+            return None
+        return self._normalized_unit_value(raw[value_key], raw[unit_key], value_key)
 
     def _macro_series_id(self) -> str:
         return f"macro:{self.region.value}:{self.macro_authority}:{self.macro_code}"
 
 
-def _limit_page[T: StrictModel](page: ProviderPage[T], limit: int) -> ProviderPage[T]:
-    items = page.items[:limit]
+def _limit_page[T: StrictModel](fixture_page: _QueryFixturePage[T], limit: int) -> ProviderPage[T]:
+    page = fixture_page.page
+    start = fixture_page.cursor.offset
+    end = start + limit
+    if start > len(page.items):
+        raise ProviderCursorError("fixture cursor offset exceeds the query result set")
+    next_cursor: str | None
+    if end < len(page.items):
+        next_cursor = _encode_cursor(
+            fixture_page.dataset,
+            _FixtureCursor(
+                raw_cursor=fixture_page.cursor.raw_cursor,
+                offset=end,
+                empty_pages=fixture_page.cursor.empty_pages,
+            ),
+            fixture_page.fingerprint,
+        )
+        complete = False
+    else:
+        next_cursor = page.next_cursor
+        complete = page.complete
     return ProviderPage[T](
-        items=items,
-        next_cursor=page.next_cursor if len(page.items) > limit else None,
+        items=page.items[start:end],
+        next_cursor=next_cursor,
         source_watermark=page.source_watermark,
         fetched_at=page.fetched_at,
-        complete=len(page.items) <= limit and page.complete,
+        complete=complete,
         warnings=page.warnings,
     )
+
+
+def _cursor_fingerprint(query: StrictModel, context: FetchContext) -> str:
+    query_payload = query.model_dump()
+    query_payload.pop("cursor", None)
+    return canonical_json_checksum(
+        {
+            "query": _canonical_cursor_value(query_payload),
+            "context_as_of": context.as_of.isoformat(),
+            "cursor_version": "fixture-v1",
+        }
+    )
+
+
+def _canonical_cursor_value(value: object) -> object:
+    if isinstance(value, dict):
+        return {key: _canonical_cursor_value(item) for key, item in value.items()}
+    if isinstance(value, set):
+        return sorted(
+            (_canonical_cursor_value(item) for item in value),
+            key=canonical_json_checksum,
+        )
+    if isinstance(value, list):
+        return [_canonical_cursor_value(item) for item in value]
+    return value
+
+
+def _encode_cursor(dataset: Dataset, cursor: _FixtureCursor, fingerprint: str) -> str:
+    payload = json.dumps(
+        {
+            "raw_cursor": cursor.raw_cursor,
+            "offset": cursor.offset,
+            "empty_pages": cursor.empty_pages,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    encoded_payload = base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii").rstrip("=")
+    return f"fixture-v1:{dataset.value}:{fingerprint}:{encoded_payload}"
+
+
+def _decode_cursor(cursor: object, dataset: Dataset, fingerprint: str) -> _FixtureCursor:
+    if cursor is None:
+        return _FixtureCursor(raw_cursor=None)
+    if not isinstance(cursor, str):
+        raise ProviderCursorError("fixture cursor must be a string")
+    try:
+        version, encoded_dataset, encoded_fingerprint, encoded_payload = cursor.split(
+            ":", maxsplit=3
+        )
+    except ValueError as exc:
+        raise ProviderCursorError("fixture cursor is malformed") from exc
+    if (
+        version != "fixture-v1"
+        or encoded_dataset != dataset.value
+        or encoded_fingerprint != fingerprint
+    ):
+        raise ProviderCursorError("fixture cursor is not valid for this query snapshot")
+    try:
+        padded_payload = encoded_payload + "=" * (-len(encoded_payload) % 4)
+        payload = _mapping(
+            json.loads(base64.urlsafe_b64decode(padded_payload).decode("utf-8")),
+            "fixture cursor",
+        )
+    except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
+        raise ProviderCursorError("fixture cursor is malformed") from exc
+    _ensure_keys(
+        payload,
+        frozenset({"raw_cursor", "offset", "empty_pages"}),
+        required={"raw_cursor", "offset", "empty_pages"},
+        path="fixture cursor",
+    )
+    raw_cursor = payload["raw_cursor"]
+    if raw_cursor is not None:
+        raw_cursor = _str(raw_cursor, "fixture cursor.raw_cursor")
+    offset = _int(payload["offset"], "fixture cursor.offset")
+    if offset < 0:
+        raise ProviderCursorError("fixture cursor offset must not be negative")
+    empty_pages = _int(payload["empty_pages"], "fixture cursor.empty_pages")
+    if empty_pages < 0:
+        raise ProviderCursorError("fixture cursor empty_pages must not be negative")
+    return _FixtureCursor(raw_cursor=raw_cursor, offset=offset, empty_pages=empty_pages)
+
+
+def _fixture_page(
+    pages: Mapping[str, Any], dataset_key: str, cursor: str | None
+) -> Mapping[str, Any]:
+    raw_dataset_page = _required(pages, dataset_key, f"pages.{dataset_key}")
+    if isinstance(raw_dataset_page, dict):
+        if cursor is not None:
+            raise ProviderCursorError(
+                f"fixture dataset {dataset_key} has no continuation cursor: {cursor}",
+                code="INVALID_PAGINATION",
+            )
+        page = _mapping(raw_dataset_page, f"pages.{dataset_key}")
+        _ensure_keys(page, _PAGE_KEYS, required=_PAGE_KEYS, path=f"pages.{dataset_key}")
+        return page
+
+    page_sequence = _list(raw_dataset_page, f"pages.{dataset_key}")
+    for index, raw_page in enumerate(page_sequence):
+        page = _mapping(raw_page, f"pages.{dataset_key}[{index}]")
+        _ensure_keys(
+            page,
+            _PAGINATED_PAGE_KEYS,
+            required=_PAGINATED_PAGE_KEYS,
+            path=f"pages.{dataset_key}[{index}]",
+        )
+        if _optional_str(page, "cursor") == cursor:
+            return page
+    raise ProviderCursorError(
+        f"unknown fixture cursor for {dataset_key}: {cursor}", code="INVALID_PAGINATION"
+    )
+
+
+def _ensure_no_duplicate_raw_records(raw_items: Sequence[Any], dataset_key: str) -> None:
+    record_ids = [
+        record_id
+        for raw in raw_items
+        if isinstance(raw, dict)
+        and isinstance((record_id := raw.get("record_id")), str)
+        and record_id.strip()
+    ]
+    if len(record_ids) != len(set(record_ids)):
+        raise ProviderCursorError(
+            f"duplicate record id in {dataset_key} fixture page", code="INVALID_PAGINATION"
+        )
 
 
 def _content_satisfies(requested: ContentMode, actual: ContentMode) -> bool:

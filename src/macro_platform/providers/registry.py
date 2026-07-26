@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from macro_platform.contracts.provider import ProviderCapabilities
+from macro_platform.contracts.provider import Dataset, ProviderCapabilities
 from macro_platform.providers.base import BaseProvider
 
 
@@ -21,9 +21,16 @@ class ProviderRegistry:
             raise ProviderRegistryError(f"provider already registered: {provider_id}")
         self._providers[provider_id] = provider
 
-    def bind_role(self, role: str, provider_id: str) -> None:
+    def bind_role(
+        self, role: str, provider_id: str, *, required_dataset: Dataset | None = None
+    ) -> None:
         if provider_id not in self._providers:
             raise ProviderRegistryError(f"unknown provider: {provider_id}")
+        capabilities = self._providers[provider_id].capabilities()
+        if required_dataset is not None and required_dataset not in capabilities.datasets:
+            raise ProviderRegistryError(
+                f"provider {provider_id} does not advertise dataset {required_dataset.value}"
+            )
         self._roles[role] = provider_id
 
     def resolve(self, role: str) -> BaseProvider:

@@ -29,7 +29,11 @@ class HkSyntheticProvider(RegionalFixtureProvider):
     macro_code = "510-60004"
     macro_series_name = "HK CPI YoY"
     instrument_listed_on_by_symbol = {"XHKG:00700": date(2004, 6, 16)}
+    instrument_key_by_symbol = {"XHKG:00700": "hk-security-tencent-holdings"}
     live_ready_datasets = frozenset()
+    live_candidate_datasets = frozenset(
+        {Dataset.MACRO_OBSERVATIONS, Dataset.MACRO_RELEASES, Dataset.NEWS}
+    )
     fixture_only_datasets = frozenset(
         {
             Dataset.INSTRUMENTS,

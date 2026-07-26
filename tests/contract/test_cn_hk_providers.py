@@ -28,7 +28,9 @@ from tests.contract.provider_suite import (
     assert_fixture_manifest_case_contract,
     assert_fixture_only_health_contract,
     assert_fixture_only_scheduling_contract,
+    assert_fixture_pagination_contract,
     assert_full_text_storage_rights_contract,
+    assert_half_open_boundary_contract,
     assert_news_identity_contract,
     assert_news_normalization_contract,
     assert_registry_role_contract,
@@ -86,6 +88,40 @@ async def test_empty_fixture_returns_complete_empty_page(
     context: FetchContext,
 ) -> None:
     await assert_empty_fixture_is_explicit(provider_cls.from_fixture("empty"), context)
+
+
+@pytest.mark.parametrize(
+    ("provider_cls", "source_fixture"),
+    [
+        (CnSyntheticProvider, FIXTURE_ROOT / "cn" / "synthetic" / "success.json"),
+        (HkSyntheticProvider, FIXTURE_ROOT / "hk" / "synthetic" / "success.json"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_cn_hk_fixture_pagination_quarantine_and_cursor_contracts(
+    tmp_path: Path,
+    context: FetchContext,
+    provider_cls: type[RegionalFixtureProvider],
+    source_fixture: Path,
+) -> None:
+    await assert_fixture_pagination_contract(provider_cls, source_fixture, tmp_path, context)
+
+
+@pytest.mark.parametrize(
+    ("provider_cls", "source_fixture"),
+    [
+        (CnSyntheticProvider, FIXTURE_ROOT / "cn" / "synthetic" / "success.json"),
+        (HkSyntheticProvider, FIXTURE_ROOT / "hk" / "synthetic" / "success.json"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_cn_hk_fixture_uses_half_open_time_boundaries(
+    tmp_path: Path,
+    context: FetchContext,
+    provider_cls: type[RegionalFixtureProvider],
+    source_fixture: Path,
+) -> None:
+    await assert_half_open_boundary_contract(provider_cls, source_fixture, tmp_path, context)
 
 
 @pytest.mark.parametrize(

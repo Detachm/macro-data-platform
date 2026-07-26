@@ -4,6 +4,7 @@ import json
 import os
 from asyncio import Event, create_task, wait_for
 from collections.abc import AsyncIterator, Iterator
+from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -248,6 +249,76 @@ async def test_cn_hk_handler_rejects_recovery_from_a_different_source_snapshot(
     assert audits_after == audits_before
     assert watermark_after is not None
     assert watermark_after.watermark == committed_watermark
+
+
+@pytest.mark.parametrize("region", [Region.CN, Region.HK])
+async def test_cn_hk_handler_persists_raw_timestamp_audits_across_market_pages(
+    database: Database, region: Region, tmp_path: Path
+) -> None:
+    provider_cls = CnSyntheticProvider if region is Region.CN else HkSyntheticProvider
+    fixture_payload = json.loads(
+        (provider_cls.fixture_dir / "success.json").read_text(encoding="utf-8")
+    )
+    first_record = fixture_payload["pages"]["market_observations"]["items"][0]
+    second_record = deepcopy(first_record)
+    second_record.update(
+        {
+            "record_id": f"{first_record['record_id']}-second",
+            "value": "866000000000",
+            "period_start": "2026-07-22T02:30:00Z",
+            "period_end": "2026-07-22T08:00:00Z",
+            "observed_at": "2026-07-22T08:00:00Z",
+            "raw_observed_at": "2026-07-22 16:00:00",
+            "available_at": "2026-07-22T08:10:00Z",
+            "source_url": f"{first_record['source_url']}?page=2",
+            "provider_updated_at": "2026-07-22T08:10:00Z",
+        }
+    )
+    fixture_payload["pages"]["market_observations"] = [
+        {"cursor": None, "next_cursor": "market-next-1", "items": [first_record]},
+        {"cursor": "market-next-1", "next_cursor": None, "items": [second_record]},
+    ]
+    paginated_fixture = tmp_path / "paginated-market-observations.json"
+    paginated_fixture.write_text(json.dumps(fixture_payload), encoding="utf-8")
+
+    provider_role = f"{region.value.lower()}.contract_fixture.paginated_market"
+    request = _ingest_request(region).model_copy(update={"provider_role": provider_role})
+    runner = JobRunner(CnHkFixtureIngestHandler(provider_cls(paginated_fixture)), database=database)
+    first = await runner.execute(request)
+    assert first.next_cursor is not None
+    second = await runner.execute(request.model_copy(update={"cursor": first.next_cursor}))
+
+    assert first.records_inserted == 1
+    assert second.records_inserted == 1
+    assert second.next_cursor is None
+    expected_record_ids = {first_record["record_id"], second_record["record_id"]}
+    async with database.session() as session:
+        persisted_record_ids = set(
+            (
+                await session.scalars(
+                    select(MarketObservationRow.provider_record_id).where(
+                        MarketObservationRow.provider_id == _provider_id(region),
+                        MarketObservationRow.provider_record_id.in_(expected_record_ids),
+                    )
+                )
+            ).all()
+        )
+        raw_audits = (
+            await session.scalars(
+                select(IngestAuditRow).where(
+                    IngestAuditRow.run_id.in_([first.run_id, second.run_id]),
+                    IngestAuditRow.audit_kind == "raw_timestamp_normalization",
+                )
+            )
+        ).all()
+    assert persisted_record_ids == expected_record_ids
+    assert {audit.payload["raw_value"] for audit in raw_audits} == {
+        first_record["raw_observed_at"],
+        second_record["raw_observed_at"],
+    }
+    assert {audit.payload["raw_timezone"] for audit in raw_audits} == {
+        "Asia/Shanghai" if region is Region.CN else "Asia/Hong_Kong"
+    }
 
 
 @pytest.mark.parametrize("region", [Region.CN, Region.HK])

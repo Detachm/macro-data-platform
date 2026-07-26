@@ -65,6 +65,26 @@ def test_registry_rejects_unknown_bindings_and_roles() -> None:
         registry.resolve("cn.news.primary")
 
 
+def test_registry_rejects_role_binding_without_required_dataset_capability() -> None:
+    registry = ProviderRegistry()
+    provider = FixtureProvider("fixture-provider", Region.CN)
+    registry.register(provider)
+
+    with pytest.raises(ProviderRegistryError, match="does not advertise dataset bars"):
+        registry.bind_role(
+            "cn.bars.primary",
+            "fixture-provider",
+            required_dataset=Dataset.BARS,
+        )
+
+    registry.bind_role(
+        "cn.news.primary",
+        "fixture-provider",
+        required_dataset=Dataset.NEWS,
+    )
+    assert registry.resolve("cn.news.primary") is provider
+
+
 @pytest.mark.asyncio
 async def test_registry_closes_all_providers() -> None:
     registry = ProviderRegistry()

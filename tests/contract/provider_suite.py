@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -36,7 +37,11 @@ from macro_platform.normalization.common import (
     normalize_title_for_matching,
 )
 from macro_platform.providers._regional_fixture import RegionalFixtureProvider
-from macro_platform.providers.base import BaseProvider, UnsupportedCapabilityError
+from macro_platform.providers.base import (
+    BaseProvider,
+    ProviderCursorError,
+    UnsupportedCapabilityError,
+)
 from macro_platform.providers.registry import ProviderRegistry
 from macro_platform.services.editor_context_service import EditorContextService
 from macro_platform.services.macro_service import MacroService
@@ -83,10 +88,10 @@ CONTRACT_CASES = {
     for case in (
         ContractCase("PRV-001", "implemented"),
         ContractCase("PRV-002", "implemented"),
-        ContractCase("PRV-003", "xfail", ("#21",), "requires fixture pagination protocol"),
-        ContractCase("PRV-004", "xfail", ("#21",), "requires boundary-record fixture"),
-        ContractCase("PRV-005", "xfail", ("#21",), "requires unordered upstream page fixture"),
-        ContractCase("PRV-006", "xfail", ("#21",), "requires fixture quarantine behaviour"),
+        ContractCase("PRV-003", "implemented"),
+        ContractCase("PRV-004", "implemented"),
+        ContractCase("PRV-005", "implemented"),
+        ContractCase("PRV-006", "implemented"),
         ContractCase("PRV-007", "implemented"),
         ContractCase("PRV-008", "implemented"),
         ContractCase("PRV-009", "implemented"),
@@ -95,7 +100,7 @@ CONTRACT_CASES = {
         ContractCase("PRV-012", "implemented"),
         ContractCase("PRV-013", "implemented"),
         ContractCase("PRV-014", "implemented"),
-        ContractCase("PRV-015", "xfail", ("#21",), "requires fixture cursor continuation protocol"),
+        ContractCase("PRV-015", "implemented"),
         ContractCase("PRV-016", "implemented"),
         ContractCase("PRV-017", "implemented"),
         ContractCase("PRV-018", "implemented"),
@@ -341,6 +346,147 @@ async def assert_empty_fixture_is_explicit(
     assert_page_contract(page)
     assert page.items == []
     assert page.complete is True
+
+
+async def assert_fixture_pagination_contract(
+    provider_cls: type[RegionalFixtureProvider],
+    source_fixture: Path,
+    temporary_directory: Path,
+    context: FetchContext,
+) -> None:
+    """Exercise PRV-003/005/006/015 against a real multi-page fixture."""
+
+    payload = json.loads(source_fixture.read_text(encoding="utf-8"))  # noqa: ASYNC240
+    instrument = payload["pages"]["instruments"]["items"][0]
+    later = deepcopy(instrument)
+    later["record_id"] = f"{instrument['record_id']}-second"
+    later["source_url"] = f"{instrument['source_url']}?page=2"
+    later["valid_from"] = "2000-01-01"
+    payload["pages"]["instruments"] = [
+        {"cursor": None, "next_cursor": "next-1", "items": [later]},
+        {"cursor": "next-1", "next_cursor": None, "items": [instrument]},
+    ]
+    paginated_fixture = temporary_directory / "paginated.json"
+    paginated_fixture.write_text(json.dumps(payload), encoding="utf-8")
+    provider = provider_cls(paginated_fixture)
+    region = next(iter(provider.region_set()))
+
+    first = await provider.fetch_instruments(InstrumentQuery(regions={region}), context)
+    second = await provider.fetch_instruments(
+        InstrumentQuery(regions={region}, cursor=first.next_cursor), context
+    )
+    assert first.next_cursor is not None
+    assert first.next_cursor != "next-1"
+    assert first.complete is False
+    assert second.next_cursor is None
+    assert second.complete is True
+    source_ids = [item.source.provider_record_id for item in [*first.items, *second.items]]
+    assert len(source_ids) == 2
+    assert len(set(source_ids)) == 2
+
+    unordered = deepcopy(payload)
+    unordered["pages"]["instruments"] = {
+        "next_cursor": None,
+        "items": [later, instrument],
+    }
+    unordered_fixture = temporary_directory / "unordered.json"
+    unordered_fixture.write_text(json.dumps(unordered), encoding="utf-8")
+    ordered = await provider_cls(unordered_fixture).fetch_instruments(
+        InstrumentQuery(regions={region}), context
+    )
+    ordered_source_ids = [item.source.provider_record_id for item in ordered.items]
+    assert ordered_source_ids == sorted(ordered_source_ids)
+
+    limited_provider = provider_cls(unordered_fixture)
+    limited_first = await limited_provider.fetch_instruments(
+        InstrumentQuery(regions={region}, limit=1), context
+    )
+    assert limited_first.next_cursor is not None
+    assert limited_first.complete is False
+    limited_second = await limited_provider.fetch_instruments(
+        InstrumentQuery(regions={region}, limit=1, cursor=limited_first.next_cursor), context
+    )
+    limited_source_ids = [
+        item.source.provider_record_id for item in [*limited_first.items, *limited_second.items]
+    ]
+    assert limited_source_ids == ordered_source_ids
+    assert limited_second.next_cursor is None
+    assert limited_second.complete is True
+
+    quarantined = deepcopy(payload)
+    quarantined["pages"]["instruments"] = {
+        "next_cursor": None,
+        "items": [instrument, "not-a-provider-record", later],
+    }
+    quarantine_fixture = temporary_directory / "quarantine.json"
+    quarantine_fixture.write_text(json.dumps(quarantined), encoding="utf-8")
+    quarantined_page = await provider_cls(quarantine_fixture).fetch_instruments(
+        InstrumentQuery(regions={region}), context
+    )
+    assert len(quarantined_page.items) == 2
+    assert [warning.code for warning in quarantined_page.warnings] == [
+        "PROVIDER_RECORD_QUARANTINED"
+    ]
+
+    empty_pages = deepcopy(payload)
+    empty_pages["pages"]["instruments"] = [
+        {"cursor": None, "next_cursor": "empty-1", "items": []},
+        {"cursor": "empty-1", "next_cursor": "empty-2", "items": []},
+        {"cursor": "empty-2", "next_cursor": "empty-3", "items": []},
+    ]
+    empty_fixture = temporary_directory / "empty-pages.json"
+    empty_fixture.write_text(json.dumps(empty_pages), encoding="utf-8")
+    empty_provider = provider_cls(empty_fixture)
+    first_empty = await empty_provider.fetch_instruments(InstrumentQuery(regions={region}), context)
+    second_empty = await empty_provider.fetch_instruments(
+        InstrumentQuery(regions={region}, cursor=first_empty.next_cursor), context
+    )
+    with pytest.raises(ProviderCursorError) as error:
+        await empty_provider.fetch_instruments(
+            InstrumentQuery(regions={region}, cursor=second_empty.next_cursor), context
+        )
+    assert error.value.code == "INVALID_PAGINATION"
+
+
+async def assert_half_open_boundary_contract(
+    provider_cls: type[RegionalFixtureProvider],
+    source_fixture: Path,
+    temporary_directory: Path,
+    context: FetchContext,
+) -> None:
+    """Exercise PRV-004 using a record exactly at the exclusive end boundary."""
+
+    payload = json.loads(source_fixture.read_text(encoding="utf-8"))  # noqa: ASYNC240
+    bar = payload["pages"]["bars"]["items"][0]
+    boundary = deepcopy(bar)
+    boundary.update(
+        {
+            "record_id": f"{bar['record_id']}-boundary",
+            "bar_start": "2026-07-23T00:00:00Z",
+            "bar_end": "2026-07-23T01:00:00Z",
+            "trading_date": "2026-07-23",
+            "source_url": f"{bar['source_url']}?boundary=1",
+        }
+    )
+    payload["pages"]["bars"]["items"] = [bar, boundary]
+    fixture = temporary_directory / "half-open-boundary.json"
+    fixture.write_text(json.dumps(payload), encoding="utf-8")
+    provider = provider_cls(fixture)
+    region = next(iter(provider.region_set()))
+    instruments = await provider.fetch_instruments(InstrumentQuery(regions={region}), context)
+    page = await provider.fetch_bars(
+        BarQuery(
+            instrument_ids=[instruments.items[0].instrument_id],
+            interval=Interval.D1,
+            start=datetime(2026, 7, 22, tzinfo=UTC),
+            end=datetime(2026, 7, 23, tzinfo=UTC),
+            adjustment=Adjustment.RAW,
+            as_of=context.as_of,
+        ),
+        context,
+    )
+    assert len(page.items) == 1
+    assert page.items[0].bar_start < datetime(2026, 7, 23, tzinfo=UTC)
 
 
 async def assert_error_fixture_raises(
