@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from asyncio import Event, create_task, wait_for
 from collections.abc import AsyncIterator, Iterator
@@ -25,7 +26,7 @@ from macro_platform.providers.base import ProviderCursorError, UnsupportedCapabi
 from macro_platform.providers.cn import CN_PROVIDER_ID, CnSyntheticProvider
 from macro_platform.providers.hk import HK_PROVIDER_ID, HkSyntheticProvider
 from macro_platform.storage.database import Database
-from macro_platform.storage.models import IngestAuditRow, MarketObservationRow
+from macro_platform.storage.models import IngestAuditRow, JobWatermarkRow, MarketObservationRow
 from macro_platform.storage.repositories import IngestionCheckpointRepository
 from macro_platform.storage.unit_of_work import UnitOfWork
 
@@ -193,6 +194,60 @@ async def test_cn_hk_handler_recovers_from_expired_cursor_with_watermark(
     assert result.source_watermark is not None
     assert result.records_inserted == 0
     assert [warning.code for warning in result.warnings] == ["CURSOR_RECOVERED"]
+
+
+@pytest.mark.parametrize("region", [Region.CN, Region.HK])
+async def test_cn_hk_handler_rejects_recovery_from_a_different_source_snapshot(
+    database: Database, region: Region, tmp_path: Path
+) -> None:
+    provider_role = f"{region.value.lower()}.contract_fixture.watermark_mismatch"
+    request = _ingest_request(region).model_copy(update={"provider_role": provider_role})
+    await JobRunner(CnHkFixtureIngestHandler(_success_provider(region)), database=database).execute(
+        request
+    )
+
+    provider_cls = CnSyntheticProvider if region is Region.CN else HkSyntheticProvider
+    fixture_payload = json.loads(
+        (provider_cls.fixture_dir / "success.json").read_text(encoding="utf-8")
+    )
+    fixture_payload["source_watermark"] = f"{region.value.lower()}-new-source-snapshot"
+    changed_snapshot = tmp_path / "changed-source-snapshot.json"
+    changed_snapshot.write_text(json.dumps(fixture_payload), encoding="utf-8")
+
+    async with database.session() as session:
+        audits_before = await session.scalar(
+            select(func.count())
+            .select_from(IngestAuditRow)
+            .where(IngestAuditRow.provider_id == _provider_id(region))
+        )
+        watermark_before = await session.get(
+            JobWatermarkRow,
+            (provider_role, Dataset.MARKET_OBSERVATIONS.value, region.value),
+        )
+        assert watermark_before is not None
+        committed_watermark = watermark_before.watermark
+
+    expired_request = request.model_copy(update={"cursor": "expired-cursor"})
+    handler = CnHkFixtureIngestHandler(_provider_for(region)).with_recovery_provider(
+        provider_cls(changed_snapshot)
+    )
+    with pytest.raises(ProviderCursorError) as error:
+        await JobRunner(handler, database=database).execute(expired_request)
+
+    assert error.value.code == "CURSOR_RECOVERY_MISMATCH"
+    async with database.session() as session:
+        audits_after = await session.scalar(
+            select(func.count())
+            .select_from(IngestAuditRow)
+            .where(IngestAuditRow.provider_id == _provider_id(region))
+        )
+        watermark_after = await session.get(
+            JobWatermarkRow,
+            (provider_role, Dataset.MARKET_OBSERVATIONS.value, region.value),
+        )
+    assert audits_after == audits_before
+    assert watermark_after is not None
+    assert watermark_after.watermark == committed_watermark
 
 
 @pytest.mark.parametrize("region", [Region.CN, Region.HK])

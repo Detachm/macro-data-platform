@@ -81,7 +81,7 @@ class CnHkFixtureIngestHandler:
         effective_cursor = request.cursor
         try:
             page = await fetch_page(effective_cursor)
-        except ProviderCursorError:
+        except ProviderCursorError as expired_cursor_error:
             async with database.session() as session:
                 recovered_watermark, _ = await checkpoints.recover_committed_watermark(
                     IngestionCheckpointRepository(session),
@@ -96,6 +96,12 @@ class CnHkFixtureIngestHandler:
             # committed source snapshot, whose effective query is cursorless.
             effective_cursor = None
             page = await fetch_page(effective_cursor)
+            if page.source_watermark != recovered_watermark:
+                raise ProviderCursorError(
+                    "cursor recovery returned a different source watermark: "
+                    f"expected {recovered_watermark}, got {page.source_watermark}",
+                    code="CURSOR_RECOVERY_MISMATCH",
+                ) from expired_cursor_error
             recovery_warning = WarningItem(
                 code="CURSOR_RECOVERED",
                 message="expired provider cursor resumed from committed watermark",
