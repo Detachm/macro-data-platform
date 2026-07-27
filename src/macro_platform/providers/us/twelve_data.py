@@ -11,12 +11,13 @@ those contracts.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import hashlib
 import hmac
 import json
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -28,19 +29,27 @@ from zoneinfo import ZoneInfo
 import httpx
 from pydantic import SecretStr
 
-from macro_platform.contracts.common import AvailabilityBasis, Region, SourceRef, WarningItem
-from macro_platform.contracts.market import Adjustment, BarQuery, Interval, MarketBar
+from macro_platform.contracts.common import (
+    AssetClass,
+    AvailabilityBasis,
+    Region,
+    SourceRef,
+    WarningItem,
+)
+from macro_platform.contracts.market import (
+    Adjustment,
+    BarQuery,
+    Instrument,
+    InstrumentStatus,
+    Interval,
+    MarketBar,
+)
 from macro_platform.contracts.provider import (
     Dataset,
     FetchContext,
     ProviderCapabilities,
     ProviderHealth,
     ProviderPage,
-)
-from macro_platform.governance.source_policy import (
-    PolicyPurpose,
-    SourcePolicy,
-    SourcePolicyDeniedError,
 )
 from macro_platform.normalization.common import (
     canonical_json_checksum,
@@ -49,6 +58,11 @@ from macro_platform.normalization.common import (
 )
 from macro_platform.normalization.us import us_equity_session_window
 from macro_platform.normalization.us.errors import UsNormalizationError
+from macro_platform.observability.metrics import (
+    PROVIDER_DURATION,
+    PROVIDER_LAST_SUCCESS,
+    PROVIDER_REQUESTS,
+)
 from macro_platform.providers.base import (
     ProviderAuthenticationError,
     ProviderAuthorizationError,
@@ -66,9 +80,13 @@ TWELVE_DATA_PROVIDER_ID: Final = "us.twelve-data.v1"
 TWELVE_DATA_BASE_URL: Final = "https://api.twelvedata.com/time_series"
 TWELVE_DATA_ALLOWED_HOST: Final = "api.twelvedata.com"
 TWELVE_DATA_PRIMARY_ROLE: Final = "us.market.primary"
+TWELVE_DATA_ALLOWED_SYMBOLS: Final = frozenset({"SPY", "QQQ", "DIA"})
 _MAX_OUTPUT_SIZE: Final = 5000
 _MAX_CURSOR_OFFSET: Final = 100_000
 _MAX_QUERY_WINDOW: Final = timedelta(days=5 * 366)
+_MAX_REQUEST_ATTEMPTS: Final = 3
+_MAX_RETRY_DELAY_SECONDS: Final = 30
+_PIT_CLOCK_SKEW: Final = timedelta(seconds=5)
 _NEW_YORK: Final = ZoneInfo("America/New_York")
 
 
@@ -97,10 +115,57 @@ class TwelveDataInstrument:
             raise ValueError("Twelve Data source_symbol is invalid")
         if self.currency != "USD":
             raise ValueError("Twelve Data daily ETF bars are limited to USD")
+        if self.source_symbol not in TWELVE_DATA_ALLOWED_SYMBOLS:
+            raise ValueError("Twelve Data symbol is not in the approved ETF allowlist")
+
+
+@dataclass(frozen=True, slots=True)
+class _TwelveDataInstrumentMetadata:
+    venue_mic: str
+    name: str
+    valid_from: date
+
+
+_INSTRUMENT_METADATA: Final = {
+    "SPY": _TwelveDataInstrumentMetadata(
+        venue_mic="ARCX",
+        name="SPDR S&P 500 ETF Trust",
+        valid_from=date(1993, 1, 22),
+    ),
+    "QQQ": _TwelveDataInstrumentMetadata(
+        venue_mic="XNAS",
+        name="Invesco QQQ Trust, Series 1",
+        valid_from=date(1999, 3, 10),
+    ),
+    "DIA": _TwelveDataInstrumentMetadata(
+        venue_mic="ARCX",
+        name="SPDR Dow Jones Industrial Average ETF Trust",
+        valid_from=date(1998, 1, 14),
+    ),
+}
+
+
+TWELVE_DATA_DEFAULT_INSTRUMENTS: Final = (
+    TwelveDataInstrument(
+        instrument_id="ins_us_etf_spy",
+        canonical_symbol="ARCX:SPY",
+        source_symbol="SPY",
+    ),
+    TwelveDataInstrument(
+        instrument_id="ins_us_etf_qqq",
+        canonical_symbol="XNAS:QQQ",
+        source_symbol="QQQ",
+    ),
+    TwelveDataInstrument(
+        instrument_id="ins_us_etf_dia",
+        canonical_symbol="ARCX:DIA",
+        source_symbol="DIA",
+    ),
+)
 
 
 class TwelveDataDailyBarsProvider:
-    """Live, bounded, policy-scoped provider for raw US daily ETF bars."""
+    """Live, bounded provider for the approved US daily ETF bar allowlist."""
 
     provider_id: Final[str] = TWELVE_DATA_PROVIDER_ID
     source_name: Final[str] = "Twelve Data"
@@ -110,11 +175,11 @@ class TwelveDataDailyBarsProvider:
         *,
         api_key: SecretStr | None,
         instruments: Sequence[TwelveDataInstrument],
-        source_policy: SourcePolicy,
         client: httpx.AsyncClient | None = None,
         timeout_seconds: float = 30,
         cursor_signing_secret: str,
         clock: Callable[[], datetime] | None = None,
+        sleeper: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         if timeout_seconds <= 0:
             raise ValueError("Twelve Data timeout_seconds must be positive")
@@ -132,16 +197,12 @@ class TwelveDataDailyBarsProvider:
 
         self._api_key = api_key
         self._instruments_by_id = by_instrument_id
-        self._source_policy = source_policy
         self._client = client or httpx.AsyncClient()
         self._owns_client = client is None
         self._timeout_seconds = timeout_seconds
         self._cursor_signing_secret = cursor_signing_secret.encode("utf-8")
         self._clock = clock or _utc_now
-
-        # Refuse a misconfigured live provider before it can send an upstream request.
-        for instrument in instruments:
-            self._require_ingestion_rights(instrument.source_symbol)
+        self._sleeper = sleeper
 
     def capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities(
@@ -167,6 +228,20 @@ class TwelveDataDailyBarsProvider:
         """Stable, reviewed instrument IDs available to this adapter instance."""
 
         return tuple(self._instruments_by_id)
+
+    @property
+    def request_timeout_seconds(self) -> float:
+        """Bound used for one upstream request, independent of business dates."""
+
+        return self._timeout_seconds
+
+    def instrument_contracts(self, *, fetched_at: datetime) -> list[Instrument]:
+        """Return the reviewed, effective-dated ETF mappings required by bar FKs."""
+
+        return [
+            _instrument_contract(instrument, fetched_at=fetched_at)
+            for instrument in self._instruments_by_id.values()
+        ]
 
     async def healthcheck(self) -> ProviderHealth:
         checked_at = self._now()
@@ -213,12 +288,39 @@ class TwelveDataDailyBarsProvider:
             await self._client.aclose()
 
     async def fetch_bars(self, query: BarQuery, context: FetchContext) -> ProviderPage[MarketBar]:
+        started_at = perf_counter()
+        try:
+            page = await self._fetch_bars(query, context)
+        except ProviderError as error:
+            PROVIDER_REQUESTS.labels(
+                provider_role=TWELVE_DATA_PRIMARY_ROLE,
+                dataset=Dataset.BARS.value,
+                status=error.code,
+            ).inc()
+            raise
+        PROVIDER_REQUESTS.labels(
+            provider_role=TWELVE_DATA_PRIMARY_ROLE,
+            dataset=Dataset.BARS.value,
+            status="success",
+        ).inc()
+        PROVIDER_DURATION.labels(
+            provider_role=TWELVE_DATA_PRIMARY_ROLE,
+            dataset=Dataset.BARS.value,
+        ).observe(perf_counter() - started_at)
+        PROVIDER_LAST_SUCCESS.labels(
+            provider_role=TWELVE_DATA_PRIMARY_ROLE,
+            dataset=Dataset.BARS.value,
+            region=Region.US.value,
+        ).set(page.fetched_at.timestamp())
+        return page
+
+    async def _fetch_bars(self, query: BarQuery, context: FetchContext) -> ProviderPage[MarketBar]:
         if query.interval is not Interval.D1 or query.adjustment is not Adjustment.RAW:
             raise UnsupportedCapabilityError("Twelve Data supports raw daily bars only")
         if not self._has_api_key:
             raise ProviderAuthenticationError("Twelve Data API key is not configured")
         fetched_at = self._now()
-        if query.as_of < fetched_at:
+        if query.as_of < fetched_at - _PIT_CLOCK_SKEW:
             raise UnsupportedCapabilityError(
                 "Twelve Data daily bars do not provide historical point-in-time snapshots"
             )
@@ -240,7 +342,6 @@ class TwelveDataDailyBarsProvider:
         all_items: list[MarketBar] = []
         warnings: list[WarningItem] = []
         for instrument in requested_instruments:
-            self._require_ingestion_rights(instrument.source_symbol)
             payload, request_fetched_at = await self._fetch_payload(
                 symbol=instrument.source_symbol,
                 start_date=start_date,
@@ -308,17 +409,6 @@ class TwelveDataDailyBarsProvider:
     def _has_api_key(self) -> bool:
         return self._api_key is not None and bool(self._api_key.get_secret_value().strip())
 
-    def _require_ingestion_rights(self, source_symbol: str) -> None:
-        decision = self._source_policy.decision(
-            provider_id=self.provider_id,
-            dataset=Dataset.BARS,
-            region=Region.US,
-            purpose=PolicyPurpose.INGESTION,
-            source_symbol=source_symbol,
-        )
-        if not decision.allowed:
-            raise SourcePolicyDeniedError(decision)
-
     def _requested_instruments(self, instrument_ids: Sequence[str]) -> list[TwelveDataInstrument]:
         result: list[TwelveDataInstrument] = []
         seen: set[str] = set()
@@ -343,33 +433,54 @@ class TwelveDataDailyBarsProvider:
         outputsize: int,
         deadline_at: datetime,
     ) -> tuple[dict[str, Any], datetime]:
-        now = self._now()
-        remaining_seconds = (deadline_at.astimezone(UTC) - now).total_seconds()
-        if remaining_seconds <= 0:
-            raise ProviderTimeoutError("Twelve Data request deadline has elapsed", retryable=True)
-        try:
-            response = await self._client.get(
-                TWELVE_DATA_BASE_URL,
-                params={
-                    "symbol": symbol,
-                    "interval": "1day",
-                    "start_date": start_date.isoformat(),
-                    "end_date": end_date.isoformat(),
-                    "outputsize": outputsize,
-                    "order": "ASC",
-                    "apikey": self._api_key.get_secret_value() if self._api_key else "",
-                },
-                timeout=min(self._timeout_seconds, remaining_seconds),
-            )
-        except httpx.TimeoutException as error:
-            raise ProviderTimeoutError("Twelve Data request timed out", retryable=True) from error
-        except httpx.HTTPError as error:
-            raise ProviderUnavailableError("Twelve Data request failed", retryable=True) from error
+        for attempt in range(_MAX_REQUEST_ATTEMPTS):
+            now = self._now()
+            remaining_seconds = (deadline_at.astimezone(UTC) - now).total_seconds()
+            if remaining_seconds <= 0:
+                raise ProviderTimeoutError(
+                    "Twelve Data request deadline has elapsed", retryable=True
+                )
+            try:
+                try:
+                    response = await self._client.get(
+                        TWELVE_DATA_BASE_URL,
+                        params={
+                            "symbol": symbol,
+                            "interval": "1day",
+                            "start_date": start_date.isoformat(),
+                            "end_date": end_date.isoformat(),
+                            "outputsize": outputsize,
+                            "order": "ASC",
+                            "apikey": self._api_key.get_secret_value() if self._api_key else "",
+                        },
+                        timeout=min(self._timeout_seconds, remaining_seconds),
+                    )
+                except httpx.TimeoutException as error:
+                    raise ProviderTimeoutError(
+                        "Twelve Data request timed out", retryable=True
+                    ) from error
+                except httpx.HTTPError as error:
+                    raise ProviderUnavailableError(
+                        "Twelve Data request failed", retryable=True
+                    ) from error
 
-        self._raise_for_status(response, now=now)
-        payload = self._json_payload(response)
-        self._raise_for_payload_error(payload, now=now)
-        return payload, self._now()
+                self._raise_for_status(response, now=now)
+                payload = self._json_payload(response)
+                self._raise_for_payload_error(payload, now=now)
+                return payload, self._now()
+            except (
+                ProviderRateLimitError,
+                ProviderTimeoutError,
+                ProviderUnavailableError,
+            ) as error:
+                if not error.retryable or attempt == _MAX_REQUEST_ATTEMPTS - 1:
+                    raise
+                retry_delay = _retry_delay_seconds(error, attempt=attempt)
+                if retry_delay >= remaining_seconds:
+                    raise
+                await self._sleeper(retry_delay)
+
+        raise RuntimeError("Twelve Data retry loop exited without a provider result")
 
     @staticmethod
     def _raise_for_status(response: httpx.Response, *, now: datetime) -> None:
@@ -464,6 +575,7 @@ class TwelveDataDailyBarsProvider:
                         code="PROVIDER_RECORD_QUARANTINED",
                         message=str(error)[:500],
                         scope=f"values[{index}]",
+                        details=_rejection_details(error, raw_row),
                     )
                 )
                 continue
@@ -486,6 +598,7 @@ class TwelveDataDailyBarsProvider:
                         code="PROVIDER_RECORD_QUARANTINED",
                         message=str(error)[:500],
                         scope=f"values[{index}]",
+                        details=_rejection_details(error, raw_row),
                     )
                 )
                 continue
@@ -646,6 +759,41 @@ def _market_bar(
     )
 
 
+def _instrument_contract(instrument: TwelveDataInstrument, *, fetched_at: datetime) -> Instrument:
+    metadata = _INSTRUMENT_METADATA[instrument.source_symbol]
+    checksum = canonical_json_checksum(
+        {
+            "canonical_symbol": instrument.canonical_symbol,
+            "source_symbol": instrument.source_symbol,
+            "venue_mic": metadata.venue_mic,
+            "name": metadata.name,
+            "valid_from": metadata.valid_from.isoformat(),
+            "currency": instrument.currency,
+        }
+    )
+    return Instrument(
+        instrument_id=instrument.instrument_id,
+        canonical_symbol=instrument.canonical_symbol,
+        region=Region.US,
+        venue_mic=metadata.venue_mic,
+        local_symbol=instrument.source_symbol,
+        name=metadata.name,
+        asset_class=AssetClass.ETF,
+        currency=instrument.currency,
+        timezone="America/New_York",
+        status=InstrumentStatus.ACTIVE,
+        valid_from=metadata.valid_from,
+        source=SourceRef(
+            provider_id=TWELVE_DATA_PROVIDER_ID,
+            provider_record_id=f"{TWELVE_DATA_PROVIDER_ID}:{instrument.source_symbol}:instrument",
+            source_name="Twelve Data",
+            source_symbol=instrument.source_symbol,
+            retrieved_at=fetched_at,
+            checksum_sha256=checksum,
+        ),
+    )
+
+
 def _parse_date(value: object, *, path: str) -> date:
     if not isinstance(value, str):
         raise ProviderSchemaError(f"Twelve Data {path} must be an ISO date")
@@ -689,6 +837,31 @@ def _retry_after_seconds(response: httpx.Response, *, now: datetime) -> int | No
         except (TypeError, ValueError, OverflowError):
             return None
         return max(0, int((retry_at - now).total_seconds()))
+
+
+def _retry_delay_seconds(error: ProviderError, *, attempt: int) -> float:
+    if error.retry_after_seconds is not None:
+        return float(min(error.retry_after_seconds, _MAX_RETRY_DELAY_SECONDS))
+    return float(min(2**attempt, _MAX_RETRY_DELAY_SECONDS))
+
+
+def _rejection_details(error: Exception, raw_row: Mapping[str, Any]) -> dict[str, object]:
+    """Keep a bounded, credential-safe row fragment for durable quarantine evidence."""
+
+    forbidden_keys = {"apikey", "api_key", "authorization", "cookie", "token", "password"}
+    fields = sorted(key for key in raw_row if key.lower() not in forbidden_keys)
+    raw_datetime = raw_row.get("datetime")
+    return {
+        "rejection": {
+            "error_code": (
+                error.code if isinstance(error, ProviderError) else "NORMALIZATION_ERROR"
+            ),
+            "redacted_payload": {
+                "datetime": raw_datetime[:64] if isinstance(raw_datetime, str) else None,
+                "fields": fields,
+            },
+        }
+    }
 
 
 def _b64encode(value: bytes) -> str:

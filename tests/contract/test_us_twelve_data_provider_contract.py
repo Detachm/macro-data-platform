@@ -12,7 +12,6 @@ from pydantic import SecretStr
 from macro_platform.contracts.common import Region
 from macro_platform.contracts.market import Adjustment, BarQuery, Interval
 from macro_platform.contracts.provider import Dataset, FetchContext
-from macro_platform.governance.source_policy import load_production_source_policy
 from macro_platform.providers.us.twelve_data import (
     TWELVE_DATA_PROVIDER_ID,
     TwelveDataDailyBarsProvider,
@@ -48,7 +47,6 @@ def _provider(payload: dict[str, object]) -> TwelveDataDailyBarsProvider:
     return TwelveDataDailyBarsProvider(
         api_key=SecretStr("contract-test-api-key"),
         instruments=[SPY],
-        source_policy=load_production_source_policy(),
         client=client,
         cursor_signing_secret="contract-test-cursor-secret",
         clock=lambda: NOW,
@@ -104,6 +102,12 @@ async def test_PRV_009_quarantines_a_malformed_ohlcv_record_without_empty_succes
 
     assert page.items == []
     assert [warning.code for warning in page.warnings] == ["PROVIDER_RECORD_QUARANTINED"]
+    rejection = page.warnings[0].details["rejection"]
+    assert rejection["error_code"] == "PROVIDER_SCHEMA_CHANGED"
+    assert rejection["redacted_payload"] == {
+        "datetime": "2026-07-22",
+        "fields": ["datetime", "high", "low", "open", "volume"],
+    }
 
 
 def test_PRV_009_fixture_manifest_is_complete_and_credential_free() -> None:

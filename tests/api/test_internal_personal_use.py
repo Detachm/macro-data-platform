@@ -27,7 +27,13 @@ def test_production_editor_context_keeps_content_regardless_of_legacy_rights() -
     payload["usage_rights"]["storage_allowed"] = False
     event = NewsEvent.model_validate(payload)
     app = create_app(
-        settings=Settings(app_env="production", service_token=SecretStr(TOKEN)),
+        settings=Settings(
+            app_env="production",
+            service_token=SecretStr(TOKEN),
+            us_provider_mode="live",
+            twelve_data_api_key=SecretStr("test-twelve-data-key"),
+            twelve_data_cursor_secret=SecretStr("test-twelve-data-cursor"),
+        ),
         repository=_NewsRepository(event),
     )
 

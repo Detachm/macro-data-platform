@@ -15,6 +15,16 @@ PROVIDER_LAST_SUCCESS = Gauge(
     "Unix timestamp of the last successful provider request",
     ("provider_role", "dataset", "region"),
 )
+PROVIDER_REJECTIONS = Counter(
+    "provider_rejection_total",
+    "Quarantined provider records",
+    ("provider_role", "dataset", "error_code"),
+)
+PROVIDER_FRESHNESS = Gauge(
+    "provider_freshness_timestamp_seconds",
+    "Timestamp of the freshest accepted provider record",
+    ("provider_role", "dataset", "region"),
+)
 CONTEXT_BUILD_DURATION = Histogram(
     "context_build_duration_seconds",
     "Editor context build duration",

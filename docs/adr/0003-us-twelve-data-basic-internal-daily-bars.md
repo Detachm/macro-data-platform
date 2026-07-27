@@ -26,6 +26,7 @@ ADR 0001 将 US 日线行情保留为 fixture-only：Polygon/Massive 需要商�
 - `SPY`、`QQQ`、`DIA` 的日线原始 OHLCV 仍是首批 adapter 的推荐范围，但不再由 runtime policy 限制。
 - 使用 API key 的方式必须是运行时 Secret Manager；key、账号和套餐标识不得进入仓库、fixture 或日志。
 - 内部 ingestion 和 `canonical_facts` 保存遵循通用存储规则；`available_at` 没有可靠 provider dissemination proof 时使用平台 `first_seen`。
+- 日线 base record 的首次 `available_at` 与 payload 不可被后续重抓覆盖；checksum 变化时追加 `market_bar_revisions`，其 `available_at` 为该修订版本的首次见到时间。PIT 查询只选择 `available_at <= as_of` 的最新版本。
 - 外部 LLM、embedding、报告引用和再分发标记仅保留为历史元数据，不再阻断内部个人工作流。
 - 其他 Twelve Data dataset、其他 US symbol、intraday 或调整行情仍需要相应 adapter 实现与测试。
 

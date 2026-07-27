@@ -5,7 +5,7 @@ import os
 from asyncio import Event, create_task, wait_for
 from collections.abc import AsyncIterator, Iterator
 from copy import deepcopy
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -238,13 +238,19 @@ async def test_PRV_016_us_twelve_data_checkpoint_persists_two_daily_bars_and_raw
         cursor_signing_secret="integration-test-cursor-secret",
         clock=lambda: now,
     )
-    request = IngestJobRequest(
+    first_request = IngestJobRequest(
         provider_role="us.market.primary",
         dataset=Dataset.BARS,
         regions={Region.US},
         start=datetime(2026, 7, 21, 4, 0, tzinfo=UTC),
-        end=now + timedelta(minutes=1),
+        end=datetime(2026, 7, 22, 4, 0, tzinfo=UTC),
         as_of=now,
+    )
+    second_request = first_request.model_copy(
+        update={
+            "start": datetime(2026, 7, 22, 4, 0, tzinfo=UTC),
+            "end": datetime(2026, 7, 23, 4, 0, tzinfo=UTC),
+        }
     )
     try:
         runner = JobRunner(
@@ -252,15 +258,16 @@ async def test_PRV_016_us_twelve_data_checkpoint_persists_two_daily_bars_and_raw
             database=database,
             now=lambda: now,
         )
-        first = await runner.execute(request)
-        second = await runner.execute(request)
+        first = await runner.execute(first_request)
+        second = await runner.execute(second_request)
     finally:
         await provider.aclose()
         await client.aclose()
 
-    assert first.records_fetched == 2
-    assert first.records_inserted == 2
-    assert second == first
+    assert first.records_fetched == 1
+    assert first.records_inserted == 1
+    assert second.records_fetched == 1
+    assert second.records_inserted == 1
     async with database.session() as session:
         bars = (
             await session.scalars(
@@ -273,7 +280,7 @@ async def test_PRV_016_us_twelve_data_checkpoint_persists_two_daily_bars_and_raw
         audits = (
             await session.scalars(
                 select(IngestAuditRow).where(
-                    IngestAuditRow.run_id == first.run_id,
+                    IngestAuditRow.run_id.in_([first.run_id, second.run_id]),
                     IngestAuditRow.audit_kind == "raw_timestamp_normalization",
                 )
             )

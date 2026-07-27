@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from macro_platform.contracts.common import Region, WarningItem
@@ -15,10 +15,10 @@ from macro_platform.contracts.provider import (
     IngestJobResult,
     ProviderPage,
 )
-from macro_platform.governance.source_policy import RetentionRule
 from macro_platform.jobs.ingestion_checkpoint import CommittedPage, IngestionCheckpointService
 from macro_platform.jobs.runner import IngestionExecutionContext
 from macro_platform.normalization.common import canonical_json_checksum, utc_now
+from macro_platform.observability.metrics import PROVIDER_FRESHNESS, PROVIDER_REJECTIONS
 from macro_platform.providers.base import ProviderCursorError
 from macro_platform.providers.us.twelve_data import (
     TWELVE_DATA_PRIMARY_ROLE,
@@ -29,6 +29,7 @@ from macro_platform.storage.repositories import IngestionCheckpointRepository
 from macro_platform.storage.unit_of_work import UnitOfWork
 
 _PAGE_SIZE = 1000
+_PIT_CLOCK_SKEW = timedelta(seconds=5)
 
 
 class UsTwelveDataIngestHandler:
@@ -84,12 +85,12 @@ class UsTwelveDataIngestHandler:
             run_id=execution.run_id,
             provider_id=self.provider_id,
             supports_point_in_time=self._supports_point_in_time,
-            historical_request=request.as_of < now,
+            historical_request=request.as_of < now - _PIT_CLOCK_SKEW,
         )
         context = FetchContext(
             request_id=uuid4(),
             as_of=request.as_of,
-            deadline_at=request.end,
+            deadline_at=now + timedelta(seconds=self._provider.request_timeout_seconds),
         )
         active_provider = self._provider
 
@@ -114,16 +115,19 @@ class UsTwelveDataIngestHandler:
             page = await fetch_page(effective_cursor)
         except ProviderCursorError as expired_cursor_error:
             async with database.session() as session:
-                recovered_watermark, _ = await checkpoints.recover_committed_watermark(
+                (
+                    recovered_watermark,
+                    recovered_cursor,
+                ) = await checkpoints.recover_committed_watermark(
                     IngestionCheckpointRepository(session, ingestion_run_id=execution.run_id),
                     provider_role=request.provider_role,
                     dataset=request.dataset,
                     region=Region.US.value,
                 )
-            if recovered_watermark is None:
+            if recovered_watermark is None or recovered_cursor is None:
                 raise
             active_provider = self._recovery_provider
-            effective_cursor = None
+            effective_cursor = recovered_cursor
             page = await fetch_page(effective_cursor)
             if page.source_watermark != recovered_watermark:
                 raise ProviderCursorError(
@@ -133,7 +137,7 @@ class UsTwelveDataIngestHandler:
                 ) from expired_cursor_error
             recovery_warning = WarningItem(
                 code="CURSOR_RECOVERED",
-                message="expired Twelve Data cursor resumed from committed watermark",
+                message="expired Twelve Data cursor resumed from committed checkpoint cursor",
                 scope=Region.US.value,
                 details={"committed_watermark": recovered_watermark},
             )
@@ -147,6 +151,26 @@ class UsTwelveDataIngestHandler:
                 raw_timezone="America/New_York",
                 normalized_utc=bar.bar_start.astimezone(UTC).isoformat(),
             )
+        for warning in page.warnings:
+            rejection = warning.details.get("rejection")
+            if warning.code != "PROVIDER_RECORD_QUARANTINED" or not isinstance(rejection, dict):
+                continue
+            error_code = rejection.get("error_code")
+            redacted_payload = rejection.get("redacted_payload")
+            if not isinstance(error_code, str) or not isinstance(redacted_payload, dict):
+                continue
+            await checkpoints.record_rejection(
+                database,
+                run_id=execution.run_id,
+                provider_id=self.provider_id,
+                error_code=error_code,
+                redacted_payload=redacted_payload,
+            )
+            PROVIDER_REJECTIONS.labels(
+                provider_role=TWELVE_DATA_PRIMARY_ROLE,
+                dataset=Dataset.BARS.value,
+                error_code=error_code,
+            ).inc()
         page_fingerprint = canonical_json_checksum(
             {
                 "query": request.model_copy(update={"cursor": effective_cursor}).model_dump(
@@ -165,17 +189,12 @@ class UsTwelveDataIngestHandler:
             next_cursor=page.next_cursor,
             accepted_record_ids=[bar.source.provider_record_id for bar in page.items],
         )
-        retention_rule = (
-            RetentionRule.CANONICAL_FACTS
-            if execution.retention_policy is None
-            else execution.retention_policy.rule_for(Region.US)
-        )
         async with UnitOfWork(database).transaction() as session:
             repository = IngestionCheckpointRepository(session, ingestion_run_id=execution.run_id)
 
             async def write_records(_: object) -> None:
-                if retention_rule is not RetentionRule.CANONICAL_FACTS:
-                    return
+                for instrument in self._provider.instrument_contracts(fetched_at=page.fetched_at):
+                    await repository.upsert_instrument(instrument)
                 for bar in page.items:
                     await repository.upsert_bar(bar)
 
@@ -188,6 +207,12 @@ class UsTwelveDataIngestHandler:
         if recovery_warning is not None:
             warnings.append(recovery_warning)
         finished_at = self._now().astimezone(UTC)
+        if page.items:
+            PROVIDER_FRESHNESS.labels(
+                provider_role=TWELVE_DATA_PRIMARY_ROLE,
+                dataset=Dataset.BARS.value,
+                region=Region.US.value,
+            ).set(max(bar.bar_end for bar in page.items).timestamp())
         return IngestJobResult(
             run_id=execution.run_id,
             status="partial" if rejected_records else "succeeded",
@@ -198,11 +223,7 @@ class UsTwelveDataIngestHandler:
             records_fetched=len(page.items) + rejected_records,
             records_accepted=len(page.items),
             records_rejected=rejected_records,
-            records_inserted=(
-                len(page.items)
-                if committed and retention_rule is RetentionRule.CANONICAL_FACTS
-                else 0
-            ),
+            records_inserted=len(page.items) if committed else 0,
             records_updated=0,
             next_cursor=page.next_cursor,
             source_watermark=page.source_watermark,

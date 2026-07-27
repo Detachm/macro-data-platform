@@ -8,6 +8,7 @@ from uuid import UUID
 from sqlalchemy import delete, func, literal, or_, select, union_all, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.selectable import Subquery
 
 from macro_platform.contracts.common import WarningItem
 from macro_platform.contracts.macro import (
@@ -40,6 +41,7 @@ from macro_platform.storage.models import (
     DeliveryAttemptRow,
     IngestAuditRow,
     IngestPageCommitRow,
+    IngestRejectionRow,
     InstrumentAliasRow,
     InstrumentRow,
     JobWatermarkRow,
@@ -47,6 +49,7 @@ from macro_platform.storage.models import (
     MacroReleaseRevisionRow,
     MacroReleaseRow,
     MacroSeriesRow,
+    MarketBarRevisionRow,
     MarketBarRow,
     MarketObservationRow,
     NewsEventEntityRow,
@@ -177,7 +180,7 @@ class NormalizedFactRepository:
 
     async def upsert_bar(self, bar: MarketBar) -> None:
         payload = bar.model_dump(mode="json")
-        await self._session.execute(
+        inserted = await self._session.execute(
             insert(MarketBarRow)
             .values(
                 bar_id=bar.bar_id,
@@ -200,15 +203,59 @@ class NormalizedFactRepository:
                 ingestion_run_id=self._ingestion_run_id,
                 payload=payload,
             )
-            .on_conflict_do_update(
-                index_elements=(MarketBarRow.bar_id,),
-                set_={
-                    "available_at": bar.available_at,
-                    "provider_record_id": bar.source.provider_record_id,
-                    "ingestion_run_id": self._ingestion_run_id,
-                    "payload": payload,
-                },
+            .on_conflict_do_nothing(index_elements=(MarketBarRow.bar_id,))
+            .returning(MarketBarRow.bar_id)
+        )
+        if inserted.scalar_one_or_none() is not None:
+            return
+        current_checksum = await self._session.scalar(
+            self._current_bar_checksum_statement(bar.bar_id)
+        )
+        if current_checksum == bar.source.checksum_sha256:
+            return
+        if not isinstance(current_checksum, str):
+            raise RuntimeError("persisted market bar is missing its source checksum")
+        await self._session.execute(
+            insert(MarketBarRevisionRow)
+            .values(
+                revision_id=stable_id(
+                    "market-bar-revision",
+                    bar.bar_id,
+                    bar.available_at.isoformat(),
+                    bar.source.checksum_sha256,
+                ),
+                bar_id=bar.bar_id,
+                available_at=bar.available_at,
+                source_checksum_sha256=bar.source.checksum_sha256,
+                ingestion_run_id=self._ingestion_run_id,
+                payload=payload,
             )
+            .on_conflict_do_nothing(constraint="uq_market_bar_revision")
+        )
+
+    @staticmethod
+    def _current_bar_checksum_statement(bar_id: str):  # type: ignore[no-untyped-def]
+        """Read the checksum of the latest persisted version for one immutable bar."""
+
+        base_version = select(
+            MarketBarRow.available_at.label("available_at"),
+            literal(0).label("revision_rank"),
+            MarketBarRow.payload["source"]["checksum_sha256"].as_string().label("checksum"),
+        ).where(MarketBarRow.bar_id == bar_id)
+        revision_versions = select(
+            MarketBarRevisionRow.available_at.label("available_at"),
+            literal(1).label("revision_rank"),
+            MarketBarRevisionRow.source_checksum_sha256.label("checksum"),
+        ).where(MarketBarRevisionRow.bar_id == bar_id)
+        versions = union_all(base_version, revision_versions).subquery()
+        return (
+            select(versions.c.checksum)
+            .order_by(
+                versions.c.available_at.desc(),
+                versions.c.revision_rank.desc(),
+                versions.c.checksum.desc(),
+            )
+            .limit(1)
         )
 
     async def upsert_market_observation(self, observation: MarketObservation) -> None:
@@ -405,17 +452,17 @@ class PostgresDataRepository:
         return [Instrument.model_validate(payload) for payload in payloads]
 
     async def list_bars(self, query: BarQuery) -> list[MarketBar]:
+        versions = self._current_market_bar_versions(query.as_of)
         statement = (
-            select(MarketBarRow.payload)
+            select(versions.c.payload)
             .where(
-                MarketBarRow.instrument_id.in_(query.instrument_ids),
-                MarketBarRow.interval == query.interval.value,
-                MarketBarRow.adjustment == query.adjustment.value,
-                MarketBarRow.bar_start >= query.start,
-                MarketBarRow.bar_start < query.end,
-                MarketBarRow.available_at <= query.as_of,
+                versions.c.instrument_id.in_(query.instrument_ids),
+                versions.c.interval == query.interval.value,
+                versions.c.adjustment == query.adjustment.value,
+                versions.c.bar_start >= query.start,
+                versions.c.bar_start < query.end,
             )
-            .order_by(MarketBarRow.instrument_id, MarketBarRow.bar_start, MarketBarRow.bar_id)
+            .order_by(versions.c.instrument_id, versions.c.bar_start, versions.c.bar_id)
             .limit(query.limit)
         )
         async with self._database.session() as session:
@@ -423,21 +470,21 @@ class PostgresDataRepository:
         return [MarketBar.model_validate(payload) for payload in payloads]
 
     async def list_snapshots(self, query: MarketSnapshotQuery) -> list[MarketSnapshot]:
+        versions = self._current_market_bar_versions(query.as_of)
         rank = func.row_number().over(
-            partition_by=MarketBarRow.instrument_id,
-            order_by=(MarketBarRow.bar_end.desc(), MarketBarRow.available_at.desc()),
+            partition_by=versions.c.instrument_id,
+            order_by=(versions.c.bar_end.desc(), versions.c.available_at.desc()),
         )
         latest_bars = (
             select(
-                MarketBarRow.instrument_id.label("instrument_id"),
-                MarketBarRow.payload.label("payload"),
+                versions.c.instrument_id.label("instrument_id"),
+                versions.c.payload.label("payload"),
                 rank.label("rank"),
             )
             .where(
-                MarketBarRow.instrument_id.in_(query.instrument_ids),
-                MarketBarRow.interval == Interval.D1.value,
-                MarketBarRow.adjustment == Adjustment.RAW.value,
-                MarketBarRow.available_at <= query.as_of,
+                versions.c.instrument_id.in_(query.instrument_ids),
+                versions.c.interval == Interval.D1.value,
+                versions.c.adjustment == Adjustment.RAW.value,
             )
             .subquery()
         )
@@ -462,6 +509,71 @@ class PostgresDataRepository:
             )
             for bar in bars
         ]
+
+    @staticmethod
+    def _current_market_bar_versions(as_of: datetime) -> Subquery:
+        base_versions = select(
+            MarketBarRow.bar_id.label("bar_id"),
+            MarketBarRow.instrument_id.label("instrument_id"),
+            MarketBarRow.interval.label("interval"),
+            MarketBarRow.adjustment.label("adjustment"),
+            MarketBarRow.bar_start.label("bar_start"),
+            MarketBarRow.bar_end.label("bar_end"),
+            MarketBarRow.available_at.label("available_at"),
+            literal(0).label("revision_rank"),
+            MarketBarRow.payload["source"]["checksum_sha256"].as_string().label("source_checksum"),
+            MarketBarRow.payload.label("payload"),
+        ).where(MarketBarRow.available_at <= as_of)
+        revision_versions = (
+            select(
+                MarketBarRow.bar_id.label("bar_id"),
+                MarketBarRow.instrument_id.label("instrument_id"),
+                MarketBarRow.interval.label("interval"),
+                MarketBarRow.adjustment.label("adjustment"),
+                MarketBarRow.bar_start.label("bar_start"),
+                MarketBarRow.bar_end.label("bar_end"),
+                MarketBarRevisionRow.available_at.label("available_at"),
+                literal(1).label("revision_rank"),
+                MarketBarRevisionRow.source_checksum_sha256.label("source_checksum"),
+                MarketBarRevisionRow.payload.label("payload"),
+            )
+            .join(MarketBarRow, MarketBarRow.bar_id == MarketBarRevisionRow.bar_id)
+            .where(MarketBarRevisionRow.available_at <= as_of)
+        )
+        versions = union_all(base_versions, revision_versions).subquery()
+        rank = func.row_number().over(
+            partition_by=versions.c.bar_id,
+            order_by=(
+                versions.c.available_at.desc(),
+                versions.c.revision_rank.desc(),
+                versions.c.source_checksum.desc(),
+            ),
+        )
+        ranked = select(
+            versions.c.bar_id,
+            versions.c.instrument_id,
+            versions.c.interval,
+            versions.c.adjustment,
+            versions.c.bar_start,
+            versions.c.bar_end,
+            versions.c.available_at,
+            versions.c.payload,
+            rank.label("rank"),
+        ).subquery()
+        return (
+            select(
+                ranked.c.bar_id,
+                ranked.c.instrument_id,
+                ranked.c.interval,
+                ranked.c.adjustment,
+                ranked.c.bar_start,
+                ranked.c.bar_end,
+                ranked.c.available_at,
+                ranked.c.payload,
+            )
+            .where(ranked.c.rank == 1)
+            .subquery()
+        )
 
     async def list_market_observations(
         self, query: MarketObservationQuery
@@ -1204,6 +1316,23 @@ class IngestionCheckpointRepository(NormalizedFactRepository):
                 provider_id=provider_id,
                 audit_kind=audit_kind,
                 payload=payload,
+            )
+        )
+
+    def add_rejection(
+        self,
+        *,
+        run_id: UUID,
+        provider_id: str,
+        error_code: str,
+        redacted_payload: dict[str, Any],
+    ) -> None:
+        self._session.add(
+            IngestRejectionRow(
+                run_id=run_id,
+                provider_id=provider_id,
+                error_code=error_code,
+                redacted_payload=redacted_payload,
             )
         )
 

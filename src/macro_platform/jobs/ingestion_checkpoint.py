@@ -68,6 +68,23 @@ class IngestionCheckpointService:
                 },
             )
 
+    async def record_rejection(
+        self,
+        database: Database,
+        *,
+        run_id: UUID,
+        provider_id: str,
+        error_code: str,
+        redacted_payload: dict[str, object],
+    ) -> None:
+        async with database.session() as rejection_session, rejection_session.begin():
+            IngestionCheckpointRepository(rejection_session, ingestion_run_id=run_id).add_rejection(
+                run_id=run_id,
+                provider_id=provider_id,
+                error_code=error_code,
+                redacted_payload=redacted_payload,
+            )
+
     async def commit_page(
         self,
         repository: IngestionCheckpointRepository,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import httpx
@@ -9,12 +10,7 @@ from pydantic import SecretStr
 
 from macro_platform.config import Settings
 from macro_platform.contracts.market import Adjustment, BarQuery, Interval
-from macro_platform.contracts.provider import FetchContext
-from macro_platform.governance.source_policy import (
-    NonProductionSourcePolicy,
-    SourcePolicyDeniedError,
-    load_production_source_policy,
-)
+from macro_platform.contracts.provider import Dataset, FetchContext
 from macro_platform.providers.base import (
     ProviderAuthenticationError,
     ProviderAuthorizationError,
@@ -23,6 +19,7 @@ from macro_platform.providers.base import (
     ProviderRateLimitError,
     ProviderSchemaError,
     ProviderTimeoutError,
+    ProviderUnavailableError,
     UnsupportedCapabilityError,
 )
 from macro_platform.providers.registry import ProviderRegistry, ProviderRegistryError
@@ -62,20 +59,25 @@ DIA = TwelveDataInstrument(
 TEST_API_KEY = SecretStr("unit-test-api-key")
 
 
+async def _no_sleep(_: float) -> None:
+    return None
+
+
 def _provider(
     *,
     transport: httpx.AsyncBaseTransport,
     api_key: SecretStr = TEST_API_KEY,
     no_api_key: bool = False,
     instruments: list[TwelveDataInstrument] | None = None,
+    sleeper: Callable[[float], Awaitable[None]] | None = None,
 ) -> TwelveDataDailyBarsProvider:
     return TwelveDataDailyBarsProvider(
         api_key=None if no_api_key else api_key,
         instruments=instruments or [SPY],
-        source_policy=load_production_source_policy(),
         client=httpx.AsyncClient(transport=transport),
         cursor_signing_secret="unit-test-cursor-secret",
         clock=lambda: NOW,
+        sleeper=sleeper or _no_sleep,
     )
 
 
@@ -151,18 +153,11 @@ async def test_PRV_001_fetch_bars_maps_raw_daily_bar_and_redacts_api_key_from_pr
 
 
 def test_GOV_026_twelve_data_rejects_unapproved_symbol_before_any_network_request() -> None:
-    with pytest.raises(SourcePolicyDeniedError, match="source symbol is not allowed"):
-        TwelveDataDailyBarsProvider(
-            api_key=SecretStr("unit-test-api-key"),
-            instruments=[
-                TwelveDataInstrument(
-                    instrument_id="ins_us_etf_iwm",
-                    canonical_symbol="ARCX:IWM",
-                    source_symbol="IWM",
-                )
-            ],
-            source_policy=load_production_source_policy(),
-            cursor_signing_secret="unit-test-cursor-secret",
+    with pytest.raises(ValueError, match="approved ETF allowlist"):
+        TwelveDataInstrument(
+            instrument_id="ins_us_etf_iwm",
+            canonical_symbol="ARCX:IWM",
+            source_symbol="IWM",
         )
 
 
@@ -184,7 +179,6 @@ async def test_PRV_001_factory_makes_fixture_and_live_selection_explicit_by_envi
     fixture_registry = create_us_provider_registry(
         app_env="test",
         provider_mode="fixture",
-        source_policy=load_production_source_policy(),
     )
     try:
         for role in US_FIXTURE_CONTRACT_ROLE_BINDINGS:
@@ -200,7 +194,6 @@ async def test_PRV_001_factory_makes_fixture_and_live_selection_explicit_by_envi
     live_registry = create_us_provider_registry(
         app_env="production",
         provider_mode="live",
-        source_policy=load_production_source_policy(),
         api_key=TEST_API_KEY,
         live_instruments=[SPY],
         cursor_signing_secret="unit-test-cursor-secret",
@@ -219,17 +212,6 @@ async def test_PRV_001_factory_makes_fixture_and_live_selection_explicit_by_envi
         create_us_provider_registry(
             app_env="production",
             provider_mode="fixture",
-            source_policy=load_production_source_policy(),
-        )
-
-    with pytest.raises(ValueError, match="requires an enforced source policy"):
-        create_us_provider_registry(
-            app_env="development",
-            provider_mode="live",
-            source_policy=NonProductionSourcePolicy(),
-            api_key=TEST_API_KEY,
-            live_instruments=[SPY],
-            cursor_signing_secret="unit-test-cursor-secret",
         )
 
 
@@ -245,7 +227,6 @@ async def test_PRV_001_factory_reads_live_secrets_from_runtime_settings() -> Non
     )
     registry = create_us_provider_registry_from_settings(
         settings,
-        source_policy=load_production_source_policy(),
         live_instruments=[SPY],
         client=client,
         clock=lambda: NOW,
@@ -323,6 +304,73 @@ async def test_PRV_008_009_020_maps_live_provider_failures(
     provider_error = error.value
     assert provider_error.retryable is retryable
     assert provider_error.retry_after_seconds == retry_after_seconds
+
+
+@pytest.mark.asyncio
+async def test_PRV_007_retries_rate_limit_with_bounded_retry_after_delay() -> None:
+    calls = 0
+    delays: list[float] = []
+
+    async def sleep(delay: float) -> None:
+        delays.append(delay)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(429, headers={"Retry-After": "0"}, request=request)
+        return httpx.Response(200, json=_success_payload(), request=request)
+
+    provider = _provider(transport=httpx.MockTransport(handler), sleeper=sleep)
+    try:
+        page = await provider.fetch_bars(_bar_query(), CONTEXT)
+    finally:
+        await provider.aclose()
+
+    assert [item.trading_date.isoformat() for item in page.items] == ["2026-07-22"]
+    assert calls == 2
+    assert delays == [0]
+
+
+@pytest.mark.asyncio
+async def test_PRV_007_retries_a_transport_timeout_once_before_success() -> None:
+    calls = 0
+
+    async def sleep(delay: float) -> None:
+        assert delay >= 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx.ReadTimeout("timed out", request=request)
+        return httpx.Response(200, json=_success_payload(), request=request)
+
+    provider = _provider(transport=httpx.MockTransport(handler), sleeper=sleep)
+    try:
+        page = await provider.fetch_bars(_bar_query(), CONTEXT)
+    finally:
+        await provider.aclose()
+
+    assert len(page.items) == 1
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_PIT_001_accepts_a_fresh_as_of_within_clock_skew_tolerance() -> None:
+    provider = _provider(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json=_success_payload(), request=request)
+        )
+    )
+    query = _bar_query().model_copy(update={"as_of": NOW - timedelta(milliseconds=1)})
+    context = CONTEXT.model_copy(update={"as_of": query.as_of})
+    try:
+        page = await provider.fetch_bars(query, context)
+    finally:
+        await provider.aclose()
+
+    assert len(page.items) == 1
 
 
 @pytest.mark.asyncio
@@ -558,3 +606,301 @@ async def test_PRV_017_checksum_is_stable_for_reordered_json_and_changes_for_rev
 
     assert first.items[0].source.checksum_sha256 == second.items[0].source.checksum_sha256
     assert first.items[0].source.checksum_sha256 != revised.items[0].source.checksum_sha256
+
+
+@pytest.mark.parametrize(
+    ("instrument_id", "canonical_symbol", "source_symbol", "currency", "message"),
+    [
+        pytest.param("", "ARCX:SPY", "SPY", "USD", "instrument_id", id="empty-id"),
+        pytest.param("ins", "spy", "SPY", "USD", "requires", id="canonical"),
+        pytest.param("ins", "ARCX:SPY", "spy", "USD", "uppercase", id="source-case"),
+        pytest.param("ins", "ARCX:SPY", "SPY", "EUR", "USD", id="currency"),
+    ],
+)
+def test_GOV_026_validates_static_twelve_data_instrument_mapping(
+    instrument_id: str,
+    canonical_symbol: str,
+    source_symbol: str,
+    currency: str,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        TwelveDataInstrument(
+            instrument_id=instrument_id,
+            canonical_symbol=canonical_symbol,
+            source_symbol=source_symbol,
+            currency=currency,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("response", "expected_status", "expected_message"),
+    [
+        pytest.param(
+            httpx.Response(200, json=_success_payload()),
+            "ok",
+            None,
+            id="PRV-001-ok",
+        ),
+        pytest.param(
+            httpx.Response(401),
+            "not_configured",
+            "ProviderAuthenticationError",
+            id="PRV-008-auth",
+        ),
+        pytest.param(
+            httpx.Response(503),
+            "down",
+            "ProviderUnavailableError",
+            id="PRV-007-unavailable",
+        ),
+    ],
+)
+async def test_PRV_001_007_008_healthcheck_classifies_live_provider_status(
+    response: httpx.Response,
+    expected_status: str,
+    expected_message: str | None,
+) -> None:
+    provider = _provider(transport=httpx.MockTransport(lambda request: response))
+    try:
+        health = await provider.healthcheck()
+    finally:
+        await provider.aclose()
+
+    assert health.status == expected_status
+    assert health.message == expected_message
+
+
+@pytest.mark.asyncio
+async def test_PRV_001_rejects_unsupported_query_and_unknown_instrument_before_returning_data() -> (
+    None
+):
+    provider = _provider(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json=_success_payload(), request=request)
+        )
+    )
+    try:
+        with pytest.raises(UnsupportedCapabilityError, match="raw daily"):
+            await provider.fetch_bars(
+                _bar_query().model_copy(update={"interval": Interval.W1}),
+                CONTEXT,
+            )
+        with pytest.raises(UnsupportedCapabilityError, match="configured for instrument"):
+            await provider.fetch_bars(
+                _bar_query().model_copy(update={"instrument_ids": ["ins_unknown"]}),
+                CONTEXT,
+            )
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.asyncio
+async def test_PRV_001_handles_empty_business_window_without_an_upstream_request() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json=_success_payload(), request=request)
+
+    provider = _provider(transport=httpx.MockTransport(handler))
+    query = _bar_query().model_copy(
+        update={
+            "start": datetime(2026, 7, 24, 4, tzinfo=UTC),
+            "end": datetime(2026, 7, 23, 4, tzinfo=UTC),
+        }
+    )
+    try:
+        page = await provider.fetch_bars(query, CONTEXT)
+    finally:
+        await provider.aclose()
+
+    assert page.items == []
+    assert page.complete is True
+    assert calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        pytest.param({"meta": {}, "values": []}, "symbol", id="meta-symbol"),
+        pytest.param(
+            {"meta": {"symbol": "SPY", "interval": "1w", "currency": "USD"}, "values": []},
+            "interval",
+            id="meta-interval",
+        ),
+        pytest.param(
+            {"meta": {"symbol": "SPY", "interval": "1day", "currency": "EUR"}, "values": []},
+            "currency",
+            id="meta-currency",
+        ),
+        pytest.param(
+            {"meta": {"symbol": "SPY", "interval": "1day", "currency": "USD"}, "values": {}},
+            "missing meta or values",
+            id="values-shape",
+        ),
+    ],
+)
+async def test_PRV_020_rejects_schema_drift_before_normalization(
+    payload: dict[str, object], message: str
+) -> None:
+    provider = _provider(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json=payload, request=request)
+        )
+    )
+    try:
+        with pytest.raises(ProviderSchemaError, match=message):
+            await provider.fetch_bars(_bar_query(), CONTEXT)
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.asyncio
+async def test_PRV_007_stops_retrying_when_retry_after_exceeds_the_request_deadline() -> None:
+    calls = 0
+
+    async def must_not_sleep(_: float) -> None:
+        raise AssertionError("a retry beyond the deadline must not sleep")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(429, headers={"Retry-After": "30"}, request=request)
+
+    provider = _provider(transport=httpx.MockTransport(handler), sleeper=must_not_sleep)
+    tight_context = CONTEXT.model_copy(update={"deadline_at": NOW + timedelta(seconds=1)})
+    try:
+        with pytest.raises(ProviderRateLimitError):
+            await provider.fetch_bars(_bar_query(), tight_context)
+    finally:
+        await provider.aclose()
+
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_PRV_001_rejects_non_bar_dataset_for_production_role() -> None:
+    provider = _provider(transport=httpx.MockTransport(lambda request: httpx.Response(200)))
+    try:
+        with pytest.raises(UnsupportedCapabilityError, match="daily bars"):
+            provider.assert_production_dataset_supported(Dataset.NEWS)
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.asyncio
+async def test_PRV_001_exposes_effective_dated_instrument_contracts_for_bar_storage() -> None:
+    provider = _provider(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200)),
+        instruments=[SPY, QQQ, DIA],
+    )
+    try:
+        instruments = provider.instrument_contracts(fetched_at=NOW)
+    finally:
+        await provider.aclose()
+
+    assert [
+        (item.local_symbol, item.venue_mic, item.valid_from.isoformat()) for item in instruments
+    ] == [
+        ("SPY", "ARCX", "1993-01-22"),
+        ("QQQ", "XNAS", "1999-03-10"),
+        ("DIA", "ARCX", "1998-01-14"),
+    ]
+    assert all(item.asset_class.value == "etf" for item in instruments)
+    assert all(item.source.retrieved_at == NOW for item in instruments)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("code", "error_type"),
+    [
+        pytest.param(401, ProviderAuthenticationError, id="PRV-008-payload-401"),
+        pytest.param(403, ProviderAuthorizationError, id="PRV-008-payload-403"),
+        pytest.param(429, ProviderRateLimitError, id="PRV-007-payload-429"),
+        pytest.param(503, ProviderUnavailableError, id="PRV-007-payload-503"),
+        pytest.param("api_key", ProviderAuthenticationError, id="PRV-008-payload-api-key"),
+        pytest.param(
+            "permission_denied", ProviderAuthorizationError, id="PRV-008-payload-permission"
+        ),
+        pytest.param("rate_limit", ProviderRateLimitError, id="PRV-007-payload-rate-limit"),
+        pytest.param("unexpected", ProviderSchemaError, id="PRV-020-payload-unknown"),
+    ],
+)
+async def test_PRV_007_008_020_classifies_twelve_data_error_payloads(
+    code: int | str, error_type: type[ProviderError]
+) -> None:
+    payload = {"status": "error", "code": code, "message": "provider response"}
+    provider = _provider(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json=payload, request=request)
+        )
+    )
+    try:
+        with pytest.raises(error_type):
+            await provider.fetch_bars(_bar_query(), CONTEXT)
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.asyncio
+async def test_PRV_009_rejects_non_object_json_and_non_object_value_rows() -> None:
+    payloads: list[object] = [
+        ["not-an-object"],
+        {"meta": {"symbol": "SPY", "interval": "1day", "currency": "USD"}, "values": ["bad-row"]},
+    ]
+    provider = _provider(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json=payloads.pop(0), request=request)
+        )
+    )
+    try:
+        with pytest.raises(ProviderSchemaError, match="non-object JSON"):
+            await provider.fetch_bars(_bar_query(), CONTEXT)
+        with pytest.raises(ProviderSchemaError, match="contain objects"):
+            await provider.fetch_bars(_bar_query(), CONTEXT)
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.asyncio
+async def test_PRV_009_quarantines_invalid_date_and_non_finite_ohlcv() -> None:
+    provider = _provider(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json=_success_payload(
+                    values=[
+                        {
+                            "datetime": "not-a-date",
+                            "open": "610",
+                            "high": "615",
+                            "low": "609",
+                            "close": "614",
+                        },
+                        {
+                            "datetime": "2026-07-22",
+                            "open": "NaN",
+                            "high": "615",
+                            "low": "609",
+                            "close": "614",
+                        },
+                    ]
+                ),
+                request=request,
+            )
+        )
+    )
+    try:
+        page = await provider.fetch_bars(_bar_query(), CONTEXT)
+    finally:
+        await provider.aclose()
+
+    assert page.items == []
+    assert [warning.code for warning in page.warnings] == [
+        "PROVIDER_RECORD_QUARANTINED",
+        "PROVIDER_RECORD_QUARANTINED",
+    ]

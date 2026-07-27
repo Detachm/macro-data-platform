@@ -10,10 +10,10 @@ import httpx
 from pydantic import SecretStr
 
 from macro_platform.config import Settings
-from macro_platform.governance.source_policy import SourcePolicy
 from macro_platform.providers.registry import ProviderRegistry
 from macro_platform.providers.us.fixture import UsFixtureProvider, register_us_provider_roles
 from macro_platform.providers.us.twelve_data import (
+    TWELVE_DATA_DEFAULT_INSTRUMENTS,
     TwelveDataDailyBarsProvider,
     TwelveDataInstrument,
     register_us_twelve_data_provider_roles,
@@ -27,9 +27,8 @@ def create_us_provider_registry(
     *,
     app_env: AppEnvironment,
     provider_mode: UsProviderMode,
-    source_policy: SourcePolicy,
     api_key: SecretStr | None = None,
-    live_instruments: Sequence[TwelveDataInstrument] = (),
+    live_instruments: Sequence[TwelveDataInstrument] = TWELVE_DATA_DEFAULT_INSTRUMENTS,
     cursor_signing_secret: str | None = None,
     client: httpx.AsyncClient | None = None,
     clock: Callable[[], datetime] | None = None,
@@ -44,8 +43,6 @@ def create_us_provider_registry(
 
     if app_env == "production" and provider_mode != "live":
         raise ValueError("production US provider mode must be live")
-    if provider_mode == "live" and not source_policy.production_enforced:
-        raise ValueError("live Twelve Data provider requires an enforced source policy")
 
     registry = ProviderRegistry()
     if provider_mode == "fixture":
@@ -64,7 +61,6 @@ def create_us_provider_registry(
     live_provider = TwelveDataDailyBarsProvider(
         api_key=api_key,
         instruments=live_instruments,
-        source_policy=source_policy,
         client=client,
         cursor_signing_secret=cursor_signing_secret,
         clock=clock,
@@ -76,8 +72,7 @@ def create_us_provider_registry(
 def create_us_provider_registry_from_settings(
     settings: Settings,
     *,
-    source_policy: SourcePolicy,
-    live_instruments: Sequence[TwelveDataInstrument] = (),
+    live_instruments: Sequence[TwelveDataInstrument] = TWELVE_DATA_DEFAULT_INSTRUMENTS,
     client: httpx.AsyncClient | None = None,
     clock: Callable[[], datetime] | None = None,
     fixture_name: str = "success",
@@ -87,7 +82,6 @@ def create_us_provider_registry_from_settings(
     return create_us_provider_registry(
         app_env=settings.app_env,
         provider_mode=settings.us_provider_mode,
-        source_policy=source_policy,
         api_key=settings.twelve_data_api_key,
         live_instruments=live_instruments,
         cursor_signing_secret=(
