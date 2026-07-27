@@ -40,6 +40,13 @@
 
 回滚方案：在尚未有 production 数据时可回滚本 migration；进入共享环境后仅停止新写入并新增 forward migration，保留既有报告审计链。
 
+## 上线方案
+
+1. CI 先在空 PostgreSQL 与从 `0002` 升级的临时 PostgreSQL 上执行 migration/repository contracts；只有一个 Alembic head 时才允许部署。
+2. 生产先执行 migration，再启用 production app 的 PostgreSQL repository 与 checkpointed worker；fixture/empty repository 不得作为 production fallback。
+3. 首次运行只处理显式的单个 report date，核对 provider run、checkpoint、report snapshot 和 delivery attempt 的关联后再开启常规调度。
+4. 若发现异常，停止 worker 新写入并使用 date-scoped、幂等的 replay 恢复；不得回滚或重写已落库的审计记录。需要 schema 修正时仅提交 forward migration。
+
 ## 验证
 
 - `DB-001`、`DB-002`：空库和 0002 数据库均可升级到新 head。

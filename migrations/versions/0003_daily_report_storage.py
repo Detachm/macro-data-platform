@@ -27,6 +27,13 @@ def upgrade() -> None:
             server_default=sa.text("'{}'::jsonb"),
         ),
     )
+    op.add_column(
+        "provider_runs",
+        sa.Column("attempt_no", sa.Integer(), nullable=False, server_default="1"),
+    )
+    op.add_column(
+        "provider_runs", sa.Column("lease_expires_at", sa.DateTime(timezone=True), nullable=True)
+    )
     op.create_index(
         "uq_provider_runs_idempotency", "provider_runs", ["idempotency_key"], unique=True
     )
@@ -277,5 +284,7 @@ def downgrade() -> None:
         op.drop_index(f"ix_{table_name}_source_record", table_name=table_name)
         op.drop_index(f"ix_{table_name}_source_provider", table_name=table_name)
     op.drop_index("uq_provider_runs_idempotency", table_name="provider_runs")
+    op.drop_column("provider_runs", "lease_expires_at")
+    op.drop_column("provider_runs", "attempt_no")
     op.drop_column("provider_runs", "request_payload")
     op.drop_column("provider_runs", "idempotency_key")

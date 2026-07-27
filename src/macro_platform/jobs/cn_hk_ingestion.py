@@ -65,7 +65,9 @@ class CnHkFixtureIngestHandler:
             raise ValueError("CN/HK fixture ingestion currently supports market_observations only")
         if request.regions != self._provider.region_set():
             raise ValueError("ingest request regions do not match provider")
-        run_id = self._durable_run_id or uuid4()
+        if self._durable_run_id is None:
+            raise RuntimeError("CN/HK ingestion requires a durable run ID from JobRunner")
+        run_id = self._durable_run_id
         self._durable_run_id = None
         await checkpoints.reject_unsupported_historical_pit(
             database,
@@ -98,7 +100,7 @@ class CnHkFixtureIngestHandler:
         except ProviderCursorError as expired_cursor_error:
             async with database.session() as session:
                 recovered_watermark, _ = await checkpoints.recover_committed_watermark(
-                    IngestionCheckpointRepository(session),
+                    IngestionCheckpointRepository(session, ingestion_run_id=run_id),
                     provider_role=request.provider_role,
                     dataset=request.dataset,
                     region=self._provider.region.value,

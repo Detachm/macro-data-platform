@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from typing import Any, Protocol
-from uuid import UUID, uuid4
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any, Literal, Protocol
+from uuid import UUID
 
 from sqlalchemy import delete, func, literal, or_, select, union_all, update
 from sqlalchemy.dialects.postgresql import insert
@@ -30,7 +32,7 @@ from macro_platform.contracts.market import (
 )
 from macro_platform.contracts.news import ContentMode, NewsEvent, NewsQuery
 from macro_platform.contracts.provider import Dataset, IngestJobRequest, IngestJobResult
-from macro_platform.normalization.common import stable_id, utc_now
+from macro_platform.normalization.common import stable_id
 from macro_platform.storage.database import Database
 from macro_platform.storage.models import (
     DailyReportRow,
@@ -112,7 +114,7 @@ class EmptyDataRepository:
 class NormalizedFactRepository:
     """Transaction-scoped writes for normalized facts and their provenance payloads."""
 
-    def __init__(self, session: AsyncSession, *, ingestion_run_id: UUID | None = None) -> None:
+    def __init__(self, session: AsyncSession, *, ingestion_run_id: UUID) -> None:
         self._session = session
         self._ingestion_run_id = ingestion_run_id
 
@@ -653,17 +655,28 @@ class PostgresDataRepository:
         return event
 
 
+@dataclass(frozen=True)
+class IngestionRunLease:
+    run_id: UUID
+    attempt_no: int
+
+
 class IngestionRunRepository:
     """Durable ingestion-run idempotency separate from worker orchestration."""
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def reserve_run(
-        self, request: IngestJobRequest, *, idempotency_key: str
-    ) -> tuple[UUID, bool]:
+    async def acquire_run(
+        self,
+        request: IngestJobRequest,
+        *,
+        idempotency_key: str,
+        run_id: UUID,
+        now: datetime,
+        lease_expires_at: datetime,
+    ) -> tuple[IngestionRunLease | None, UUID]:
         request_payload = request.model_dump(mode="json")
-        run_id = uuid4()
         inserted = await self._session.execute(
             insert(ProviderRunRow)
             .values(
@@ -672,15 +685,17 @@ class IngestionRunRepository:
                 provider_role=request.provider_role,
                 dataset=request.dataset.value,
                 status="running",
-                started_at=utc_now(),
+                attempt_no=1,
+                lease_expires_at=lease_expires_at,
+                started_at=now,
                 request_payload=request_payload,
             )
             .on_conflict_do_nothing(index_elements=(ProviderRunRow.idempotency_key,))
-            .returning(ProviderRunRow.run_id)
+            .returning(ProviderRunRow.run_id, ProviderRunRow.attempt_no)
         )
-        reserved = inserted.scalar_one_or_none()
+        reserved = inserted.one_or_none()
         if reserved is not None:
-            return reserved, True
+            return IngestionRunLease(run_id=reserved.run_id, attempt_no=reserved.attempt_no), run_id
         existing = await self._session.scalar(
             select(ProviderRunRow).where(ProviderRunRow.idempotency_key == idempotency_key)
         )
@@ -688,12 +703,66 @@ class IngestionRunRepository:
             raise RuntimeError("ingestion-run idempotency conflict did not return an existing run")
         if existing.request_payload != request_payload:
             raise ValueError("ingestion-run idempotency key was reused for a different request")
-        return existing.run_id, False
+        return None, existing.run_id
 
-    async def complete_run(self, result: IngestJobResult) -> None:
-        await self._session.execute(
+    async def claim_recoverable_run(
+        self,
+        run_id: UUID,
+        *,
+        now: datetime,
+        lease_expires_at: datetime,
+    ) -> IngestionRunLease | None:
+        claimed = await self._session.execute(
             update(ProviderRunRow)
-            .where(ProviderRunRow.run_id == result.run_id)
+            .where(
+                ProviderRunRow.run_id == run_id,
+                or_(
+                    ProviderRunRow.status.in_(("failed", "retry_wait")),
+                    (
+                        (ProviderRunRow.status == "running")
+                        & (
+                            (ProviderRunRow.lease_expires_at.is_(None))
+                            | (ProviderRunRow.lease_expires_at <= now)
+                        )
+                    ),
+                ),
+            )
+            .values(
+                status="running",
+                attempt_no=ProviderRunRow.attempt_no + 1,
+                lease_expires_at=lease_expires_at,
+                started_at=now,
+                finished_at=None,
+                error_code=None,
+            )
+            .returning(ProviderRunRow.run_id, ProviderRunRow.attempt_no)
+        )
+        row = claimed.one_or_none()
+        return (
+            None if row is None else IngestionRunLease(run_id=row.run_id, attempt_no=row.attempt_no)
+        )
+
+    async def renew_lease(self, lease: IngestionRunLease, *, lease_expires_at: datetime) -> bool:
+        renewed = await self._session.execute(
+            update(ProviderRunRow)
+            .where(
+                ProviderRunRow.run_id == lease.run_id,
+                ProviderRunRow.attempt_no == lease.attempt_no,
+                ProviderRunRow.status == "running",
+            )
+            .values(lease_expires_at=lease_expires_at)
+            .returning(ProviderRunRow.run_id)
+        )
+        return renewed.scalar_one_or_none() is not None
+
+    async def complete_run(self, result: IngestJobResult, *, lease: IngestionRunLease) -> bool:
+        completed = await self._session.execute(
+            update(ProviderRunRow)
+            .where(
+                ProviderRunRow.run_id == result.run_id,
+                ProviderRunRow.attempt_no == lease.attempt_no,
+                ProviderRunRow.status == "running",
+            )
             .values(
                 status=result.status,
                 started_at=result.started_at,
@@ -702,6 +771,7 @@ class IngestionRunRepository:
                 records_accepted=result.records_accepted,
                 records_rejected=result.records_rejected,
                 error_code=result.error_code,
+                lease_expires_at=None,
                 details={
                     "records_inserted": result.records_inserted,
                     "records_updated": result.records_updated,
@@ -711,7 +781,22 @@ class IngestionRunRepository:
                     "warnings": [warning.model_dump(mode="json") for warning in result.warnings],
                 },
             )
+            .returning(ProviderRunRow.run_id)
         )
+        return completed.scalar_one_or_none() is not None
+
+    async def fail_run(self, lease: IngestionRunLease, *, error_code: str) -> bool:
+        failed = await self._session.execute(
+            update(ProviderRunRow)
+            .where(
+                ProviderRunRow.run_id == lease.run_id,
+                ProviderRunRow.attempt_no == lease.attempt_no,
+                ProviderRunRow.status == "running",
+            )
+            .values(status="failed", error_code=error_code, lease_expires_at=None)
+            .returning(ProviderRunRow.run_id)
+        )
+        return failed.scalar_one_or_none() is not None
 
     async def load_run(self, run_id: UUID) -> ProviderRunRow | None:
         return await self._session.get(ProviderRunRow, run_id)
@@ -770,7 +855,15 @@ class ReportRepository:
             raise ValueError(
                 "report input snapshot identity is already owned by another snapshot ID"
             )
-        if existing.payload != snapshot.payload:
+        if (
+            existing.snapshot_version != snapshot.snapshot_version
+            or existing.report_date != snapshot.report_date
+            or existing.as_of != snapshot.as_of
+            or existing.cutoff_at != snapshot.cutoff_at
+            or existing.fingerprint_sha256 != snapshot.fingerprint_sha256
+            or existing.fact_ids != snapshot.fact_ids
+            or existing.payload != snapshot.payload
+        ):
             raise ValueError("report input snapshot is immutable")
         return False
 
@@ -819,7 +912,16 @@ class ReportRepository:
         existing = await self._session.get(DailyReportRow, report.report_id)
         if existing is None:
             raise ValueError("report date/version is already owned by another report ID")
-        if existing.payload != report.payload:
+        if (
+            existing.report_date != report.report_date
+            or existing.report_version != report.report_version
+            or existing.contract_version != report.contract_version
+            or existing.input_snapshot_id != report.input_snapshot_id
+            or existing.status != report.status
+            or existing.publication_decision != report.publication_decision
+            or existing.generated_at != report.generated_at
+            or existing.payload != report.payload
+        ):
             raise ValueError("daily report is immutable")
         return False
 
@@ -859,13 +961,11 @@ class ReportRepository:
         *,
         delivery_id: UUID,
         expected_attempt_no: int,
-        status: str,
+        status: Literal["failed", "retry_wait", "succeeded"],
         response_payload: dict[str, Any] | None,
     ) -> bool:
         if expected_attempt_no < 1:
             raise ValueError("expected delivery attempt number must be positive")
-        if status not in {"failed", "retry_wait", "succeeded"}:
-            raise ValueError("delivery attempt can only complete a pending attempt")
         updated = await self._session.execute(
             update(DeliveryAttemptRow)
             .where(

@@ -277,6 +277,10 @@ class ProviderRunRow(Base):
     provider_role: Mapped[str] = mapped_column(String(64))
     dataset: Mapped[str] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(24))
+    attempt_no: Mapped[int] = mapped_column(Integer, default=1)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     records_fetched: Mapped[int] = mapped_column(Integer, default=0)

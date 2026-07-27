@@ -353,7 +353,7 @@ def _production_policy() -> ProductionSourcePolicy:
     )
 
 
-async def test_rep_027_migration_upgrades_0002_to_current_schema(database: Database) -> None:
+async def test_db_002_migration_upgrades_0002_to_current_schema(database: Database) -> None:
     async with database.session() as session:
         revision = await session.scalar(text("SELECT version_num FROM alembic_version"))
         tables = set(
@@ -417,6 +417,12 @@ async def test_rep_027_001_report_and_delivery_replays_are_idempotent(
         repository = ReportRepository(session)
         assert not await repository.put_input_snapshot(snapshot)
         assert not await repository.put_report(report)
+        with pytest.raises(ValueError, match="snapshot is immutable"):
+            await repository.put_input_snapshot(
+                snapshot.model_copy(update={"report_date": date(2026, 7, 25)})
+            )
+        with pytest.raises(ValueError, match="daily report is immutable"):
+            await repository.put_report(report.model_copy(update={"report_version": "v2"}))
         replay = delivery.model_copy(update={"delivery_id": uuid4()})
         assert not await repository.reserve_delivery_attempt(replay)
         recovered_delivery = await repository.load_delivery_attempt_for_key(
@@ -503,10 +509,14 @@ async def test_rep_027_002_ingestion_run_and_report_recover_after_restart(
     snapshot, report, delivery = _report_commands(token)
 
     async with UnitOfWork(database).transaction() as session:
-        run_id, reserved = await IngestionRunRepository(session).reserve_run(
-            request, idempotency_key=f"ingest-{token}"
+        lease, run_id = await IngestionRunRepository(session).acquire_run(
+            request,
+            idempotency_key=f"ingest-{token}",
+            run_id=uuid4(),
+            now=NOW,
+            lease_expires_at=NOW + timedelta(seconds=1),
         )
-        assert reserved
+        assert lease is not None
         report_repository = ReportRepository(session)
         assert await report_repository.put_input_snapshot(snapshot)
         assert await report_repository.put_report(report)
@@ -515,15 +525,25 @@ async def test_rep_027_002_ingestion_run_and_report_recover_after_restart(
     # Simulate a worker restart before it can acknowledge the running ingestion.
     async with UnitOfWork(database).transaction() as session:
         run_repository = IngestionRunRepository(session)
-        replay_run_id, reserved = await run_repository.reserve_run(
-            request, idempotency_key=f"ingest-{token}"
+        replay_lease, replay_run_id = await run_repository.acquire_run(
+            request,
+            idempotency_key=f"ingest-{token}",
+            run_id=uuid4(),
+            now=NOW,
+            lease_expires_at=NOW + timedelta(seconds=1),
         )
-        assert not reserved
+        assert replay_lease is None
         assert replay_run_id == run_id
         persisted = await run_repository.load_run(run_id)
         assert persisted is not None
         assert persisted.status == "running"
-        await run_repository.complete_run(
+        recovered_lease = await run_repository.claim_recoverable_run(
+            run_id,
+            now=NOW + timedelta(seconds=2),
+            lease_expires_at=NOW + timedelta(seconds=3),
+        )
+        assert recovered_lease is not None
+        assert await run_repository.complete_run(
             IngestJobResult(
                 run_id=run_id,
                 status="succeeded",
@@ -536,7 +556,8 @@ async def test_rep_027_002_ingestion_run_and_report_recover_after_restart(
                 records_rejected=0,
                 records_inserted=1,
                 records_updated=0,
-            )
+            ),
+            lease=recovered_lease,
         )
 
     restarted = Database(postgresql_url)
@@ -632,10 +653,22 @@ async def test_db_004_concurrent_page_replay_commits_one_fact_and_checkpoint(
         accepted_record_ids=[observation.source.provider_record_id],
     )
     checkpoints = IngestionCheckpointService()
+    request = _ingest_request().model_copy(
+        update={"provider_role": page.provider_role, "dataset": page.dataset}
+    )
+    async with UnitOfWork(database).transaction() as session:
+        lease, _ = await IngestionRunRepository(session).acquire_run(
+            request,
+            idempotency_key=f"concurrent-run-{token}",
+            run_id=uuid4(),
+            now=NOW,
+            lease_expires_at=NOW + timedelta(minutes=1),
+        )
+    assert lease is not None
 
     async def commit_once() -> bool:
         async with UnitOfWork(database).transaction() as session:
-            repository = IngestionCheckpointRepository(session)
+            repository = IngestionCheckpointRepository(session, ingestion_run_id=lease.run_id)
 
             async def write_records(_: object) -> None:
                 await repository.upsert_market_observation(observation)
@@ -954,7 +987,15 @@ async def test_sto_027_macro_release_replay_is_idempotent_and_ties_are_determini
     )
 
     async with UnitOfWork(database).transaction() as session:
-        repository = NormalizedFactRepository(session)
+        lease, _ = await IngestionRunRepository(session).acquire_run(
+            _ingest_request().model_copy(update={"dataset": Dataset.MACRO_RELEASES}),
+            idempotency_key=f"release-replay-run-{token}",
+            run_id=uuid4(),
+            now=NOW,
+            lease_expires_at=NOW + timedelta(minutes=1),
+        )
+        assert lease is not None
+        repository = NormalizedFactRepository(session, ingestion_run_id=lease.run_id)
         await repository.upsert_macro_series(series)
         await repository.upsert_macro_release(base)
         await repository.upsert_macro_release(base)

@@ -575,7 +575,7 @@ async def test_sto_027_macro_release_keeps_pit_versions_without_in_place_update(
     session = _WriteSession(
         [release.release_id, None, None], scalars=[release.source.checksum_sha256]
     )
-    repository = NormalizedFactRepository(session)  # type: ignore[arg-type]
+    repository = NormalizedFactRepository(session, ingestion_run_id=uuid4())  # type: ignore[arg-type]
 
     assert repository.session is session
     await repository.upsert_macro_release(release)
@@ -610,8 +610,9 @@ async def test_sto_027_macro_release_replay_with_same_checksum_skips_revision_in
     )
     session = _WriteSession([release.release_id, None], scalars=[release.source.checksum_sha256])
 
-    await NormalizedFactRepository(session).upsert_macro_release(release)  # type: ignore[arg-type]
-    await NormalizedFactRepository(session).upsert_macro_release(release)  # type: ignore[arg-type]
+    repository = NormalizedFactRepository(session, ingestion_run_id=uuid4())  # type: ignore[arg-type]
+    await repository.upsert_macro_release(release)
+    await repository.upsert_macro_release(release)
 
     assert session.statement_count == 2
 

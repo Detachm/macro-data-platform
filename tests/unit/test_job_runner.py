@@ -24,6 +24,7 @@ from macro_platform.jobs import runner as runner_module
 from macro_platform.jobs.ingestion_checkpoint import IngestionCheckpointService
 from macro_platform.jobs.runner import JobRunner
 from macro_platform.storage.database import Database
+from macro_platform.storage.repositories import IngestionRunLease
 
 
 def _request() -> IngestJobRequest:
@@ -138,11 +139,19 @@ class _WaitingRunRepository:
     def __init__(self, session: object) -> None:
         self._session = session
 
-    async def reserve_run(
-        self, request: IngestJobRequest, *, idempotency_key: str
-    ) -> tuple[object, bool]:
+    async def acquire_run(
+        self,
+        request: IngestJobRequest,
+        *,
+        idempotency_key: str,
+        run_id: object,
+        now: object,
+        lease_expires_at: object,
+    ) -> tuple[IngestionRunLease | None, object]:
         self.__class__.reservations += 1
-        return self.run_id, self.__class__.reservations == 1
+        if self.__class__.reservations == 1:
+            return IngestionRunLease(run_id=self.run_id, attempt_no=1), self.run_id
+        return None, self.run_id
 
     async def load_completed_result(self, run_id: object) -> IngestJobResult | None:
         assert run_id == self.run_id
@@ -152,8 +161,23 @@ class _WaitingRunRepository:
         assert run_id == self.run_id
         return SimpleNamespace(status="running")
 
-    async def complete_run(self, result: IngestJobResult) -> None:
+    async def claim_recoverable_run(
+        self, run_id: object, *, now: object, lease_expires_at: object
+    ) -> IngestionRunLease | None:
+        assert run_id == self.run_id
+        return None
+
+    async def renew_lease(self, lease: IngestionRunLease, *, lease_expires_at: object) -> bool:
+        return lease.run_id == self.run_id
+
+    async def complete_run(self, result: IngestJobResult, *, lease: IngestionRunLease) -> bool:
+        assert lease.run_id == self.run_id
         self.__class__.completed = result
+        return True
+
+    async def fail_run(self, lease: IngestionRunLease, *, error_code: str) -> bool:
+        assert lease.run_id == self.run_id
+        return True
 
 
 def _approved_policy(*, retention_rule: RetentionRule) -> ProductionSourcePolicy:
