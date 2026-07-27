@@ -7,6 +7,7 @@ from uuid import UUID
 from pydantic import AwareDatetime, Field, model_validator
 
 from macro_platform.contracts.common import StrictModel
+from macro_platform.contracts.report import ReportValidationIssue
 
 ReportLifecycleStatus = Literal["draft", "generated", "failed", "validated", "superseded"]
 
@@ -69,6 +70,7 @@ class StoredDailyReport(StrictModel):
     payload: dict[str, Any]
     lifecycle_status: ReportLifecycleStatus = "generated"
     generation_id: UUID | None = None
+    validation_errors: list[ReportValidationIssue] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_payload_identity(self) -> StoredDailyReport:

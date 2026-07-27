@@ -19,6 +19,13 @@ from macro_platform.services.report_generator import (
     ReportGenerationService,
     ReportPromptBuilder,
 )
+from macro_platform.services.report_validation import (
+    ReportFallbackBuilder,
+    ReportFallbackStore,
+    ReportValidationError,
+    ReportValidationService,
+    ReportValidator,
+)
 
 __all__ = [
     "DataUnavailableError",
@@ -36,4 +43,9 @@ __all__ = [
     "ReportGenerationError",
     "ReportGenerationService",
     "ReportPromptBuilder",
+    "ReportFallbackBuilder",
+    "ReportFallbackStore",
+    "ReportValidationError",
+    "ReportValidationService",
+    "ReportValidator",
 ]

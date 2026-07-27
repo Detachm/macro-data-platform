@@ -137,10 +137,10 @@ def _ingest_request(region: Region) -> IngestJobRequest:
     )
 
 
-async def test_db_001_empty_database_migrates_to_0004(database: Database) -> None:
+async def test_db_001_empty_database_migrates_to_0005(database: Database) -> None:
     async with database.session() as session:
         revision = await session.scalar(text("SELECT version_num FROM alembic_version"))
-    assert revision == "0004"
+    assert revision == "0005"
 
 
 @pytest.mark.parametrize("region", [Region.CN, Region.HK])

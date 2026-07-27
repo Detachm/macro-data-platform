@@ -67,6 +67,15 @@ class ReportQualityIssue(StrictModel):
     reason: str = Field(min_length=1)
 
 
+class ReportValidationIssue(StrictModel):
+    code: str = Field(min_length=1)
+    message: str = Field(min_length=1)
+    severity: Literal["error", "warning"] = "error"
+    input_id: str | None = None
+    fact_id: str | None = None
+    source_ref_id: str | None = None
+
+
 class ReportDataQuality(StrictModel):
     status: ReportStatus
     missing_required_inputs: list[ReportQualityIssue] = Field(default_factory=list)
@@ -87,6 +96,18 @@ class ReportSourceReference(StrictModel):
     external_llm_allowed: bool | None = None
 
 
+class ReportClaim(StrictModel):
+    """Machine-readable claim that must agree with its approved input fact."""
+
+    claim_type: Literal["number", "date", "direction", "text"]
+    fact_id: str = Field(min_length=1)
+    value: Any
+    unit: str | None = None
+    direction: str | None = None
+    period_start: date | None = None
+    period_end: date | None = None
+
+
 class ReportSection(StrictModel):
     section_id: str = Field(min_length=1)
     status: ReportSectionStatus
@@ -96,6 +117,7 @@ class ReportSection(StrictModel):
     fact_ids: list[str] = Field(default_factory=list)
     source_ref_ids: list[str] = Field(default_factory=list)
     items: list[dict[str, Any]] = Field(default_factory=list)
+    claims: list[ReportClaim] = Field(default_factory=list)
     lookahead_days: int | None = Field(default=None, ge=0)
     issue_codes: list[str] = Field(default_factory=list)
     reason_code: str | None = None
@@ -154,6 +176,9 @@ class DailyReport(StrictModel):
 
         fact_ids = set(self.input_snapshot.fact_ids)
         referenced_fact_ids = _nested_reference_ids(self.sections, "fact_ids")
+        referenced_fact_ids.update(
+            claim.fact_id for section in self.sections.values() for claim in section.claims
+        )
         if unknown_facts := referenced_fact_ids - fact_ids:
             raise ValueError(f"report references unknown input facts: {sorted(unknown_facts)}")
 

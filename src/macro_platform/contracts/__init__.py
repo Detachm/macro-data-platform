@@ -41,7 +41,13 @@ from macro_platform.contracts.provider import (
     ProviderHealth,
     ProviderPage,
 )
-from macro_platform.contracts.report import DailyReport, ReportSection, ReportSourceReference
+from macro_platform.contracts.report import (
+    DailyReport,
+    ReportClaim,
+    ReportSection,
+    ReportSourceReference,
+    ReportValidationIssue,
+)
 
 __all__ = [
     "ApiError",
@@ -76,8 +82,10 @@ __all__ = [
     "ProviderCapabilities",
     "ProviderHealth",
     "ProviderPage",
+    "ReportClaim",
     "ReportSection",
     "ReportSourceReference",
+    "ReportValidationIssue",
     "Region",
     "SourceRef",
     "StrictModel",
