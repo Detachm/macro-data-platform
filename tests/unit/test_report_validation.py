@@ -332,6 +332,33 @@ def test_rpt_031_fallback_fails_closed_when_required_input_is_missing() -> None:
     assert not ReportValidator().validate(report, blocked_snapshot).publishable
 
 
+def test_rpt_029_fallback_fails_closed_when_snapshot_has_no_materialized_facts() -> None:
+    snapshot = _snapshot()
+    blocked_snapshot = snapshot.model_copy(
+        update={
+            "fact_ids": [],
+            "payload": {**snapshot.payload, "fact_ids": [], "facts": []},
+        }
+    )
+
+    report = ReportFallbackBuilder().build(
+        blocked_snapshot,
+        report_id="daily-report-fallback-no-facts",
+        report_version="fallback-v1",
+        generated_at=NOW,
+    )
+
+    assert report.status == "incomplete"
+    assert report.publication_decision == "not_published"
+    assert report.payload["data_quality"]["unavailable_inputs"] == [
+        {
+            "input_id": "report.facts",
+            "reason_code": "REQUIRED_FACTS_UNAVAILABLE",
+            "reason": "approved input snapshot contains no materialized report facts",
+        }
+    ]
+
+
 async def test_rpt_031_validation_service_persists_validated_state() -> None:
     snapshot = _snapshot()
     candidate = _stored_report(_success_payload())

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import signal
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, replace
@@ -34,6 +34,9 @@ class ScheduledTaskResult:
     task_id: str
     provider_role: str
     status: ScheduledTaskStatus
+    dataset: str | None = None
+    region: str | None = None
+    record_count: int = 0
     attempt_no: int = 1
     run_id: str | None = None
     error_code: str | None = None
@@ -59,6 +62,10 @@ class ReportDateLock(Protocol):
 
 class RetryableScheduledTaskError(RuntimeError):
     """A task failure that may be retried with bounded backoff."""
+
+
+class SchedulerNotConfiguredError(RuntimeError):
+    """The worker was started before its production schedule was defined."""
 
 
 class PostgresReportDateLock:
@@ -116,14 +123,24 @@ class ScheduledIngestionWorker:
         self._logger = structlog.get_logger("scheduled_ingestion_worker")
 
     async def run_for_date(self, report_date: date) -> ScheduledWorkerResult:
+        started = time.monotonic()
         async with self._report_date_lock.hold(report_date) as acquired:
             if not acquired:
                 result = ScheduledWorkerResult(report_date, "locked", ())
                 SCHEDULED_REPORT_RUNS.labels(status=result.status).inc()
                 await self._logger.ainfo(
                     "scheduled_report_locked",
+                    action="scheduled_report",
+                    run_id=None,
+                    provider_role=None,
+                    dataset=None,
+                    region=None,
                     report_date=report_date.isoformat(),
+                    attempt_no=None,
                     terminal=result.status,
+                    duration_ms=_duration_ms(started),
+                    record_count=0,
+                    error_code=None,
                 )
                 return result
 
@@ -133,8 +150,17 @@ class ScheduledIngestionWorker:
             SCHEDULED_REPORT_RUNS.labels(status=status).inc()
             await self._logger.ainfo(
                 "scheduled_report_finished",
+                action="scheduled_report",
+                run_id=None,
+                provider_role=None,
+                dataset=None,
+                region=None,
                 report_date=report_date.isoformat(),
+                attempt_no=None,
                 terminal=status,
+                duration_ms=_duration_ms(started),
+                record_count=sum(task.record_count for task in task_results),
+                error_code=None,
                 task_count=len(task_results),
             )
             return result
@@ -151,23 +177,31 @@ class ScheduledIngestionWorker:
 
     async def _run_task(self, task: ScheduledTask, report_date: date) -> ScheduledTaskResult:
         provider_role = _task_provider_role(task)
+        started = time.monotonic()
         for attempt_no in range(1, self._max_attempts + 1):
             try:
                 task_result = await task.run(report_date)
                 if task_result.task_id != task.task_id:
                     raise ValueError("scheduled task returned a mismatched task ID")
+                if task_result.status == "retryable" and attempt_no < self._max_attempts:
+                    await self._retry_task(
+                        task=task,
+                        report_date=report_date,
+                        provider_role=task_result.provider_role,
+                        attempt_no=attempt_no,
+                        error_code=task_result.error_code,
+                    )
+                    continue
                 result = replace(task_result, attempt_no=attempt_no)
             except RetryableScheduledTaskError as error:
                 if attempt_no < self._max_attempts:
-                    await self._logger.awarning(
-                        "scheduled_task_retrying",
-                        report_date=report_date.isoformat(),
-                        task_id=task.task_id,
+                    await self._retry_task(
+                        task=task,
+                        report_date=report_date,
                         provider_role=provider_role,
                         attempt_no=attempt_no,
                         error_code=type(error).__name__,
                     )
-                    await self._sleeper(self._retry_delay_seconds * (2 ** (attempt_no - 1)))
                     continue
                 result = ScheduledTaskResult(
                     task_id=task.task_id,
@@ -191,16 +225,47 @@ class ScheduledIngestionWorker:
             ).inc()
             await self._logger.ainfo(
                 "scheduled_task_finished",
+                action="scheduled_task",
                 report_date=report_date.isoformat(),
                 task_id=result.task_id,
                 provider_role=result.provider_role,
+                dataset=result.dataset,
+                region=result.region,
                 attempt_no=result.attempt_no,
                 run_id=result.run_id,
                 terminal=result.status,
+                duration_ms=_duration_ms(started),
+                record_count=result.record_count,
                 error_code=result.error_code,
             )
             return result
         raise AssertionError("retry loop must return a task result")
+
+    async def _retry_task(
+        self,
+        *,
+        task: ScheduledTask,
+        report_date: date,
+        provider_role: str,
+        attempt_no: int,
+        error_code: str | None,
+    ) -> None:
+        await self._logger.awarning(
+            "scheduled_task_retrying",
+            action="scheduled_task",
+            run_id=None,
+            provider_role=provider_role,
+            dataset=None,
+            region=None,
+            report_date=report_date.isoformat(),
+            task_id=task.task_id,
+            attempt_no=attempt_no,
+            terminal="retry_wait",
+            duration_ms=None,
+            record_count=0,
+            error_code=error_code,
+        )
+        await self._sleeper(self._retry_delay_seconds * (2 ** (attempt_no - 1)))
 
 
 def build_registered_tasks() -> tuple[ScheduledTask, ...]:
@@ -215,17 +280,28 @@ def build_registered_tasks() -> tuple[ScheduledTask, ...]:
 
 
 async def run_scheduler() -> None:
-    """Run the standalone worker process without inventing a production schedule."""
+    """Fail closed until production tasks and their report-date schedule exist."""
 
     logger = structlog.get_logger("scheduler")
-    stop = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for signal_name in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(signal_name, stop.set)
-
-    await logger.ainfo("scheduler_started", registered_jobs=len(build_registered_tasks()))
-    await stop.wait()
-    await logger.ainfo("scheduler_stopped")
+    registered_tasks = build_registered_tasks()
+    await logger.aerror(
+        "scheduler_not_configured",
+        action="scheduler_startup",
+        run_id=None,
+        provider_role=None,
+        dataset=None,
+        region=None,
+        report_date=None,
+        attempt_no=None,
+        terminal="blocked",
+        duration_ms=0,
+        record_count=0,
+        error_code="SCHEDULER_NOT_CONFIGURED",
+        registered_jobs=len(registered_tasks),
+    )
+    raise SchedulerNotConfiguredError(
+        "production scheduled tasks and report-date timing are not configured"
+    )
 
 
 def _task_provider_role(task: ScheduledTask) -> str:
@@ -255,6 +331,10 @@ def _report_date_lock_key(report_date: date) -> int:
         f"macro-data-platform:scheduled-report:{report_date.isoformat()}".encode()
     ).digest()
     return int.from_bytes(digest[:8], byteorder="big", signed=True)
+
+
+def _duration_ms(started: float) -> int:
+    return round((time.monotonic() - started) * 1000)
 
 
 def main() -> None:
