@@ -8,6 +8,8 @@ from pydantic import AwareDatetime, Field, model_validator
 
 from macro_platform.contracts.common import StrictModel
 
+ReportLifecycleStatus = Literal["draft", "generated", "failed", "validated", "superseded"]
+
 
 class ReportInputSnapshot(StrictModel):
     """Immutable, point-in-time input set used to generate a DailyReport version."""
@@ -31,7 +33,8 @@ class ReportInputSnapshot(StrictModel):
             "fingerprint_sha256": self.fingerprint_sha256,
             "fact_ids": self.fact_ids,
         }
-        if self.payload != expected:
+        identity = {key: self.payload.get(key) for key in expected}
+        if identity != expected:
             raise ValueError("snapshot payload must match storage identity and input facts")
         return self
 
@@ -64,6 +67,8 @@ class StoredDailyReport(StrictModel):
     publication_decision: Literal["published", "not_published"]
     generated_at: AwareDatetime
     payload: dict[str, Any]
+    lifecycle_status: ReportLifecycleStatus = "generated"
+    generation_id: UUID | None = None
 
     @model_validator(mode="after")
     def validate_payload_identity(self) -> StoredDailyReport:
@@ -136,6 +141,24 @@ class StoredDailyReport(StrictModel):
 
         visit(sections)
         return reference_ids
+
+
+class ReportGenerationAttempt(StrictModel):
+    """Auditable state and model trace for one generation attempt."""
+
+    generation_id: UUID
+    report_id: str = Field(min_length=1, max_length=128)
+    report_version: str = Field(min_length=1, max_length=64)
+    input_snapshot_id: str = Field(min_length=1, max_length=128)
+    lifecycle_status: ReportLifecycleStatus = "draft"
+    attempt_no: int = Field(default=1, ge=1)
+    prompt_version: str = Field(min_length=1, max_length=64)
+    model: str = Field(min_length=1, max_length=128)
+    model_parameters: dict[str, Any] = Field(default_factory=dict)
+    input_fingerprint_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    source_ref_ids: list[str] = Field(default_factory=list)
+    error_code: str | None = None
+    response_payload: dict[str, Any] | None = None
 
 
 class DeliveryAttempt(StrictModel):
