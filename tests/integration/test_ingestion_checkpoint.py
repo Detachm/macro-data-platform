@@ -24,6 +24,7 @@ from macro_platform.contracts.market import InstrumentQuery
 from macro_platform.contracts.provider import Dataset, FetchContext, IngestJobRequest
 from macro_platform.jobs.cn_baostock_ingestion import CnBaoStockIngestHandler
 from macro_platform.jobs.cn_hk_ingestion import CnHkFixtureIngestHandler
+from macro_platform.jobs.hk_xtquant_ingestion import HkXtQuantIngestHandler
 from macro_platform.jobs.ingestion_checkpoint import CommittedPage, IngestionCheckpointService
 from macro_platform.jobs.runner import JobRunner
 from macro_platform.jobs.us_twelve_data_ingestion import UsTwelveDataIngestHandler
@@ -31,6 +32,7 @@ from macro_platform.providers.base import ProviderCursorError, UnsupportedCapabi
 from macro_platform.providers.cn import CN_PROVIDER_ID, CnSyntheticProvider
 from macro_platform.providers.cn.baostock import BaoStockDailyBarsProvider, BaoStockInstrument
 from macro_platform.providers.hk import HK_PROVIDER_ID, HkSyntheticProvider
+from macro_platform.providers.hk.xtquant import HkXtQuantDailyBarsProvider, HkXtQuantInstrument
 from macro_platform.providers.us.twelve_data import (
     TwelveDataDailyBarsProvider,
     TwelveDataInstrument,
@@ -204,6 +206,62 @@ class _BaoStockClient:
                 ]
             ]
         )
+
+
+class _XtQuantFrame:
+    def __init__(self, records: list[dict[str, object]]) -> None:
+        self._records = records
+
+    def reset_index(self) -> _XtQuantFrame:
+        return self
+
+    def to_dict(self, *, orient: str) -> list[dict[str, object]]:
+        assert orient == "records"
+        return self._records
+
+
+class _XtQuantClient:
+    def connect(
+        self, ip: str = "", port: int | None = None, remember_if_success: bool = True
+    ) -> None:
+        assert ip == "127.0.0.1"
+        assert port == 58615
+        assert remember_if_success is True
+
+    def download_history_data2(
+        self,
+        stock_list: list[str],
+        period: str,
+        start_time: str = "",
+        end_time: str = "",
+        callback: object | None = None,
+    ) -> None:
+        assert stock_list == ["00700.HK"]
+        assert period == "1d"
+        assert start_time == end_time
+        assert callback is None
+        self._trading_date = start_time
+
+    def get_market_data_ex(self, **kwargs: object) -> dict[str, _XtQuantFrame]:
+        assert kwargs["fill_data"] is False
+        source_date = datetime.strptime(self._trading_date, "%Y%m%d").replace(tzinfo=UTC)
+        return {
+            "00700.HK": _XtQuantFrame(
+                [
+                    {
+                        "index": self._trading_date,
+                        "time": int(source_date.timestamp() * 1000),
+                        "open": 468.0,
+                        "high": 470.0,
+                        "low": 465.0,
+                        "close": 469.0,
+                        "volume": 123456.0,
+                        "amount": 57_890_123.5,
+                        "preClose": 467.0,
+                    }
+                ]
+            )
+        }
 
 
 def _ingest_request(region: Region) -> IngestJobRequest:
@@ -432,6 +490,77 @@ async def test_PRV_016_baostock_checkpoint_persists_cn_bars_and_raw_time_audit(
     }
     assert {audit.payload["raw_value"] for audit in audits} == {"2026-07-23", "2026-07-24"}
     assert {audit.payload["raw_timezone"] for audit in audits} == {"Asia/Shanghai"}
+
+
+async def test_PRV_016_xtquant_checkpoint_persists_hk_bars_and_raw_time_audit(
+    database: Database,
+) -> None:
+    now = datetime(2026, 7, 23, 21, tzinfo=UTC)
+    instrument = HkXtQuantInstrument(
+        instrument_id="ins_hk_equity_00700",
+        canonical_symbol="XHKG:00700",
+        source_symbol="00700.HK",
+    )
+    provider = HkXtQuantDailyBarsProvider(
+        instruments=[instrument],
+        client=_XtQuantClient(),
+        host="127.0.0.1",
+        port=58615,
+        cursor_signing_secret="integration-test-cursor-secret",
+        clock=lambda: now,
+    )
+    first_request = IngestJobRequest(
+        provider_role="hk.bars.primary",
+        dataset=Dataset.BARS,
+        regions={Region.HK},
+        start=datetime(2026, 7, 22, 16, tzinfo=UTC),
+        end=datetime(2026, 7, 23, 16, tzinfo=UTC),
+        as_of=now,
+    )
+    second_request = first_request.model_copy(
+        update={
+            "start": datetime(2026, 7, 23, 16, tzinfo=UTC),
+            "end": datetime(2026, 7, 24, 16, tzinfo=UTC),
+        }
+    )
+    try:
+        runner = JobRunner(
+            HkXtQuantIngestHandler(provider, now=lambda: now),
+            database=database,
+            now=lambda: now,
+        )
+        first = await runner.execute(first_request)
+        second = await runner.execute(second_request)
+    finally:
+        await provider.aclose()
+
+    assert first.records_fetched == 1
+    assert first.records_inserted == 1
+    assert second.records_fetched == 1
+    assert second.records_inserted == 1
+    async with database.session() as session:
+        bars = (
+            await session.scalars(
+                select(MarketBarRow).where(
+                    MarketBarRow.provider_id == "hk.xtquant.v1",
+                    MarketBarRow.instrument_id == instrument.instrument_id,
+                )
+            )
+        ).all()
+        audits = (
+            await session.scalars(
+                select(IngestAuditRow).where(
+                    IngestAuditRow.run_id.in_([first.run_id, second.run_id]),
+                    IngestAuditRow.audit_kind == "raw_timestamp_normalization",
+                )
+            )
+        ).all()
+    assert {bar.provider_record_id for bar in bars} == {
+        "hk.xtquant.v1:00700.HK:1d:2026-07-23:raw",
+        "hk.xtquant.v1:00700.HK:1d:2026-07-24:raw",
+    }
+    assert {audit.payload["raw_value"] for audit in audits} == {"2026-07-23", "2026-07-24"}
+    assert {audit.payload["raw_timezone"] for audit in audits} == {"Asia/Hong_Kong"}
 
 
 @pytest.mark.parametrize("region", [Region.CN, Region.HK])
