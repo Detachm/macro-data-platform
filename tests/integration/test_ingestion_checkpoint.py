@@ -22,12 +22,14 @@ from testcontainers.postgres import PostgresContainer
 from macro_platform.contracts.common import Region
 from macro_platform.contracts.market import InstrumentQuery
 from macro_platform.contracts.provider import Dataset, FetchContext, IngestJobRequest
+from macro_platform.jobs.cn_baostock_ingestion import CnBaoStockIngestHandler
 from macro_platform.jobs.cn_hk_ingestion import CnHkFixtureIngestHandler
 from macro_platform.jobs.ingestion_checkpoint import CommittedPage, IngestionCheckpointService
 from macro_platform.jobs.runner import JobRunner
 from macro_platform.jobs.us_twelve_data_ingestion import UsTwelveDataIngestHandler
 from macro_platform.providers.base import ProviderCursorError, UnsupportedCapabilityError
 from macro_platform.providers.cn import CN_PROVIDER_ID, CnSyntheticProvider
+from macro_platform.providers.cn.baostock import BaoStockDailyBarsProvider, BaoStockInstrument
 from macro_platform.providers.hk import HK_PROVIDER_ID, HkSyntheticProvider
 from macro_platform.providers.us.twelve_data import (
     TwelveDataDailyBarsProvider,
@@ -132,6 +134,76 @@ def _provider_for(region: Region) -> CnSyntheticProvider | HkSyntheticProvider:
 def _success_provider(region: Region) -> CnSyntheticProvider | HkSyntheticProvider:
     provider_cls = CnSyntheticProvider if region is Region.CN else HkSyntheticProvider
     return provider_cls.from_fixture("success")
+
+
+class _BaoStockResult:
+    error_code = "0"
+    error_msg = "success"
+    fields = [
+        "date",
+        "code",
+        "open",
+        "high",
+        "low",
+        "close",
+        "preclose",
+        "volume",
+        "amount",
+        "pctChg",
+    ]
+
+    def __init__(self, rows: list[list[str]] | None = None) -> None:
+        self._rows = [] if rows is None else rows
+        self._index = 0
+
+    def next(self) -> bool:
+        if self._index >= len(self._rows):
+            return False
+        self._index += 1
+        return True
+
+    def get_row_data(self) -> list[str]:
+        return self._rows[self._index - 1]
+
+
+class _BaoStockClient:
+    def login(self) -> _BaoStockResult:
+        return _BaoStockResult()
+
+    def logout(self) -> _BaoStockResult:
+        return _BaoStockResult()
+
+    def query_history_k_data_plus(
+        self,
+        code: str,
+        fields: str,
+        *,
+        start_date: str,
+        end_date: str,
+        frequency: str,
+        adjustflag: str,
+    ) -> _BaoStockResult:
+        assert code == "sh.000300"
+        assert fields == "date,code,open,high,low,close,preclose,volume,amount,pctChg"
+        assert end_date >= start_date
+        assert frequency == "d"
+        assert adjustflag == "3"
+        return _BaoStockResult(
+            [
+                [
+                    start_date,
+                    code,
+                    "4680.0",
+                    "4700.0",
+                    "4650.0",
+                    "4690.0",
+                    "4670.0",
+                    "123456",
+                    "789012.5",
+                    "0.43",
+                ]
+            ]
+        )
 
 
 def _ingest_request(region: Region) -> IngestJobRequest:
@@ -291,6 +363,75 @@ async def test_PRV_016_us_twelve_data_checkpoint_persists_two_daily_bars_and_raw
     }
     assert {audit.payload["raw_value"] for audit in audits} == {"2026-07-21", "2026-07-22"}
     assert {audit.payload["raw_timezone"] for audit in audits} == {"America/New_York"}
+
+
+async def test_PRV_016_baostock_checkpoint_persists_cn_bars_and_raw_time_audit(
+    database: Database,
+) -> None:
+    now = datetime(2026, 7, 23, 21, tzinfo=UTC)
+    instrument = BaoStockInstrument(
+        instrument_id="ins_cn_index_csi300",
+        canonical_symbol="XSHG:000300",
+        source_symbol="sh.000300",
+    )
+    provider = BaoStockDailyBarsProvider(
+        instruments=[instrument],
+        client=_BaoStockClient(),
+        cursor_signing_secret="integration-test-cursor-secret",
+        clock=lambda: now,
+    )
+    first_request = IngestJobRequest(
+        provider_role="cn.bars.primary",
+        dataset=Dataset.BARS,
+        regions={Region.CN},
+        start=datetime(2026, 7, 22, 16, tzinfo=UTC),
+        end=datetime(2026, 7, 23, 16, tzinfo=UTC),
+        as_of=now,
+    )
+    second_request = first_request.model_copy(
+        update={
+            "start": datetime(2026, 7, 23, 16, tzinfo=UTC),
+            "end": datetime(2026, 7, 24, 16, tzinfo=UTC),
+        }
+    )
+    try:
+        runner = JobRunner(
+            CnBaoStockIngestHandler(provider, now=lambda: now),
+            database=database,
+            now=lambda: now,
+        )
+        first = await runner.execute(first_request)
+        second = await runner.execute(second_request)
+    finally:
+        await provider.aclose()
+
+    assert first.records_fetched == 1
+    assert first.records_inserted == 1
+    assert second.records_fetched == 1
+    assert second.records_inserted == 1
+    async with database.session() as session:
+        bars = (
+            await session.scalars(
+                select(MarketBarRow).where(
+                    MarketBarRow.provider_id == "cn.baostock.v1",
+                    MarketBarRow.instrument_id == instrument.instrument_id,
+                )
+            )
+        ).all()
+        audits = (
+            await session.scalars(
+                select(IngestAuditRow).where(
+                    IngestAuditRow.run_id.in_([first.run_id, second.run_id]),
+                    IngestAuditRow.audit_kind == "raw_timestamp_normalization",
+                )
+            )
+        ).all()
+    assert {bar.provider_record_id for bar in bars} == {
+        "cn.baostock.v1:sh.000300:1d:2026-07-23:raw",
+        "cn.baostock.v1:sh.000300:1d:2026-07-24:raw",
+    }
+    assert {audit.payload["raw_value"] for audit in audits} == {"2026-07-23", "2026-07-24"}
+    assert {audit.payload["raw_timezone"] for audit in audits} == {"Asia/Shanghai"}
 
 
 @pytest.mark.parametrize("region", [Region.CN, Region.HK])

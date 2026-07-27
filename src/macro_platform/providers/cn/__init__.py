@@ -6,6 +6,14 @@ from pathlib import Path
 from macro_platform.contracts.common import Region
 from macro_platform.contracts.provider import Dataset
 from macro_platform.providers._regional_fixture import RegionalFixtureProvider
+from macro_platform.providers.cn.baostock import (
+    BAOSTOCK_DEFAULT_INSTRUMENTS,
+    BAOSTOCK_PRIMARY_ROLE,
+    BAOSTOCK_PROVIDER_ID,
+    BaoStockDailyBarsProvider,
+    BaoStockInstrument,
+    register_cn_baostock_provider_roles,
+)
 from macro_platform.providers.cn.live import (
     CnLiveMacroProvider,
     CnNbsReleaseProvider,
@@ -61,10 +69,16 @@ def register_cn_provider_roles(registry: ProviderRegistry, provider: CnSynthetic
 __all__ = [
     "CN_PROVIDER_ID",
     "CN_ROLE_BINDINGS",
+    "BAOSTOCK_DEFAULT_INSTRUMENTS",
+    "BAOSTOCK_PRIMARY_ROLE",
+    "BAOSTOCK_PROVIDER_ID",
+    "BaoStockDailyBarsProvider",
+    "BaoStockInstrument",
     "CnContractFixtureProvider",
     "CnSyntheticProvider",
     "CnLiveMacroProvider",
     "CnNbsReleaseProvider",
     "parse_nbs_release_calendar",
+    "register_cn_baostock_provider_roles",
     "register_cn_provider_roles",
 ]
