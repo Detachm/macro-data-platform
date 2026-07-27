@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator, Iterator
 from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from alembic import command
@@ -28,7 +28,12 @@ from macro_platform.providers.base import ProviderCursorError, UnsupportedCapabi
 from macro_platform.providers.cn import CN_PROVIDER_ID, CnSyntheticProvider
 from macro_platform.providers.hk import HK_PROVIDER_ID, HkSyntheticProvider
 from macro_platform.storage.database import Database
-from macro_platform.storage.models import IngestAuditRow, JobWatermarkRow, MarketObservationRow
+from macro_platform.storage.models import (
+    IngestAuditRow,
+    JobWatermarkRow,
+    MarketObservationRow,
+    ProviderRunRow,
+)
 from macro_platform.storage.repositories import IngestionCheckpointRepository
 from macro_platform.storage.unit_of_work import UnitOfWork
 
@@ -37,12 +42,11 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture(scope="module")
 def migrated_database_url() -> Iterator[str]:
-    """Provision an empty database and exercise 0001 -> 0002 before tests use it."""
+    """Provision an empty database and exercise every migration to head."""
     supplied_url = os.environ.get("CONTRACT_TEST_DATABASE_URL")
     if supplied_url is not None:
         config = Config(str(Path(__file__).resolve().parents[2] / "alembic.ini"))
         config.attributes["database_url"] = supplied_url
-        command.upgrade(config, "0001")
         command.upgrade(config, "head")
         yield supplied_url
         return
@@ -53,7 +57,6 @@ def migrated_database_url() -> Iterator[str]:
             database_url = postgres.get_connection_url().replace("psycopg2", "asyncpg")
             config = Config(str(Path(__file__).resolve().parents[2] / "alembic.ini"))
             config.attributes["database_url"] = database_url
-            command.upgrade(config, "0001")
             command.upgrade(config, "head")
             yield database_url
     except DockerException as error:
@@ -93,6 +96,27 @@ def _provider_id(region: Region) -> str:
     return CN_PROVIDER_ID if region is Region.CN else HK_PROVIDER_ID
 
 
+async def _create_durable_run(session: AsyncSession, *, region: Region, dataset: Dataset) -> UUID:
+    run_id = uuid4()
+    session.add(
+        ProviderRunRow(
+            run_id=run_id,
+            idempotency_key=f"checkpoint-test-{run_id}",
+            provider_role=f"{region.value.lower()}.checkpoint.test",
+            dataset=dataset.value,
+            status="running",
+            started_at=datetime(2026, 7, 24, tzinfo=UTC),
+            records_fetched=0,
+            records_accepted=0,
+            records_rejected=0,
+            details={},
+            request_payload={},
+        )
+    )
+    await session.flush()
+    return run_id
+
+
 def _provider_for(region: Region) -> CnSyntheticProvider | HkSyntheticProvider:
     provider_cls = CnSyntheticProvider if region is Region.CN else HkSyntheticProvider
     return provider_cls.from_fixture("cursor_expired")
@@ -114,10 +138,10 @@ def _ingest_request(region: Region) -> IngestJobRequest:
     )
 
 
-async def test_empty_database_migrates_from_0001_to_0002(database: Database) -> None:
+async def test_db_001_empty_database_migrates_to_0003(database: Database) -> None:
     async with database.session() as session:
         revision = await session.scalar(text("SELECT version_num FROM alembic_version"))
-    assert revision == "0002"
+    assert revision == "0003"
 
 
 @pytest.mark.parametrize("region", [Region.CN, Region.HK])
@@ -135,7 +159,7 @@ async def test_cn_hk_runner_executes_durable_market_observation_ingestion(
     second = await runner.execute(request)
 
     assert first.records_inserted == 1
-    assert second.records_inserted == 0
+    assert second == first
     async with database.session() as session:
         persisted = await session.scalar(
             select(func.count())
@@ -154,7 +178,9 @@ async def test_cn_hk_runner_executes_durable_market_observation_ingestion(
             )
         )
     assert persisted == 1
-    assert audits == 2
+    # A replay rehydrates the completed durable result instead of running the
+    # handler again, so it must not append a second raw-timestamp audit.
+    assert audits == 1
     assert raw_audit is not None
     assert raw_audit.payload["raw_timezone"] == (
         "Asia/Shanghai" if region is Region.CN else "Asia/Hong_Kong"
@@ -172,7 +198,11 @@ async def test_cn_hk_runner_persists_pit_rejection_before_outer_failure(
     )
 
     with pytest.raises(UnsupportedCapabilityError):
-        await runner.execute(_ingest_request(region))
+        await runner.execute(
+            _ingest_request(region).model_copy(
+                update={"provider_role": f"{region.value.lower()}.contract_fixture.pit_rejection"}
+            )
+        )
 
     async with database.session() as session:
         audit = await session.scalar(
@@ -416,6 +446,10 @@ async def test_prv_014_retry_after_lost_response_writes_page_once(
     unit_of_work = UnitOfWork(database)
     page = _page(region)
     observation_id = f"checkpoint-{uuid4().hex}"
+    async with unit_of_work.transaction() as session:
+        run_id = await _create_durable_run(
+            session, region=region, dataset=Dataset.MARKET_OBSERVATIONS
+        )
 
     async def persist_record(session: AsyncSession) -> None:
         session.add(
@@ -428,13 +462,14 @@ async def test_prv_014_retry_after_lost_response_writes_page_once(
                 available_at=datetime(2026, 7, 24, tzinfo=UTC),
                 provider_id=_provider_id(region),
                 provider_record_id=page.accepted_record_ids[0],
+                ingestion_run_id=run_id,
                 payload={"purpose": "retry-contract"},
             )
         )
 
     async with unit_of_work.transaction() as session:
         assert await service.commit_page(
-            IngestionCheckpointRepository(session), page, persist_record
+            IngestionCheckpointRepository(session, ingestion_run_id=run_id), page, persist_record
         )
 
     async def must_not_write(_: AsyncSession) -> None:
@@ -442,7 +477,7 @@ async def test_prv_014_retry_after_lost_response_writes_page_once(
 
     async with unit_of_work.transaction() as session:
         assert not await service.commit_page(
-            IngestionCheckpointRepository(session), page, must_not_write
+            IngestionCheckpointRepository(session, ingestion_run_id=run_id), page, must_not_write
         )
 
     async with database.session() as session:
@@ -461,12 +496,16 @@ async def test_prv_016_recovers_committed_watermark_after_new_session(
     service = IngestionCheckpointService()
     unit_of_work = UnitOfWork(database)
     page = _page(region, dataset=Dataset.INSTRUMENTS)
+    async with unit_of_work.transaction() as session:
+        run_id = await _create_durable_run(session, region=region, dataset=page.dataset)
 
     async def no_records(_: AsyncSession) -> None:
         return None
 
     async with unit_of_work.transaction() as session:
-        assert await service.commit_page(IngestionCheckpointRepository(session), page, no_records)
+        assert await service.commit_page(
+            IngestionCheckpointRepository(session, ingestion_run_id=run_id), page, no_records
+        )
 
     context = FetchContext(
         request_id=uuid4(),
@@ -480,7 +519,7 @@ async def test_prv_016_recovers_committed_watermark_after_new_session(
 
     async with database.session() as fresh_session:
         assert await service.recover_committed_watermark(
-            IngestionCheckpointRepository(fresh_session),
+            IngestionCheckpointRepository(fresh_session, ingestion_run_id=run_id),
             provider_role=page.provider_role,
             dataset=page.dataset,
             region=page.region,
@@ -495,6 +534,10 @@ async def test_prv_014_concurrent_retry_reserves_page_before_record_write(
     unit_of_work = UnitOfWork(database)
     page = _page(region)
     retry_started = Event()
+    async with unit_of_work.transaction() as session:
+        run_id = await _create_durable_run(
+            session, region=region, dataset=Dataset.MARKET_OBSERVATIONS
+        )
 
     async def first_write(_: AsyncSession) -> None:
         return None
@@ -507,12 +550,14 @@ async def test_prv_014_concurrent_retry_reserves_page_before_record_write(
                 raise AssertionError("a concurrent retry must not write a reserved page")
 
             return await service.commit_page(
-                IngestionCheckpointRepository(retry_session), page, must_not_write
+                IngestionCheckpointRepository(retry_session, ingestion_run_id=run_id),
+                page,
+                must_not_write,
             )
 
     async with unit_of_work.transaction() as first_session:
         assert await service.commit_page(
-            IngestionCheckpointRepository(first_session), page, first_write
+            IngestionCheckpointRepository(first_session, ingestion_run_id=run_id), page, first_write
         )
         retry_task = create_task(retry())
         await wait_for(retry_started.wait(), timeout=1)

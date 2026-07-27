@@ -36,6 +36,9 @@ class InstrumentRow(Base):
     status: Mapped[str] = mapped_column(String(24), index=True)
     valid_from: Mapped[date] = mapped_column(Date)
     valid_to: Mapped[date | None] = mapped_column(Date, nullable=True)
+    ingestion_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("provider_runs.run_id", ondelete="RESTRICT"), nullable=True, index=True
+    )
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -95,6 +98,9 @@ class MarketBarRow(Base):
     adjustment: Mapped[str] = mapped_column(String(32))
     provider_id: Mapped[str] = mapped_column(String(64))
     provider_record_id: Mapped[str] = mapped_column(String(256))
+    ingestion_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("provider_runs.run_id", ondelete="RESTRICT"), nullable=True, index=True
+    )
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
     ingested_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -115,6 +121,9 @@ class MarketObservationRow(Base):
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     provider_id: Mapped[str] = mapped_column(String(64))
     provider_record_id: Mapped[str] = mapped_column(String(256))
+    ingestion_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("provider_runs.run_id", ondelete="RESTRICT"), nullable=True, index=True
+    )
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
     ingested_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -126,6 +135,9 @@ class MacroSeriesRow(Base):
 
     series_id: Mapped[str] = mapped_column(String(160), primary_key=True)
     region: Mapped[str] = mapped_column(String(8), index=True)
+    ingestion_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("provider_runs.run_id", ondelete="RESTRICT"), nullable=True, index=True
+    )
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -155,6 +167,9 @@ class MacroObservationRow(Base):
     vintage_id: Mapped[str] = mapped_column(String(128))
     revision_no: Mapped[int] = mapped_column(Integer)
     provider_id: Mapped[str] = mapped_column(String(64))
+    ingestion_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("provider_runs.run_id", ondelete="RESTRICT"), nullable=True, index=True
+    )
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
     ingested_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -172,10 +187,33 @@ class MacroReleaseRow(Base):
     region: Mapped[str] = mapped_column(String(8))
     scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    source_checksum_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ingestion_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("provider_runs.run_id", ondelete="RESTRICT"), nullable=True, index=True
+    )
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
     ingested_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class MacroReleaseRevisionRow(Base):
+    __tablename__ = "macro_release_revisions"
+    __table_args__ = (
+        UniqueConstraint("release_id", "source_checksum_sha256", name="uq_macro_release_revision"),
+        Index("ix_macro_release_revisions_release_available", "release_id", "available_at"),
+    )
+
+    revision_id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    release_id: Mapped[str] = mapped_column(
+        ForeignKey("macro_releases.release_id", ondelete="RESTRICT"), index=True
+    )
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    source_checksum_sha256: Mapped[str] = mapped_column(String(64))
+    ingestion_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("provider_runs.run_id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
 
 
 class NewsEventRow(Base):
@@ -193,6 +231,9 @@ class NewsEventRow(Base):
     published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String(24))
+    ingestion_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("provider_runs.run_id", ondelete="RESTRICT"), nullable=True, index=True
+    )
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
     ingested_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -226,12 +267,20 @@ class NewsEventTopicRow(Base):
 
 class ProviderRunRow(Base):
     __tablename__ = "provider_runs"
-    __table_args__ = (Index("ix_provider_runs_role_started", "provider_role", "started_at"),)
+    __table_args__ = (
+        Index("ix_provider_runs_role_started", "provider_role", "started_at"),
+        Index("uq_provider_runs_idempotency", "idempotency_key", unique=True),
+    )
 
     run_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     provider_role: Mapped[str] = mapped_column(String(64))
     dataset: Mapped[str] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(24))
+    attempt_no: Mapped[int] = mapped_column(Integer, default=1)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     records_fetched: Mapped[int] = mapped_column(Integer, default=0)
@@ -239,6 +288,97 @@ class ProviderRunRow(Base):
     records_rejected: Mapped[int] = mapped_column(Integer, default=0)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     details: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    request_payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+
+
+class ReportInputSnapshotRow(Base):
+    __tablename__ = "report_input_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "report_date",
+            "snapshot_version",
+            "fingerprint_sha256",
+            name="uq_report_snapshot_identity",
+        ),
+        Index("ix_report_snapshots_report_date", "report_date", "created_at"),
+    )
+
+    snapshot_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    snapshot_version: Mapped[str] = mapped_column(String(32))
+    report_date: Mapped[date] = mapped_column(Date)
+    as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    cutoff_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    fingerprint_sha256: Mapped[str] = mapped_column(String(64))
+    fact_ids: Mapped[list[str]] = mapped_column(JSONB)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class DailyReportRow(Base):
+    __tablename__ = "daily_reports"
+    __table_args__ = (
+        UniqueConstraint("report_date", "report_version", name="uq_daily_report_date_version"),
+        Index("ix_daily_reports_date_created", "report_date", "created_at"),
+    )
+
+    report_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    report_date: Mapped[date] = mapped_column(Date)
+    report_version: Mapped[str] = mapped_column(String(64))
+    contract_version: Mapped[str] = mapped_column(String(32))
+    input_snapshot_id: Mapped[str] = mapped_column(
+        ForeignKey("report_input_snapshots.snapshot_id", ondelete="RESTRICT"), index=True
+    )
+    status: Mapped[str] = mapped_column(String(24))
+    publication_decision: Mapped[str] = mapped_column(String(24))
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class DailyReportSourceRefRow(Base):
+    __tablename__ = "daily_report_source_refs"
+    __table_args__ = (
+        Index("ix_daily_report_source_refs_provider_record", "provider_id", "provider_record_id"),
+        Index("ix_daily_report_source_refs_checksum", "checksum_sha256"),
+        Index("ix_daily_report_source_refs_retrieved", "retrieved_at"),
+    )
+
+    report_id: Mapped[str] = mapped_column(
+        ForeignKey("daily_reports.report_id", ondelete="CASCADE"), primary_key=True
+    )
+    source_ref_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    provider_id: Mapped[str] = mapped_column(String(64))
+    provider_record_id: Mapped[str] = mapped_column(String(256))
+    checksum_sha256: Mapped[str] = mapped_column(String(64))
+    retrieved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class DeliveryAttemptRow(Base):
+    __tablename__ = "delivery_attempts"
+    __table_args__ = (
+        UniqueConstraint(
+            "report_id",
+            "delivery_target",
+            "idempotency_key",
+            name="uq_delivery_attempt_idempotency",
+        ),
+        Index("ix_delivery_attempts_report_status", "report_id", "status"),
+    )
+
+    delivery_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    report_id: Mapped[str] = mapped_column(
+        ForeignKey("daily_reports.report_id", ondelete="RESTRICT"), index=True
+    )
+    delivery_target: Mapped[str] = mapped_column(String(128))
+    idempotency_key: Mapped[str] = mapped_column(String(128))
+    attempt_no: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(24))
+    request_payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    response_payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 class JobWatermarkRow(Base):
@@ -264,6 +404,9 @@ class IngestPageCommitRow(Base):
     source_watermark: Mapped[str | None] = mapped_column(Text, nullable=True)
     next_cursor: Mapped[str | None] = mapped_column(Text, nullable=True)
     accepted_record_ids: Mapped[list[str]] = mapped_column(JSONB)
+    ingestion_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("provider_runs.run_id", ondelete="RESTRICT"), nullable=True, index=True
+    )
     committed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

@@ -25,7 +25,11 @@ from macro_platform.providers.base import ProviderError
 from macro_platform.providers.registry import ProviderRegistry
 from macro_platform.services.editor_context_service import DataUnavailableError
 from macro_platform.storage.database import Database
-from macro_platform.storage.repositories import DataRepository, EmptyDataRepository
+from macro_platform.storage.repositories import (
+    DataRepository,
+    EmptyDataRepository,
+    PostgresDataRepository,
+)
 
 
 def create_app(
@@ -36,7 +40,17 @@ def create_app(
     source_policy: SourcePolicy | None = None,
 ) -> FastAPI:
     resolved_settings = settings or get_settings()
-    resolved_repository = repository or EmptyDataRepository()
+    resolved_database = Database(resolved_settings.database_url)
+    resolved_repository = repository or (
+        PostgresDataRepository(resolved_database)
+        if resolved_settings.app_env == "production"
+        else EmptyDataRepository()
+    )
+    if (
+        resolved_settings.app_env == "production"
+        and type(resolved_repository) is EmptyDataRepository
+    ):
+        raise ValueError("production app requires a PostgreSQL data repository")
     resolved_registry = provider_registry or ProviderRegistry()
     resolved_source_policy = source_policy or (
         load_production_source_policy()
@@ -48,13 +62,13 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        app.state.database = Database(resolved_settings.database_url)
+        app.state.database = resolved_database
         app.state.repository = resolved_repository
         app.state.provider_registry = resolved_registry
         app.state.source_policy = resolved_source_policy
         yield
         await resolved_registry.close()
-        await app.state.database.dispose()
+        await resolved_database.dispose()
 
     app = FastAPI(
         title="Macro Data Platform",

@@ -38,7 +38,7 @@ class IngestionCheckpointService:
         if not historical_request or supports_point_in_time:
             return
         async with database.session() as audit_session, audit_session.begin():
-            IngestionCheckpointRepository(audit_session).add_audit(
+            IngestionCheckpointRepository(audit_session, ingestion_run_id=run_id).add_audit(
                 run_id=run_id,
                 provider_id=provider_id,
                 audit_kind="unsupported_historical_pit",
@@ -57,7 +57,7 @@ class IngestionCheckpointService:
         normalized_utc: str,
     ) -> None:
         async with database.session() as audit_session, audit_session.begin():
-            IngestionCheckpointRepository(audit_session).add_audit(
+            IngestionCheckpointRepository(audit_session, ingestion_run_id=run_id).add_audit(
                 run_id=run_id,
                 provider_id=provider_id,
                 audit_kind="raw_timestamp_normalization",
