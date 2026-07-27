@@ -605,7 +605,9 @@ async def test_rep_027_production_runner_waits_for_an_active_idempotent_run(
         running_run_wait_seconds=1,
         running_run_poll_seconds=0.01,
     )
-    request = _ingest_request()
+    request = _ingest_request().model_copy(
+        update={"provider_role": "cn.contract_fixture.active_run_wait"}
+    )
     first_task = asyncio.create_task(runner.execute(request))
     await asyncio.wait_for(handler.started.wait(), timeout=1)
     second_task = asyncio.create_task(runner.execute(request))
@@ -633,7 +635,7 @@ async def test_db_004_concurrent_page_replay_commits_one_fact_and_checkpoint(
         region=Region.CN,
         scope_type=ScopeType.MARKET,
         scope_id="CN",
-        metric_code="market.turnover",
+        metric_code="market.storage_turnover",
         value=Decimal("1"),
         unit="CNY",
         period_start=NOW - timedelta(hours=1),
@@ -852,7 +854,9 @@ async def test_postgres_repository_persists_facts_pit_revisions_and_raw_source_f
 
     repository = PostgresDataRepository(database)
     as_of_before_revision = NOW + timedelta(hours=1)
-    assert await repository.list_instruments(InstrumentQuery(regions={Region.CN})) == [instrument]
+    assert await repository.list_instruments(
+        InstrumentQuery(regions={Region.CN}, asset_classes={AssetClass.EQUITY})
+    ) == [instrument]
     assert await repository.list_bars(
         BarQuery(
             instrument_ids=[instrument.instrument_id],
@@ -969,7 +973,7 @@ async def test_sto_027_macro_release_replay_is_idempotent_and_ties_are_determini
         series_id=series.series_id,
         region=Region.CN,
         release_name="Storage replay release",
-        scheduled_at=NOW + timedelta(days=1),
+        scheduled_at=NOW + timedelta(days=3),
         available_at=NOW,
         period_start=date(2026, 7, 1),
         period_end=date(2026, 7, 31),
@@ -1011,8 +1015,8 @@ async def test_sto_027_macro_release_replay_is_idempotent_and_ties_are_determini
     assert await PostgresDataRepository(database).list_macro_releases(
         MacroReleaseQuery(
             regions={Region.CN},
-            scheduled_from=NOW,
-            scheduled_to=NOW + timedelta(days=2),
+            scheduled_from=NOW + timedelta(days=2),
+            scheduled_to=NOW + timedelta(days=4),
             as_of=NOW,
         )
     ) == [revision]

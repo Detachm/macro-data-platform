@@ -178,7 +178,9 @@ async def test_cn_hk_runner_executes_durable_market_observation_ingestion(
             )
         )
     assert persisted == 1
-    assert audits == 2
+    # A replay rehydrates the completed durable result instead of running the
+    # handler again, so it must not append a second raw-timestamp audit.
+    assert audits == 1
     assert raw_audit is not None
     assert raw_audit.payload["raw_timezone"] == (
         "Asia/Shanghai" if region is Region.CN else "Asia/Hong_Kong"
@@ -196,7 +198,11 @@ async def test_cn_hk_runner_persists_pit_rejection_before_outer_failure(
     )
 
     with pytest.raises(UnsupportedCapabilityError):
-        await runner.execute(_ingest_request(region))
+        await runner.execute(
+            _ingest_request(region).model_copy(
+                update={"provider_role": f"{region.value.lower()}.contract_fixture.pit_rejection"}
+            )
+        )
 
     async with database.session() as session:
         audit = await session.scalar(
