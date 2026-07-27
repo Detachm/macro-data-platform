@@ -4,6 +4,7 @@ import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Protocol, runtime_checkable
 from uuid import UUID, uuid4
@@ -28,6 +29,14 @@ class IngestJobHandler(Protocol):
     async def run(self, request: IngestJobRequest) -> IngestJobResult: ...
 
 
+@dataclass(frozen=True, slots=True)
+class IngestionExecutionContext:
+    """Immutable execution-scoped data passed to a checkpointed handler."""
+
+    run_id: UUID
+    retention_policy: IngestionRetentionPolicy | None
+
+
 @runtime_checkable
 class CheckpointedIngestJobHandler(IngestJobHandler, Protocol):
     """Actual ingest handler path for durable page/audit lifecycle operations."""
@@ -37,6 +46,7 @@ class CheckpointedIngestJobHandler(IngestJobHandler, Protocol):
         request: IngestJobRequest,
         checkpoints: IngestionCheckpointService,
         database: Database,
+        execution: IngestionExecutionContext,
     ) -> IngestJobResult: ...
 
 
@@ -45,13 +55,6 @@ class RetentionAwareIngestJobHandler(IngestJobHandler, Protocol):
     """A production handler must accept policy before it can write records."""
 
     def set_retention_policy(self, policy: IngestionRetentionPolicy) -> None: ...
-
-
-@runtime_checkable
-class DurableRunAwareIngestJobHandler(IngestJobHandler, Protocol):
-    """Production handlers receive their persisted run ID before writing audits."""
-
-    def set_durable_run_id(self, run_id: UUID) -> None: ...
 
 
 class IngestionRunInProgressError(RuntimeError):
@@ -90,30 +93,54 @@ class JobRunner:
 
     async def execute(self, request: IngestJobRequest) -> IngestJobResult:
         retention_policy = self._require_ingestion_policy(request)
-        if retention_policy is not None:
+        checkpointed_handler = (
+            self._handler if isinstance(self._handler, CheckpointedIngestJobHandler) else None
+        )
+        if retention_policy is not None and checkpointed_handler is None:
             if not isinstance(self._handler, RetentionAwareIngestJobHandler):
                 raise ValueError("production ingestion handler must enforce the retention policy")
             self._handler.set_retention_policy(retention_policy)
         run_lease, replay_result = await self._acquire_checkpointed_run(request)
         if replay_result is not None:
             return replay_result
-        if run_lease is not None:
-            assert isinstance(self._handler, DurableRunAwareIngestJobHandler)
-            self._handler.set_durable_run_id(run_lease.run_id)
         heartbeat = (
             None
             if run_lease is None
             else asyncio.create_task(self._renew_lease_until_finished(run_lease))
         )
         try:
-            if isinstance(self._handler, CheckpointedIngestJobHandler):
+            if checkpointed_handler is not None:
                 if self._database is None:
                     raise ValueError("checkpointed ingestion requires a database")
-                result = await self._handler.run_checkpointed(
-                    request, IngestionCheckpointService(), self._database
+                if run_lease is None:
+                    raise RuntimeError("checkpointed ingestion requires a durable run lease")
+                result = await checkpointed_handler.run_checkpointed(
+                    request,
+                    IngestionCheckpointService(),
+                    self._database,
+                    IngestionExecutionContext(
+                        run_id=run_lease.run_id,
+                        retention_policy=retention_policy,
+                    ),
                 )
             else:
                 result = await self._handler.run(request)
+            if result.provider_role != request.provider_role or result.dataset != request.dataset:
+                raise ValueError("job result does not match its request")
+            if run_lease is not None:
+                if result.run_id != run_lease.run_id:
+                    raise ValueError("durable ingestion handler returned a different run ID")
+                if self._database is None:
+                    raise ValueError("durable ingestion completion requires a database")
+                async with UnitOfWork(self._database).transaction() as session:
+                    completed = await IngestionRunRepository(session).complete_run(
+                        result, lease=run_lease
+                    )
+                if not completed:
+                    raise IngestionRunInProgressError(
+                        "durable ingestion run lease was lost before completion"
+                    )
+            return result
         except Exception as error:
             if run_lease is not None:
                 await self._fail_durable_run(run_lease, error)
@@ -123,30 +150,11 @@ class JobRunner:
                 heartbeat.cancel()
                 with suppress(asyncio.CancelledError):
                     await heartbeat
-        if result.provider_role != request.provider_role or result.dataset != request.dataset:
-            raise ValueError("job result does not match its request")
-        if run_lease is not None:
-            if result.run_id != run_lease.run_id:
-                raise ValueError("durable ingestion handler returned a different run ID")
-            if self._database is None:
-                raise ValueError("durable ingestion completion requires a database")
-            async with UnitOfWork(self._database).transaction() as session:
-                completed = await IngestionRunRepository(session).complete_run(
-                    result, lease=run_lease
-                )
-            if not completed:
-                raise IngestionRunInProgressError(
-                    "durable ingestion run lease was lost before completion"
-                )
-        return result
 
     async def _acquire_checkpointed_run(
         self, request: IngestJobRequest
     ) -> tuple[IngestionRunLease | None, IngestJobResult | None]:
-        if not (
-            isinstance(self._handler, CheckpointedIngestJobHandler)
-            and isinstance(self._handler, DurableRunAwareIngestJobHandler)
-        ):
+        if not isinstance(self._handler, CheckpointedIngestJobHandler):
             return None, None
         if self._database is None:
             raise ValueError("durable checkpointed ingestion requires a database")
