@@ -18,6 +18,7 @@ from macro_platform.api.routes import editor, health, instruments, macro, market
 from macro_platform.config import Settings, get_settings
 from macro_platform.providers.base import ProviderError
 from macro_platform.providers.registry import ProviderRegistry
+from macro_platform.providers.us.factory import create_us_provider_registry_from_settings
 from macro_platform.services.editor_context_service import DataUnavailableError
 from macro_platform.storage.database import Database
 from macro_platform.storage.repositories import (
@@ -45,7 +46,13 @@ def create_app(
         and type(resolved_repository) is EmptyDataRepository
     ):
         raise ValueError("production app requires a PostgreSQL data repository")
-    resolved_registry = provider_registry or ProviderRegistry()
+    if resolved_settings.app_env == "production" and resolved_settings.us_provider_mode != "live":
+        raise ValueError("production US provider mode must be live")
+    resolved_registry = provider_registry or (
+        create_us_provider_registry_from_settings(resolved_settings)
+        if resolved_settings.app_env == "production"
+        else ProviderRegistry()
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:

@@ -6,6 +6,7 @@ from pydantic import SecretStr
 
 from macro_platform.api.app import create_app
 from macro_platform.config import Settings
+from macro_platform.contracts.provider import Dataset
 from macro_platform.storage.repositories import EmptyDataRepository, PostgresDataRepository
 
 TOKEN = "test-service-token"
@@ -29,16 +30,40 @@ def test_api_019_liveness_and_request_id() -> None:
 
 
 def test_rep_027_production_app_defaults_to_postgres_repository() -> None:
-    settings = Settings(app_env="production", service_token=SecretStr(TOKEN))
+    settings = Settings(
+        app_env="production",
+        service_token=SecretStr(TOKEN),
+        us_provider_mode="live",
+        twelve_data_api_key=SecretStr("test-twelve-data-key"),
+        twelve_data_cursor_secret=SecretStr("test-twelve-data-cursor"),
+    )
     application = create_app(settings=settings)
     with TestClient(application):
         assert isinstance(application.state.repository, PostgresDataRepository)
+        assert (
+            application.state.provider_registry.resolve("us.market.primary")
+            .capabilities()
+            .provider_id
+            == "us.twelve-data.v1"
+        )
+        application.state.provider_registry.resolve(
+            "us.market.primary"
+        ).assert_production_dataset_supported(Dataset.BARS)
 
 
 def test_rep_027_production_app_rejects_empty_repository_override() -> None:
-    settings = Settings(app_env="production", service_token=SecretStr(TOKEN))
+    settings = Settings(
+        app_env="production",
+        service_token=SecretStr(TOKEN),
+        us_provider_mode="live",
+    )
     with pytest.raises(ValueError, match="PostgreSQL"):
         create_app(settings=settings, repository=EmptyDataRepository())
+
+
+def test_PRV_001_production_app_rejects_fixture_us_provider_mode() -> None:
+    with pytest.raises(ValueError, match="provider mode must be live"):
+        create_app(settings=Settings(app_env="production", service_token=SecretStr(TOKEN)))
 
 
 def test_api_008_protected_route_requires_bearer_token() -> None:

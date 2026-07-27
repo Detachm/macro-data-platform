@@ -51,6 +51,7 @@ from macro_platform.storage.models import (
     IngestPageCommitRow,
     InstrumentRow,
     MacroReleaseRevisionRow,
+    MarketBarRevisionRow,
     MarketBarRow,
     MarketObservationRow,
     ProviderRunRow,
@@ -349,7 +350,7 @@ async def test_db_002_migration_upgrades_0002_to_current_schema(database: Databa
                         "SELECT tablename FROM pg_tables "
                         "WHERE schemaname = 'public' AND tablename IN "
                         "('report_input_snapshots', 'daily_reports', 'daily_report_source_refs', "
-                        "'delivery_attempts', 'macro_release_revisions', "
+                        "'delivery_attempts', 'macro_release_revisions', 'market_bar_revisions', "
                         "'report_generation_attempts')"
                     )
                 )
@@ -357,13 +358,14 @@ async def test_db_002_migration_upgrades_0002_to_current_schema(database: Databa
         )
         preserved_run = await session.get(ProviderRunRow, _previous_schema_run_id)
         preserved_instrument = await session.get(InstrumentRow, _previous_schema_instrument_id)
-    assert revision == "0005"
+    assert revision == "0006"
     assert tables == {
         "report_input_snapshots",
         "daily_reports",
         "daily_report_source_refs",
         "delivery_attempts",
         "macro_release_revisions",
+        "market_bar_revisions",
         "report_generation_attempts",
     }
     assert preserved_run is not None
@@ -1097,6 +1099,111 @@ async def test_postgres_repository_persists_facts_pit_revisions_and_raw_source_f
     assert source_lookup == bar.bar_id
     assert revision_payload == "100"
     assert fact_run_id == run_id
+
+
+async def test_STO_027_market_bar_revisions_preserve_first_seen_and_pit_history(
+    database: Database,
+) -> None:
+    token = uuid4().hex
+    run_id = uuid4()
+    instrument = Instrument(
+        instrument_id=f"ins-bar-revision-{token}",
+        canonical_symbol=f"XSHG:BAR{token[:8].upper()}",
+        region=Region.CN,
+        venue_mic="XSHG",
+        local_symbol=f"BAR{token[:8].upper()}",
+        name="Market bar revision test",
+        asset_class=AssetClass.EQUITY,
+        currency="CNY",
+        timezone="Asia/Shanghai",
+        status=InstrumentStatus.ACTIVE,
+        valid_from=date(2020, 1, 1),
+        source=_source(f"bar-revision-instrument-{token}"),
+    )
+    base = MarketBar(
+        bar_id=f"bar-revision-{token}",
+        instrument_id=instrument.instrument_id,
+        canonical_symbol=instrument.canonical_symbol,
+        region=Region.CN,
+        interval=Interval.D1,
+        bar_start=NOW - timedelta(days=1),
+        bar_end=NOW,
+        trading_date=(NOW - timedelta(days=1)).date(),
+        open=Decimal("10"),
+        high=Decimal("11"),
+        low=Decimal("9"),
+        close=Decimal("10.50"),
+        volume=Decimal("100"),
+        currency="CNY",
+        adjustment=Adjustment.RAW,
+        available_at=NOW,
+        availability_basis=AvailabilityBasis.FIRST_SEEN,
+        source=_source(f"bar-revision-base-{token}", checksum="a" * 64),
+    )
+    revised = base.model_copy(
+        update={
+            "available_at": NOW + timedelta(hours=1),
+            "close": Decimal("10.75"),
+            "source": _source(f"bar-revision-revised-{token}", checksum="b" * 64),
+        }
+    )
+    async with UnitOfWork(database).transaction() as session:
+        session.add(
+            ProviderRunRow(
+                run_id=run_id,
+                idempotency_key=f"bar-revision-run-{token}",
+                provider_role="storage.contract.bar_revisions",
+                dataset=Dataset.BARS.value,
+                status="succeeded",
+                started_at=NOW,
+                finished_at=NOW,
+                records_fetched=2,
+                records_accepted=2,
+                records_rejected=0,
+                details={},
+                request_payload={},
+            )
+        )
+        await session.flush()
+        repository = NormalizedFactRepository(session, ingestion_run_id=run_id)
+        await repository.upsert_instrument(instrument)
+        await repository.upsert_bar(base)
+        await repository.upsert_bar(revised)
+        await repository.upsert_bar(revised)
+        restored = base.model_copy(
+            update={
+                "available_at": NOW + timedelta(hours=2),
+                "source": _source(f"bar-revision-restored-{token}", checksum="a" * 64),
+            }
+        )
+        await repository.upsert_bar(restored)
+
+    repository = PostgresDataRepository(database)
+    query = BarQuery(
+        instrument_ids=[instrument.instrument_id],
+        interval=Interval.D1,
+        start=NOW - timedelta(days=2),
+        end=NOW + timedelta(days=1),
+        as_of=NOW + timedelta(minutes=30),
+    )
+    assert await repository.list_bars(query) == [base]
+    assert await repository.list_bars(
+        query.model_copy(update={"as_of": NOW + timedelta(hours=2)})
+    ) == [restored]
+    async with database.session() as session:
+        stored_base = await session.scalar(
+            select(MarketBarRow).where(MarketBarRow.bar_id == base.bar_id)
+        )
+        revisions = (
+            await session.scalars(
+                select(MarketBarRevisionRow).where(MarketBarRevisionRow.bar_id == base.bar_id)
+            )
+        ).all()
+    assert stored_base is not None
+    assert stored_base.available_at == NOW
+    assert stored_base.payload["close"] == base.model_dump(mode="json")["close"]
+    assert len(revisions) == 2
+    assert {revision.source_checksum_sha256 for revision in revisions} == {"a" * 64, "b" * 64}
 
 
 async def test_sto_027_macro_release_replay_is_idempotent_and_ties_are_deterministic(

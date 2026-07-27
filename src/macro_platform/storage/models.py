@@ -108,6 +108,30 @@ class MarketBarRow(Base):
     )
 
 
+class MarketBarRevisionRow(Base):
+    __tablename__ = "market_bar_revisions"
+    __table_args__ = (
+        UniqueConstraint(
+            "bar_id",
+            "available_at",
+            "source_checksum_sha256",
+            name="uq_market_bar_revision",
+        ),
+        Index("ix_market_bar_revisions_bar_available", "bar_id", "available_at"),
+    )
+
+    revision_id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    bar_id: Mapped[str] = mapped_column(
+        ForeignKey("market_bars.bar_id", ondelete="RESTRICT"), index=True
+    )
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    source_checksum_sha256: Mapped[str] = mapped_column(String(64))
+    ingestion_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("provider_runs.run_id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
+
+
 class MarketObservationRow(Base):
     __tablename__ = "market_observations"
     __table_args__ = (

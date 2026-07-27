@@ -1,0 +1,4 @@
+{
+  "transport_error": "timeout",
+  "message": "Test harness raises httpx.ReadTimeout for this fixture"
+}

@@ -9,10 +9,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
+import httpx
 import pytest
 from alembic import command
 from alembic.config import Config
 from docker.errors import DockerException
+from pydantic import SecretStr
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from testcontainers.postgres import PostgresContainer
@@ -23,13 +25,19 @@ from macro_platform.contracts.provider import Dataset, FetchContext, IngestJobRe
 from macro_platform.jobs.cn_hk_ingestion import CnHkFixtureIngestHandler
 from macro_platform.jobs.ingestion_checkpoint import CommittedPage, IngestionCheckpointService
 from macro_platform.jobs.runner import JobRunner
+from macro_platform.jobs.us_twelve_data_ingestion import UsTwelveDataIngestHandler
 from macro_platform.providers.base import ProviderCursorError, UnsupportedCapabilityError
 from macro_platform.providers.cn import CN_PROVIDER_ID, CnSyntheticProvider
 from macro_platform.providers.hk import HK_PROVIDER_ID, HkSyntheticProvider
+from macro_platform.providers.us.twelve_data import (
+    TwelveDataDailyBarsProvider,
+    TwelveDataInstrument,
+)
 from macro_platform.storage.database import Database
 from macro_platform.storage.models import (
     IngestAuditRow,
     JobWatermarkRow,
+    MarketBarRow,
     MarketObservationRow,
     ProviderRunRow,
 )
@@ -137,10 +145,10 @@ def _ingest_request(region: Region) -> IngestJobRequest:
     )
 
 
-async def test_db_001_empty_database_migrates_to_0005(database: Database) -> None:
+async def test_db_001_empty_database_migrates_to_0006(database: Database) -> None:
     async with database.session() as session:
         revision = await session.scalar(text("SELECT version_num FROM alembic_version"))
-    assert revision == "0005"
+    assert revision == "0006"
 
 
 @pytest.mark.parametrize("region", [Region.CN, Region.HK])
@@ -183,6 +191,106 @@ async def test_cn_hk_runner_executes_durable_market_observation_ingestion(
     assert raw_audit.payload["raw_timezone"] == (
         "Asia/Shanghai" if region is Region.CN else "Asia/Hong_Kong"
     )
+
+
+async def test_PRV_016_us_twelve_data_checkpoint_persists_two_daily_bars_and_raw_time_audit(
+    database: Database,
+) -> None:
+    now = datetime(2026, 7, 23, 21, 0, tzinfo=UTC)
+    instrument = TwelveDataInstrument(
+        instrument_id="ins_us_etf_spy",
+        canonical_symbol="ARCX:SPY",
+        source_symbol="SPY",
+    )
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={
+                    "meta": {"symbol": "SPY", "interval": "1day", "currency": "USD"},
+                    "values": [
+                        {
+                            "datetime": "2026-07-21",
+                            "open": "600",
+                            "high": "605",
+                            "low": "599",
+                            "close": "604",
+                            "volume": "100",
+                        },
+                        {
+                            "datetime": "2026-07-22",
+                            "open": "610",
+                            "high": "615",
+                            "low": "609",
+                            "close": "614",
+                            "volume": "200",
+                        },
+                    ],
+                },
+                request=request,
+            )
+        )
+    )
+    provider = TwelveDataDailyBarsProvider(
+        api_key=SecretStr("integration-test-api-key"),
+        instruments=[instrument],
+        client=client,
+        cursor_signing_secret="integration-test-cursor-secret",
+        clock=lambda: now,
+    )
+    first_request = IngestJobRequest(
+        provider_role="us.market.primary",
+        dataset=Dataset.BARS,
+        regions={Region.US},
+        start=datetime(2026, 7, 21, 4, 0, tzinfo=UTC),
+        end=datetime(2026, 7, 22, 4, 0, tzinfo=UTC),
+        as_of=now,
+    )
+    second_request = first_request.model_copy(
+        update={
+            "start": datetime(2026, 7, 22, 4, 0, tzinfo=UTC),
+            "end": datetime(2026, 7, 23, 4, 0, tzinfo=UTC),
+        }
+    )
+    try:
+        runner = JobRunner(
+            UsTwelveDataIngestHandler(provider, now=lambda: now),
+            database=database,
+            now=lambda: now,
+        )
+        first = await runner.execute(first_request)
+        second = await runner.execute(second_request)
+    finally:
+        await provider.aclose()
+        await client.aclose()
+
+    assert first.records_fetched == 1
+    assert first.records_inserted == 1
+    assert second.records_fetched == 1
+    assert second.records_inserted == 1
+    async with database.session() as session:
+        bars = (
+            await session.scalars(
+                select(MarketBarRow).where(
+                    MarketBarRow.provider_id == "us.twelve-data.v1",
+                    MarketBarRow.instrument_id == instrument.instrument_id,
+                )
+            )
+        ).all()
+        audits = (
+            await session.scalars(
+                select(IngestAuditRow).where(
+                    IngestAuditRow.run_id.in_([first.run_id, second.run_id]),
+                    IngestAuditRow.audit_kind == "raw_timestamp_normalization",
+                )
+            )
+        ).all()
+    assert {bar.provider_record_id for bar in bars} == {
+        "us.twelve-data.v1:SPY:1day:2026-07-21T13:30:00+00:00:raw",
+        "us.twelve-data.v1:SPY:1day:2026-07-22T13:30:00+00:00:raw",
+    }
+    assert {audit.payload["raw_value"] for audit in audits} == {"2026-07-21", "2026-07-22"}
+    assert {audit.payload["raw_timezone"] for audit in audits} == {"America/New_York"}
 
 
 @pytest.mark.parametrize("region", [Region.CN, Region.HK])

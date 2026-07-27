@@ -617,10 +617,65 @@ async def test_sto_027_macro_release_replay_with_same_checksum_skips_revision_in
     assert session.statement_count == 2
 
 
+async def test_STO_027_market_bar_replay_keeps_the_first_seen_payload() -> None:
+    instrument = _instrument()
+    bar = _bar(instrument)
+    session = _WriteSession([bar.bar_id, None], scalars=[bar.source.checksum_sha256])
+    repository = NormalizedFactRepository(session, ingestion_run_id=uuid4())  # type: ignore[arg-type]
+
+    await repository.upsert_bar(bar)
+    await repository.upsert_bar(bar)
+
+    assert session.statement_count == 2
+
+
+async def test_STO_027_market_bar_revision_is_appended_instead_of_overwriting_the_base() -> None:
+    instrument = _instrument()
+    bar = _bar(instrument)
+    revised = bar.model_copy(
+        update={
+            "available_at": NOW + timedelta(hours=1),
+            "close": Decimal("10.75"),
+            "source": source_ref().model_copy(update={"checksum_sha256": "b" * 64}),
+        }
+    )
+    session = _WriteSession([bar.bar_id, None, None], scalars=[bar.source.checksum_sha256])
+    repository = NormalizedFactRepository(session, ingestion_run_id=uuid4())  # type: ignore[arg-type]
+
+    await repository.upsert_bar(bar)
+    await repository.upsert_bar(revised)
+
+    assert session.statement_count == 3
+
+
+async def test_STO_027_market_bar_restored_checksum_appends_a_newer_revision() -> None:
+    instrument = _instrument()
+    bar = _bar(instrument)
+    revised = bar.model_copy(
+        update={
+            "available_at": NOW + timedelta(hours=1),
+            "close": Decimal("10.75"),
+            "source": source_ref().model_copy(update={"checksum_sha256": "b" * 64}),
+        }
+    )
+    restored = bar.model_copy(update={"available_at": NOW + timedelta(hours=2)})
+    session = _WriteSession(
+        [bar.bar_id, None, None, None, None],
+        scalars=[bar.source.checksum_sha256, "b" * 64],
+    )
+    repository = NormalizedFactRepository(session, ingestion_run_id=uuid4())  # type: ignore[arg-type]
+
+    await repository.upsert_bar(bar)
+    await repository.upsert_bar(revised)
+    await repository.upsert_bar(restored)
+
+    assert session.statement_count == 5
+
+
 async def test_sto_027_fact_upserts_compile_with_audit_run_updates() -> None:
     instrument = _instrument()
     run_id = uuid4()
-    session = _CompilingWriteSession([None, None, None, None, None])
+    session = _CompilingWriteSession([None, None, "bar-storage-read-1", None, None])
     repository = NormalizedFactRepository(session, ingestion_run_id=run_id)  # type: ignore[arg-type]
 
     await repository.upsert_instrument(instrument)
@@ -667,4 +722,10 @@ async def test_sto_027_fact_upserts_compile_with_audit_run_updates() -> None:
         if "ON CONFLICT" in statement and "instrument_aliases" not in statement
     ]
     assert len(updates) == 4
-    assert all("ingestion_run_id = " in statement for statement in updates)
+    assert all(
+        "ingestion_run_id = " in statement
+        for statement in updates
+        if "market_bars" not in statement
+    )
+    market_bar_insert = next(statement for statement in updates if "market_bars" in statement)
+    assert "DO NOTHING" in market_bar_insert
