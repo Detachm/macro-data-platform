@@ -16,7 +16,9 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    op.alter_column("macro_releases", "scheduled_at", existing_type=sa.DateTime(timezone=True), nullable=True)
+    op.alter_column(
+        "macro_releases", "scheduled_at", existing_type=sa.DateTime(timezone=True), nullable=True
+    )
     op.add_column("macro_releases", sa.Column("scheduled_date", sa.Date(), nullable=True))
     op.create_index(
         "ix_macro_releases_region_scheduled_date",
@@ -24,7 +26,9 @@ def upgrade() -> None:
         ["region", "scheduled_date"],
     )
 
-    op.alter_column("news_events", "published_at", existing_type=sa.DateTime(timezone=True), nullable=True)
+    op.alter_column(
+        "news_events", "published_at", existing_type=sa.DateTime(timezone=True), nullable=True
+    )
     op.add_column("news_events", sa.Column("published_date", sa.Date(), nullable=True))
     op.create_index("ix_news_events_published_date", "news_events", ["published_date", "news_id"])
 
@@ -43,7 +47,9 @@ def downgrade() -> None:
     )
     op.drop_index("ix_news_events_published_date", table_name="news_events")
     op.drop_column("news_events", "published_date")
-    op.alter_column("news_events", "published_at", existing_type=sa.DateTime(timezone=True), nullable=False)
+    op.alter_column(
+        "news_events", "published_at", existing_type=sa.DateTime(timezone=True), nullable=False
+    )
     op.drop_index("ix_macro_releases_region_scheduled_date", table_name="macro_releases")
     op.drop_column("macro_releases", "scheduled_date")
     op.alter_column(
