@@ -467,12 +467,12 @@ class UsFixtureProvider:
             item
             for item in page.items
             if Region.US in query.regions
-            and query.scheduled_from <= item.scheduled_at < query.scheduled_to
+            and query.scheduled_from <= _scheduled_at(item) < query.scheduled_to
             and _is_available(item.available_at, query.as_of, context)
         ]
         return _limited_page(
             fixture_page,
-            sorted(items, key=lambda item: (item.scheduled_at, item.release_id)),
+            sorted(items, key=lambda item: (_scheduled_at(item), item.release_id)),
             query.limit,
         )
 
@@ -487,7 +487,7 @@ class UsFixtureProvider:
             item
             for item in page.items
             if Region.US in query.regions
-            and query.published_from <= item.published_at < query.published_to
+            and query.published_from <= _published_at(item) < query.published_to
             and _is_available(item.available_at, query.as_of, context)
             and (not query.languages or item.language in query.languages)
             and (not query.source_tiers or item.source_tier in query.source_tiers)
@@ -503,7 +503,7 @@ class UsFixtureProvider:
         ]
         return _limited_page(
             fixture_page,
-            sorted(items, key=lambda item: (item.published_at, item.news_id), reverse=True),
+            sorted(items, key=lambda item: (_published_at(item), item.news_id), reverse=True),
             query.limit,
         )
 
@@ -1572,6 +1572,16 @@ def _is_active_on(item: Instrument, active_on: date) -> bool:
 
 def _is_available(available_at: datetime, query_as_of: datetime, context: FetchContext) -> bool:
     return available_at <= query_as_of and available_at <= context.as_of
+
+
+def _scheduled_at(item: MacroRelease) -> datetime:
+    assert item.scheduled_at is not None
+    return item.scheduled_at
+
+
+def _published_at(item: NewsEvent) -> datetime:
+    assert item.published_at is not None
+    return item.published_at
 
 
 def _content_satisfies(requested: ContentMode, actual: ContentMode) -> bool:

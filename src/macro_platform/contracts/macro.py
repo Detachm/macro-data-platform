@@ -69,7 +69,9 @@ class MacroRelease(StrictModel):
     series_id: str
     region: Region
     release_name: str
-    scheduled_at: AwareDatetime
+    scheduled_at: AwareDatetime | None = None
+    scheduled_date: date | None = None
+    time_precision: Literal["instant", "date"] = "instant"
     released_at: AwareDatetime | None = None
     available_at: AwareDatetime
     period_start: date
@@ -80,6 +82,19 @@ class MacroRelease(StrictModel):
     unit: str
     status: Literal["scheduled", "released", "delayed", "cancelled"]
     source: SourceRef
+
+    @model_validator(mode="after")
+    def validate_time_precision(self) -> MacroRelease:
+        if self.time_precision == "instant":
+            if self.scheduled_at is None or self.scheduled_date is not None:
+                raise ValueError(
+                    "instant macro releases require scheduled_at and must not set scheduled_date"
+                )
+        elif self.scheduled_date is None or self.scheduled_at is not None:
+            raise ValueError(
+                "date macro releases require scheduled_date and must not set scheduled_at"
+            )
+        return self
 
 
 class MacroSeriesQuery(StrictModel):

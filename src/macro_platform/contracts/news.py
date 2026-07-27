@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from enum import StrEnum
 from typing import Annotated, Literal
 
@@ -69,7 +70,9 @@ class NewsEvent(StrictModel):
     source_name: str
     source_tier: SourceTier
     canonical_url: HttpUrl | None = None
-    published_at: AwareDatetime
+    published_at: AwareDatetime | None = None
+    published_date: date | None = None
+    time_precision: Literal["instant", "date"] = "instant"
     first_seen_at: AwareDatetime
     available_at: AwareDatetime
     availability_basis: AvailabilityBasis
@@ -86,8 +89,17 @@ class NewsEvent(StrictModel):
     def validate_content(self) -> NewsEvent:
         if self.body is not None and self.content_mode is not ContentMode.FULL_TEXT:
             raise ValueError("body requires content_mode=full_text")
-        if self.available_at < self.published_at:
-            raise ValueError("available_at cannot precede published_at")
+        if self.time_precision == "instant":
+            if self.published_at is None or self.published_date is not None:
+                raise ValueError(
+                    "instant news requires published_at and must not set published_date"
+                )
+            if self.available_at < self.published_at:
+                raise ValueError("available_at cannot precede published_at")
+        elif self.published_date is None or self.published_at is not None:
+            raise ValueError("date news requires published_date and must not set published_at")
+        elif self.available_at.date() < self.published_date:
+            raise ValueError("available_at cannot precede published_date")
         return self
 
 

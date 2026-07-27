@@ -45,6 +45,15 @@ class ProviderRegistry:
             for _, provider in sorted(self._providers.items(), key=lambda item: item[0])
         ]
 
+    def assert_production_safe(self) -> None:
+        """Reject fixture roles before a production app can start."""
+
+        for role, provider_id in self._roles.items():
+            if "fixture" in role.lower() or "fixture" in provider_id.lower():
+                raise ProviderRegistryError(
+                    f"fixture provider role is not allowed in production: {role}"
+                )
+
     async def close(self) -> None:
         for provider in self._providers.values():
             await provider.aclose()

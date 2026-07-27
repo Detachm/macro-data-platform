@@ -4,7 +4,7 @@ import base64
 import json
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
@@ -440,7 +440,7 @@ class RegionalFixtureProvider:
             self._parse_macro_release,
             lambda item: (
                 item.region in query.regions
-                and query.scheduled_from <= item.scheduled_at < query.scheduled_to
+                and _macro_release_in_window(item, query)
                 and item.available_at <= query.as_of
                 and _available_for_context(item.available_at, context)
             ),
@@ -455,7 +455,7 @@ class RegionalFixtureProvider:
             self._parse_news,
             lambda item: (
                 self.region in query.regions
-                and query.published_from <= item.published_at < query.published_to
+                and _news_in_window(item, query)
                 and item.available_at <= query.as_of
                 and (not query.languages or item.language in query.languages)
                 and (not query.source_tiers or item.source_tier in query.source_tiers)
@@ -1350,6 +1350,24 @@ def _content_satisfies(requested: ContentMode, actual: ContentMode) -> bool:
 
 def _available_for_context(available_at: datetime, context: FetchContext) -> bool:
     return available_at <= context.as_of
+
+
+def _macro_release_in_window(item: MacroRelease, query: MacroReleaseQuery) -> bool:
+    if item.scheduled_at is not None:
+        return query.scheduled_from <= item.scheduled_at < query.scheduled_to
+    assert item.scheduled_date is not None
+    day_start = datetime.combine(item.scheduled_date, time.min, query.scheduled_from.tzinfo)
+    day_end = day_start + timedelta(days=1)
+    return day_start < query.scheduled_to and day_end > query.scheduled_from
+
+
+def _news_in_window(item: NewsEvent, query: NewsQuery) -> bool:
+    if item.published_at is not None:
+        return query.published_from <= item.published_at < query.published_to
+    assert item.published_date is not None
+    day_start = datetime.combine(item.published_date, time.min, query.published_from.tzinfo)
+    day_end = day_start + timedelta(days=1)
+    return day_start < query.published_to and day_end > query.published_from
 
 
 def _hex_id(prefix: str, *parts: object) -> str:

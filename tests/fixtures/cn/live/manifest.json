@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "fixture_kind": "recorded_upstream_response",
+  "provider_id": "cn.nbs.release-calendar.v1",
+  "region": "CN",
+  "offline_only": true,
+  "source_url": "https://www.stats.gov.cn/sj/fbrc/bnxxfb/",
+  "captured_at": "2026-07-27T04:00:00Z",
+  "redaction": "official calendar markup only; no credentials or cookies",
+  "fixtures": {
+    "nbs_release_calendar.html": {
+      "sha256": "e70ad73af225a098de95eaa209b6e125cecb9a8c92110c7a7d31d399b2dc2c20"
+    }
+  }
+}
