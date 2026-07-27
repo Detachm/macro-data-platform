@@ -64,6 +64,60 @@ def upgrade() -> None:
             [sa.text("(payload #>> '{source,retrieved_at}')")],
         )
 
+    for table_name in (
+        "instruments",
+        "market_bars",
+        "market_observations",
+        "macro_series",
+        "macro_observations",
+        "macro_releases",
+        "news_events",
+        "ingest_page_commits",
+    ):
+        op.add_column(table_name, sa.Column("ingestion_run_id", postgresql.UUID(as_uuid=True)))
+        op.create_foreign_key(
+            f"fk_{table_name}_ingestion_run",
+            table_name,
+            "provider_runs",
+            ["ingestion_run_id"],
+            ["run_id"],
+            ondelete="RESTRICT",
+        )
+        op.create_index(f"ix_{table_name}_ingestion_run_id", table_name, ["ingestion_run_id"])
+
+    op.create_table(
+        "macro_release_revisions",
+        sa.Column("revision_id", sa.String(96), primary_key=True),
+        sa.Column(
+            "release_id",
+            sa.String(128),
+            sa.ForeignKey("macro_releases.release_id", ondelete="RESTRICT"),
+            nullable=False,
+        ),
+        sa.Column("available_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("source_checksum_sha256", sa.String(64), nullable=False),
+        sa.Column(
+            "ingestion_run_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("provider_runs.run_id", ondelete="RESTRICT"),
+            nullable=True,
+        ),
+        sa.Column("payload", postgresql.JSONB(), nullable=False),
+        sa.UniqueConstraint(
+            "release_id", "source_checksum_sha256", name="uq_macro_release_revision"
+        ),
+    )
+    op.create_index(
+        "ix_macro_release_revisions_release_available",
+        "macro_release_revisions",
+        ["release_id", "available_at"],
+    )
+    op.create_index(
+        "ix_macro_release_revisions_ingestion_run_id",
+        "macro_release_revisions",
+        ["ingestion_run_id"],
+    )
+
     op.create_table(
         "report_input_snapshots",
         sa.Column("snapshot_id", sa.String(128), primary_key=True),
@@ -113,6 +167,32 @@ def upgrade() -> None:
     op.create_index("ix_daily_reports_date_created", "daily_reports", ["report_date", "created_at"])
 
     op.create_table(
+        "daily_report_source_refs",
+        sa.Column(
+            "report_id",
+            sa.String(128),
+            sa.ForeignKey("daily_reports.report_id", ondelete="CASCADE"),
+            primary_key=True,
+        ),
+        sa.Column("source_ref_id", sa.String(128), primary_key=True),
+        sa.Column("provider_id", sa.String(64), nullable=False),
+        sa.Column("provider_record_id", sa.String(256), nullable=False),
+        sa.Column("checksum_sha256", sa.String(64), nullable=False),
+        sa.Column("retrieved_at", sa.DateTime(timezone=True), nullable=False),
+    )
+    op.create_index(
+        "ix_daily_report_source_refs_provider_record",
+        "daily_report_source_refs",
+        ["provider_id", "provider_record_id"],
+    )
+    op.create_index(
+        "ix_daily_report_source_refs_checksum", "daily_report_source_refs", ["checksum_sha256"]
+    )
+    op.create_index(
+        "ix_daily_report_source_refs_retrieved", "daily_report_source_refs", ["retrieved_at"]
+    )
+
+    op.create_table(
         "delivery_attempts",
         sa.Column("delivery_id", postgresql.UUID(as_uuid=True), primary_key=True),
         sa.Column(
@@ -153,8 +233,23 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_table("delivery_attempts")
+    op.drop_table("daily_report_source_refs")
     op.drop_table("daily_reports")
     op.drop_table("report_input_snapshots")
+    op.drop_table("macro_release_revisions")
+    for table_name in (
+        "ingest_page_commits",
+        "news_events",
+        "macro_releases",
+        "macro_observations",
+        "macro_series",
+        "market_observations",
+        "market_bars",
+        "instruments",
+    ):
+        op.drop_constraint(f"fk_{table_name}_ingestion_run", table_name, type_="foreignkey")
+        op.drop_index(f"ix_{table_name}_ingestion_run_id", table_name=table_name)
+        op.drop_column(table_name, "ingestion_run_id")
     for table_name in (
         "news_events",
         "macro_releases",

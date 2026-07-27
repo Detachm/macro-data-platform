@@ -52,8 +52,10 @@ from macro_platform.jobs.runner import JobRunner
 from macro_platform.storage.database import Database
 from macro_platform.storage.models import (
     DailyReportRow,
+    DailyReportSourceRefRow,
     DeliveryAttemptRow,
     MarketBarRow,
+    ProviderRunRow,
     ReportInputSnapshotRow,
 )
 from macro_platform.storage.reporting import DeliveryAttempt, ReportInputSnapshot, StoredDailyReport
@@ -255,13 +257,20 @@ async def test_rep_027_migration_upgrades_0002_to_current_schema(database: Datab
                     text(
                         "SELECT tablename FROM pg_tables "
                         "WHERE schemaname = 'public' AND tablename IN "
-                        "('report_input_snapshots', 'daily_reports', 'delivery_attempts')"
+                        "('report_input_snapshots', 'daily_reports', 'daily_report_source_refs', "
+                        "'delivery_attempts', 'macro_release_revisions')"
                     )
                 )
             ).all()
         )
     assert revision == "0003"
-    assert tables == {"report_input_snapshots", "daily_reports", "delivery_attempts"}
+    assert tables == {
+        "report_input_snapshots",
+        "daily_reports",
+        "daily_report_source_refs",
+        "delivery_attempts",
+        "macro_release_revisions",
+    }
 
 
 async def test_rep_027_001_report_and_delivery_replays_are_idempotent(
@@ -320,7 +329,13 @@ async def test_rep_027_001_report_and_delivery_replays_are_idempotent(
             .select_from(DeliveryAttemptRow)
             .where(DeliveryAttemptRow.report_id == report.report_id)
         )
+        source_ref_count = await session.scalar(
+            select(func.count())
+            .select_from(DailyReportSourceRefRow)
+            .where(DailyReportSourceRefRow.report_id == report.report_id)
+        )
     assert (snapshot_count, report_count, delivery_count) == (1, 1, 1)
+    assert source_ref_count == len(report.source_references())
 
 
 async def test_rep_027_002_ingestion_run_and_report_recover_after_restart(
@@ -508,6 +523,15 @@ async def test_postgres_repository_persists_facts_pit_revisions_and_raw_source_f
         status="scheduled",
         source=_source(f"macro-release-{token}"),
     )
+    released = release.model_copy(
+        update={
+            "released_at": NOW + timedelta(hours=2),
+            "available_at": NOW + timedelta(hours=2),
+            "actual": Decimal("101"),
+            "status": "released",
+            "source": _source(f"macro-release-revised-{token}", checksum="b" * 64),
+        }
+    )
     event = news_event().model_copy(
         update={
             "news_id": f"news-{token}",
@@ -518,7 +542,25 @@ async def test_postgres_repository_persists_facts_pit_revisions_and_raw_source_f
     )
 
     async with UnitOfWork(database).transaction() as session:
-        repository = NormalizedFactRepository(session)
+        run_id = uuid4()
+        session.add(
+            ProviderRunRow(
+                run_id=run_id,
+                idempotency_key=f"fact-run-{token}",
+                provider_role="storage.contract.facts",
+                dataset=Dataset.MACRO_RELEASES.value,
+                status="succeeded",
+                started_at=NOW,
+                finished_at=NOW,
+                records_fetched=0,
+                records_accepted=0,
+                records_rejected=0,
+                details={},
+                request_payload={},
+            )
+        )
+        await session.flush()
+        repository = NormalizedFactRepository(session, ingestion_run_id=run_id)
         await repository.upsert_instrument(instrument)
         await repository.upsert_bar(bar)
         await repository.upsert_market_observation(market_observation)
@@ -529,6 +571,7 @@ async def test_postgres_repository_persists_facts_pit_revisions_and_raw_source_f
         )
         await repository.upsert_macro_observation(second_vintage)
         await repository.upsert_macro_release(release)
+        await repository.upsert_macro_release(released)
         await repository.upsert_news_event(event)
 
     repository = PostgresDataRepository(database)
@@ -587,6 +630,14 @@ async def test_postgres_repository_persists_facts_pit_revisions_and_raw_source_f
             as_of=as_of_before_revision,
         )
     ) == [release]
+    assert await repository.list_macro_releases(
+        MacroReleaseQuery(
+            regions={Region.CN},
+            scheduled_from=NOW,
+            scheduled_to=NOW + timedelta(days=2),
+            as_of=NOW + timedelta(hours=3),
+        )
+    ) == [released]
     headlines = await repository.list_news(
         NewsQuery(
             regions={Region.CN},
@@ -613,5 +664,9 @@ async def test_postgres_repository_persists_facts_pit_revisions_and_raw_source_f
             .where(text("observation_id = :observation_id")),
             {"observation_id": first_vintage.observation_id},
         )
+        fact_run_id = await session.scalar(
+            select(MarketBarRow.ingestion_run_id).where(MarketBarRow.bar_id == bar.bar_id)
+        )
     assert source_lookup == bar.bar_id
     assert revision_payload == "100"
+    assert fact_run_id == run_id

@@ -158,7 +158,7 @@ class CnHkFixtureIngestHandler:
             else self._retention_policy.rule_for(self._provider.region)
         )
         async with UnitOfWork(database).transaction() as session:
-            repository = IngestionCheckpointRepository(session)
+            repository = IngestionCheckpointRepository(session, ingestion_run_id=run_id)
 
             async def write_records(_: object) -> None:
                 if retention_rule is not RetentionRule.CANONICAL_FACTS:

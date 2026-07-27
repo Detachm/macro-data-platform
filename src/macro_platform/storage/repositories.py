@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import delete, func, or_, select, union_all, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,10 +30,11 @@ from macro_platform.contracts.market import (
 )
 from macro_platform.contracts.news import ContentMode, NewsEvent, NewsQuery
 from macro_platform.contracts.provider import Dataset, IngestJobRequest, IngestJobResult
-from macro_platform.normalization.common import utc_now
+from macro_platform.normalization.common import stable_id, utc_now
 from macro_platform.storage.database import Database
 from macro_platform.storage.models import (
     DailyReportRow,
+    DailyReportSourceRefRow,
     DeliveryAttemptRow,
     IngestAuditRow,
     IngestPageCommitRow,
@@ -41,6 +42,7 @@ from macro_platform.storage.models import (
     InstrumentRow,
     JobWatermarkRow,
     MacroObservationRow,
+    MacroReleaseRevisionRow,
     MacroReleaseRow,
     MacroSeriesRow,
     MarketBarRow,
@@ -110,8 +112,9 @@ class EmptyDataRepository:
 class NormalizedFactRepository:
     """Transaction-scoped writes for normalized facts and their provenance payloads."""
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, *, ingestion_run_id: UUID | None = None) -> None:
         self._session = session
+        self._ingestion_run_id = ingestion_run_id
 
     @property
     def session(self) -> AsyncSession:
@@ -128,6 +131,7 @@ class NormalizedFactRepository:
                 status=instrument.status.value,
                 valid_from=instrument.valid_from,
                 valid_to=instrument.valid_to,
+                ingestion_run_id=self._ingestion_run_id,
                 payload=payload,
             )
             .on_conflict_do_update(
@@ -184,6 +188,7 @@ class NormalizedFactRepository:
                 adjustment=bar.adjustment.value,
                 provider_id=bar.source.provider_id,
                 provider_record_id=bar.source.provider_record_id,
+                ingestion_run_id=self._ingestion_run_id,
                 payload=payload,
             )
             .on_conflict_do_update(
@@ -209,6 +214,7 @@ class NormalizedFactRepository:
                 available_at=observation.available_at,
                 provider_id=observation.source.provider_id,
                 provider_record_id=observation.source.provider_record_id,
+                ingestion_run_id=self._ingestion_run_id,
                 payload=payload,
             )
             .on_conflict_do_update(
@@ -225,7 +231,12 @@ class NormalizedFactRepository:
         payload = series.model_dump(mode="json")
         await self._session.execute(
             insert(MacroSeriesRow)
-            .values(series_id=series.series_id, region=series.region.value, payload=payload)
+            .values(
+                series_id=series.series_id,
+                region=series.region.value,
+                ingestion_run_id=self._ingestion_run_id,
+                payload=payload,
+            )
             .on_conflict_do_update(
                 index_elements=(MacroSeriesRow.series_id,),
                 set_={"region": series.region.value, "payload": payload},
@@ -245,6 +256,7 @@ class NormalizedFactRepository:
                 vintage_id=observation.vintage_id,
                 revision_no=observation.revision_no,
                 provider_id=observation.source.provider_id,
+                ingestion_run_id=self._ingestion_run_id,
                 payload=payload,
             )
             # Macro revisions carry a new vintage/observation identity. A raw
@@ -254,7 +266,7 @@ class NormalizedFactRepository:
 
     async def upsert_macro_release(self, release: MacroRelease) -> None:
         payload = release.model_dump(mode="json")
-        await self._session.execute(
+        inserted = await self._session.execute(
             insert(MacroReleaseRow)
             .values(
                 release_id=release.release_id,
@@ -262,12 +274,27 @@ class NormalizedFactRepository:
                 region=release.region.value,
                 scheduled_at=release.scheduled_at,
                 available_at=release.available_at,
+                ingestion_run_id=self._ingestion_run_id,
                 payload=payload,
             )
-            .on_conflict_do_update(
-                index_elements=(MacroReleaseRow.release_id,),
-                set_={"available_at": release.available_at, "payload": payload},
+            .on_conflict_do_nothing(index_elements=(MacroReleaseRow.release_id,))
+            .returning(MacroReleaseRow.release_id)
+        )
+        if inserted.scalar_one_or_none() is not None:
+            return
+        await self._session.execute(
+            insert(MacroReleaseRevisionRow)
+            .values(
+                revision_id=stable_id(
+                    "macro-release-revision", release.release_id, release.source.checksum_sha256
+                ),
+                release_id=release.release_id,
+                available_at=release.available_at,
+                source_checksum_sha256=release.source.checksum_sha256,
+                ingestion_run_id=self._ingestion_run_id,
+                payload=payload,
             )
+            .on_conflict_do_nothing(constraint="uq_macro_release_revision")
         )
 
     async def upsert_news_event(self, event: NewsEvent) -> None:
@@ -282,6 +309,7 @@ class NormalizedFactRepository:
                 published_at=event.published_at,
                 available_at=event.available_at,
                 status=event.status,
+                ingestion_run_id=self._ingestion_run_id,
                 payload=payload,
             )
             # A correction is a new NewsEvent linked by supersedes_news_id;
@@ -505,15 +533,42 @@ class PostgresDataRepository:
         return [MacroObservation.model_validate(payload) for payload in payloads]
 
     async def list_macro_releases(self, query: MacroReleaseQuery) -> list[MacroRelease]:
-        statement = (
-            select(MacroReleaseRow.payload)
-            .where(
-                MacroReleaseRow.region.in_([region.value for region in query.regions]),
-                MacroReleaseRow.scheduled_at >= query.scheduled_from,
-                MacroReleaseRow.scheduled_at < query.scheduled_to,
-                MacroReleaseRow.available_at <= query.as_of,
+        base_conditions = (
+            MacroReleaseRow.region.in_([region.value for region in query.regions]),
+            MacroReleaseRow.scheduled_at >= query.scheduled_from,
+            MacroReleaseRow.scheduled_at < query.scheduled_to,
+        )
+        base_versions = select(
+            MacroReleaseRow.release_id.label("release_id"),
+            MacroReleaseRow.scheduled_at.label("scheduled_at"),
+            MacroReleaseRow.available_at.label("available_at"),
+            MacroReleaseRow.payload.label("payload"),
+        ).where(*base_conditions, MacroReleaseRow.available_at <= query.as_of)
+        revision_versions = (
+            select(
+                MacroReleaseRow.release_id.label("release_id"),
+                MacroReleaseRow.scheduled_at.label("scheduled_at"),
+                MacroReleaseRevisionRow.available_at.label("available_at"),
+                MacroReleaseRevisionRow.payload.label("payload"),
             )
-            .order_by(MacroReleaseRow.scheduled_at, MacroReleaseRow.release_id)
+            .join(MacroReleaseRow, MacroReleaseRow.release_id == MacroReleaseRevisionRow.release_id)
+            .where(*base_conditions, MacroReleaseRevisionRow.available_at <= query.as_of)
+        )
+        versions = union_all(base_versions, revision_versions).subquery()
+        rank = func.row_number().over(
+            partition_by=versions.c.release_id,
+            order_by=versions.c.available_at.desc(),
+        )
+        ranked = select(
+            versions.c.payload.label("payload"),
+            versions.c.scheduled_at.label("scheduled_at"),
+            versions.c.release_id.label("release_id"),
+            rank.label("rank"),
+        ).subquery()
+        statement = (
+            select(ranked.c.payload)
+            .where(ranked.c.rank == 1)
+            .order_by(ranked.c.scheduled_at, ranked.c.release_id)
             .limit(query.limit)
         )
         async with self._database.session() as session:
@@ -618,6 +673,7 @@ class IngestionRunRepository:
             .where(ProviderRunRow.run_id == result.run_id)
             .values(
                 status=result.status,
+                started_at=result.started_at,
                 finished_at=result.finished_at,
                 records_fetched=result.records_fetched,
                 records_accepted=result.records_accepted,
@@ -696,6 +752,12 @@ class ReportRepository:
         return False
 
     async def put_report(self, report: StoredDailyReport) -> bool:
+        snapshot = await self.load_input_snapshot(report.input_snapshot_id)
+        if snapshot is None:
+            raise ValueError("daily report references an unknown input snapshot")
+        payload_snapshot = report.payload.get("input_snapshot")
+        if payload_snapshot != snapshot.payload:
+            raise ValueError("daily report payload input_snapshot must match stored snapshot")
         inserted = await self._session.execute(
             insert(DailyReportRow)
             .values(
@@ -713,6 +775,21 @@ class ReportRepository:
             .returning(DailyReportRow.report_id)
         )
         if inserted.scalar_one_or_none() is not None:
+            await self._session.execute(
+                insert(DailyReportSourceRefRow).values(
+                    [
+                        {
+                            "report_id": report.report_id,
+                            "source_ref_id": source.source_ref_id,
+                            "provider_id": source.provider_id,
+                            "provider_record_id": source.provider_record_id,
+                            "checksum_sha256": source.checksum_sha256,
+                            "retrieved_at": source.retrieved_at,
+                        }
+                        for source in report.source_references()
+                    ]
+                )
+            )
             return True
         existing = await self._session.get(DailyReportRow, report.report_id)
         if existing is None:
@@ -896,6 +973,7 @@ class IngestionCheckpointRepository(NormalizedFactRepository):
                 source_watermark=source_watermark,
                 next_cursor=next_cursor,
                 accepted_record_ids=accepted_record_ids,
+                ingestion_run_id=self._ingestion_run_id,
             )
             .on_conflict_do_nothing(
                 index_elements=(

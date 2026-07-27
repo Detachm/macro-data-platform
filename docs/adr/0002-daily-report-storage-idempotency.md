@@ -35,6 +35,8 @@
 - JSON payload 保留 #25 的完整报告和 source/PIT/rights 审计字段；后续若需要 section 级检索，可在兼容 migration 中增量拆表。
 - 本 ADR 不实现 LLM、质量 gate 或 Feishu API；这些分别属于 #30/#31/#32。
 
+本变更跨 migration、repository、production injection 与恢复测试，超过通常的 PR 行数建议；它们必须同一 PR 合入：只迁移 schema 会留下不可调用的存储，只有 repository 又无法安全部署或验证恢复。因此按 #27 的单一 durable-storage 边界保留为一个可审查、可回滚的原子变更，不拆入后续生成或交付 Issue。
+
 回滚方案：在尚未有 production 数据时可回滚本 migration；进入共享环境后仅停止新写入并新增 forward migration，保留既有报告审计链。
 
 ## 验证

@@ -37,8 +37,12 @@ from macro_platform.contracts.market import (
 from macro_platform.contracts.news import ContentMode, EntityRef, NewsQuery, SourceTier
 from macro_platform.contracts.provider import Dataset
 from macro_platform.storage.models import ProviderRunRow
-from macro_platform.storage.reporting import StoredDailyReport
-from macro_platform.storage.repositories import IngestionRunRepository, PostgresDataRepository
+from macro_platform.storage.reporting import ReportInputSnapshot, StoredDailyReport
+from macro_platform.storage.repositories import (
+    IngestionRunRepository,
+    NormalizedFactRepository,
+    PostgresDataRepository,
+)
 from tests.helpers import NOW, news_event, source_ref
 
 
@@ -75,6 +79,24 @@ class _RecoveredRunRepository(IngestionRunRepository):
 
     async def load_run(self, run_id: object) -> ProviderRunRow | None:
         return self._row
+
+
+class _WriteResult:
+    def __init__(self, value: str | None) -> None:
+        self._value = value
+
+    def scalar_one_or_none(self) -> str | None:
+        return self._value
+
+
+class _WriteSession:
+    def __init__(self, values: list[str | None]) -> None:
+        self._values = deque(values)
+        self.statement_count = 0
+
+    async def execute(self, statement: object) -> _WriteResult:
+        self.statement_count += 1
+        return _WriteResult(self._values.popleft())
 
 
 def _instrument() -> Instrument:
@@ -353,3 +375,104 @@ def test_rep_027_report_storage_rejects_payload_identity_mismatch(
             generated_at=NOW,
             payload=payload,
         )
+
+
+def test_rep_027_report_storage_extracts_indexable_source_references() -> None:
+    report = StoredDailyReport(
+        report_id="report-1",
+        report_date=NOW.date(),
+        report_version="v1",
+        contract_version="1.0",
+        input_snapshot_id="snapshot-1",
+        status="complete",
+        publication_decision="published",
+        generated_at=NOW,
+        payload={
+            "report_id": "report-1",
+            "report_date": NOW.date().isoformat(),
+            "contract_version": "1.0",
+            "status": "complete",
+            "publication": {"decision": "published"},
+            "input_snapshot": {"snapshot_id": "snapshot-1"},
+            "sections": {
+                "source_references": {
+                    "items": [
+                        {
+                            "source_ref_id": "source-1",
+                            "provider_id": "fixture.provider",
+                            "provider_record_id": "record-1",
+                            "source_name": "Fixture source",
+                            "source_url": "https://example.com/source-1",
+                            "retrieved_at": NOW.isoformat(),
+                            "checksum_sha256": "a" * 64,
+                            "external_llm_allowed": False,
+                        }
+                    ]
+                }
+            },
+        },
+    )
+
+    assert report.source_references()[0].provider_record_id == "record-1"
+
+
+def test_rep_027_snapshot_storage_requires_the_frozen_input_contract() -> None:
+    payload = {
+        "snapshot_id": "snapshot-1",
+        "snapshot_version": "1.0",
+        "as_of": NOW.isoformat().replace("+00:00", "Z"),
+        "cutoff_at": NOW.isoformat().replace("+00:00", "Z"),
+        "fingerprint_sha256": "a" * 64,
+        "fact_ids": ["fact-1"],
+    }
+    snapshot = ReportInputSnapshot(
+        snapshot_id="snapshot-1",
+        snapshot_version="1.0",
+        report_date=NOW.date(),
+        as_of=NOW,
+        cutoff_at=NOW,
+        fingerprint_sha256="a" * 64,
+        fact_ids=["fact-1"],
+        payload=payload,
+    )
+
+    assert snapshot.payload == payload
+    with pytest.raises(ValueError, match="input facts"):
+        ReportInputSnapshot(
+            **snapshot.model_dump(exclude={"payload"}),
+            payload={**payload, "fact_ids": []},
+        )
+
+
+async def test_sto_027_macro_release_keeps_pit_versions_without_in_place_update() -> None:
+    release = MacroRelease(
+        release_id="macro-release-storage-write-1",
+        series_id="macro:CN:TEST:STORAGE_WRITE",
+        region=Region.CN,
+        release_name="Storage write release",
+        scheduled_at=NOW + timedelta(days=1),
+        available_at=NOW,
+        period_start=date(2026, 7, 1),
+        period_end=date(2026, 7, 31),
+        unit="index",
+        status="scheduled",
+        source=source_ref(),
+    )
+    session = _WriteSession([release.release_id, None, None])
+    repository = NormalizedFactRepository(session)  # type: ignore[arg-type]
+
+    assert repository.session is session
+    await repository.upsert_macro_release(release)
+    await repository.upsert_macro_release(
+        release.model_copy(
+            update={
+                "available_at": NOW + timedelta(hours=1),
+                "released_at": NOW + timedelta(hours=1),
+                "actual": Decimal("100"),
+                "status": "released",
+                "source": source_ref().model_copy(update={"checksum_sha256": "b" * 64}),
+            }
+        )
+    )
+
+    assert session.statement_count == 3
