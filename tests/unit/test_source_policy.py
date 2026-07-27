@@ -122,6 +122,21 @@ def test_gov_026_policy_exposes_llm_citation_and_retention_decisions() -> None:
     assert retention.retention_rule is RetentionRule.METADATA_ONLY
 
 
+def test_gov_026_not_production_enabled_is_denied_for_llm_and_citation() -> None:
+    policy = _policy(_entry(production_enabled=False))
+
+    for purpose in (PolicyPurpose.EXTERNAL_LLM, PolicyPurpose.CITATION):
+        decision = policy.decision(
+            provider_id="test.us.treasury.v1",
+            dataset=Dataset.MARKET_OBSERVATIONS,
+            region=Region.US,
+            purpose=purpose,
+        )
+
+        assert not decision.allowed
+        assert decision.reason == "source is not production enabled"
+
+
 def test_gov_026_packaged_policy_is_cross_region_and_traceable() -> None:
     policy = load_production_source_policy()
     entries = policy.manifest.entries

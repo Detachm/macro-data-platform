@@ -54,12 +54,14 @@ async def test_internal_query_preserves_original_event() -> None:
     assert await service.events(query(ContentMode.SNIPPET)) == [original]
 
 
-async def test_gov_026_unapproved_source_is_excluded_from_external_llm_input() -> None:
+async def test_gov_026_source_not_enabled_for_production_is_excluded_from_external_llm_input() -> (
+    None
+):
     approved = news_event().model_copy(
         update={"news_id": "approved", "source": source_ref("approved.news.v1")}
     )
-    pending = news_event().model_copy(
-        update={"news_id": "pending", "source": source_ref("pending.news.v1")}
+    disabled = news_event().model_copy(
+        update={"news_id": "disabled", "source": source_ref("disabled.news.v1")}
     )
     policy = ProductionSourcePolicy(
         SourcePolicyManifest(
@@ -81,8 +83,8 @@ async def test_gov_026_unapproved_source_is_excluded_from_external_llm_input() -
                     evidence=["docs/data-sources/cn-hk-mvp.md"],
                 ),
                 SourcePolicyEntry(
-                    policy_id="pending-news",
-                    provider_id="pending.news.v1",
+                    policy_id="disabled-news",
+                    provider_id="disabled.news.v1",
                     dataset=Dataset.NEWS,
                     regions={Region.CN},
                     owner="@kazming666",
@@ -91,21 +93,21 @@ async def test_gov_026_unapproved_source_is_excluded_from_external_llm_input() -
                     external_llm_allowed=True,
                     citation_allowed=True,
                     retention_rule=RetentionRule.METADATA_ONLY,
-                    approval_status=ApprovalStatus.PENDING,
+                    approval_status=ApprovalStatus.APPROVED,
                     production_enabled=False,
                     evidence=["docs/data-sources/cn-hk-mvp.md"],
                 ),
             ],
         )
     )
-    service = NewsService(NewsRepository([approved, pending]), source_policy=policy)
+    service = NewsService(NewsRepository([approved, disabled]), source_policy=policy)
 
     events = await service.events(query(ContentMode.SNIPPET), for_external_llm=True)
 
     assert [event.news_id for event in events] == ["approved"]
     assert (
         policy.decision(
-            provider_id="pending.news.v1",
+            provider_id="disabled.news.v1",
             dataset=Dataset.NEWS,
             region=Region.CN,
             purpose=PolicyPurpose.EXTERNAL_LLM,

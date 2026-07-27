@@ -224,12 +224,16 @@ class ProductionSourcePolicy:
                 return False, "source is not production enabled"
             return True, "approved for production ingestion"
         if purpose is PolicyPurpose.EXTERNAL_LLM:
+            if not entry.production_enabled:
+                return False, "source is not production enabled"
             return (
                 (True, "approved for external LLM")
                 if entry.external_llm_allowed
                 else (False, "external LLM is not allowed")
             )
         if purpose is PolicyPurpose.CITATION:
+            if not entry.production_enabled:
+                return False, "source is not production enabled"
             return (
                 (True, "approved for citation")
                 if entry.citation_allowed
