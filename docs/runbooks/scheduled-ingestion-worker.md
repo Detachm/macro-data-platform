@@ -24,7 +24,8 @@ backfill 和质量门禁的公共执行边界；API 继续只读取已入库的�
 
 后续实现必须把每个 provider task 包装为 checkpointed `JobRunner`，将其 run ID、checkpoint 和
 quarantine evidence 写入 input snapshot；不得直接在 scheduler 内访问上游，也不得用内存 cursor
-充当恢复证据。
+充当恢复证据。任何成功 task 若未返回 durable `run_id`，worker 会以
+`MISSING_DURABLE_RUN_ID` fail closed。
 
 直接执行空 task bundle 会得到 `blocked`，而不是成功或降级；这样未完成的生产注册不会被质量状态
 误报为可发布。`macro-data-worker` 入口发现空注册会记录 `SCHEDULER_NOT_CONFIGURED` 后失败退出，

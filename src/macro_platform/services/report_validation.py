@@ -795,7 +795,7 @@ def _data_quality(issues: list[ReportValidationIssue], status: str) -> dict[str,
         ],
         "stale_inputs": [entry for entry in entries if "STALE" in entry["reason_code"]],
         "late_inputs": [entry for entry in entries if "LATE" in entry["reason_code"]],
-        "revised_inputs": [],
+        "revised_inputs": [entry for entry in entries if "REVISED" in entry["reason_code"]],
         "unavailable_inputs": [
             entry
             for entry in entries
@@ -806,6 +806,8 @@ def _data_quality(issues: list[ReportValidationIssue], status: str) -> dict[str,
                 "STALE_OPTIONAL_INPUT",
                 "LATE_REQUIRED_INPUT",
                 "LATE_OPTIONAL_INPUT",
+                "REVISED_REQUIRED_INPUT",
+                "REVISED_OPTIONAL_INPUT",
             }
         ],
     }

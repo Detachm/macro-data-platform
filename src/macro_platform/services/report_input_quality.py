@@ -146,11 +146,11 @@ def _issue_for_status(
 
 
 def _has_materialized_facts(snapshot: ReportInputSnapshot) -> bool:
-    return (
-        bool(snapshot.fact_ids)
-        and isinstance(snapshot.payload.get("facts"), list)
-        and bool(snapshot.payload["facts"])
-    )
+    raw_facts = snapshot.payload.get("facts")
+    if not snapshot.fact_ids or not isinstance(raw_facts, list) or not raw_facts:
+        return False
+    fact_ids = [fact.get("fact_id") for fact in raw_facts if isinstance(fact, dict)]
+    return len(fact_ids) == len(raw_facts) and set(fact_ids) == set(snapshot.fact_ids)
 
 
 def _decision(issues: list[QualityGateIssue]) -> QualityGateStatus:

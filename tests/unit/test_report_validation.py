@@ -259,6 +259,41 @@ def test_rpt_029_retryable_required_input_blocks_until_the_worker_recovers() -> 
     assert {issue.code for issue in result.issues} == {"RETRYABLE_REQUIRED_INPUT"}
 
 
+def test_rpt_029_fallback_exposes_optional_revision_in_data_quality() -> None:
+    snapshot = _snapshot()
+    revised_snapshot = snapshot.model_copy(
+        update={
+            "payload": {
+                **snapshot.payload,
+                "input_quality": {
+                    **snapshot.payload["input_quality"],
+                    "market.us.vix": {
+                        "status": "revised",
+                        "required": False,
+                        "reason": "provider corrected the close",
+                    },
+                },
+            }
+        }
+    )
+
+    report = ReportFallbackBuilder().build(
+        revised_snapshot,
+        report_id="daily-report-fallback-revised",
+        report_version="fallback-v1",
+        generated_at=NOW,
+    )
+
+    assert report.status == "degraded"
+    assert report.payload["data_quality"]["revised_inputs"] == [
+        {
+            "input_id": "market.us.vix",
+            "reason_code": "REVISED_OPTIONAL_INPUT",
+            "reason": "provider corrected the close",
+        }
+    ]
+
+
 def test_rpt_031_fallback_is_deterministic_when_validated_facts_are_sufficient() -> None:
     snapshot = _snapshot()
 

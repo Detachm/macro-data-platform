@@ -146,12 +146,13 @@ class ScheduledIngestionWorker:
 
             task_results = tuple([await self._run_task(task, report_date) for task in self._tasks])
             status = _worker_status(task_results, self._tasks)
+            run_ids = sorted({task.run_id for task in task_results if task.run_id is not None})
             result = ScheduledWorkerResult(report_date, status, task_results)
             SCHEDULED_REPORT_RUNS.labels(status=status).inc()
             await self._logger.ainfo(
                 "scheduled_report_finished",
                 action="scheduled_report",
-                run_id=None,
+                run_id=run_ids[0] if len(run_ids) == 1 else None,
                 provider_role=None,
                 dataset=None,
                 region=None,
@@ -162,6 +163,7 @@ class ScheduledIngestionWorker:
                 record_count=sum(task.record_count for task in task_results),
                 error_code=None,
                 task_count=len(task_results),
+                run_ids=run_ids,
             )
             return result
 
@@ -192,7 +194,19 @@ class ScheduledIngestionWorker:
                         error_code=task_result.error_code,
                     )
                     continue
-                result = replace(task_result, attempt_no=attempt_no)
+                if task_result.status == "succeeded" and not task_result.run_id:
+                    result = ScheduledTaskResult(
+                        task_id=task_result.task_id,
+                        provider_role=task_result.provider_role,
+                        status="failed",
+                        dataset=task_result.dataset,
+                        region=task_result.region,
+                        record_count=task_result.record_count,
+                        attempt_no=attempt_no,
+                        error_code="MISSING_DURABLE_RUN_ID",
+                    )
+                else:
+                    result = replace(task_result, attempt_no=attempt_no)
             except RetryableScheduledTaskError as error:
                 if attempt_no < self._max_attempts:
                     await self._retry_task(

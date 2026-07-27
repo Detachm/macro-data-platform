@@ -146,6 +146,24 @@ def test_rpt_029_empty_fact_set_blocks_even_when_inputs_are_available() -> None:
     ]
 
 
+def test_rpt_029_mismatched_fact_set_blocks_even_when_inputs_are_available() -> None:
+    snapshot = _snapshot({}).model_copy(
+        update={
+            "payload": {
+                **_snapshot({}).payload,
+                "facts": [{"fact_id": "unexpected-fact"}],
+            },
+        }
+    )
+
+    result = ReportInputQualityGate().evaluate(snapshot)
+
+    assert result.status == "blocked"
+    assert [(issue.input_id, issue.code) for issue in result.issues] == [
+        ("report.facts", "REQUIRED_FACTS_UNAVAILABLE")
+    ]
+
+
 @dataclass
 class _Task:
     task_id: str
@@ -164,6 +182,7 @@ class _Task:
             task_id=self.task_id,
             provider_role="test.provider.primary",
             status="succeeded",
+            run_id=f"run-{self.task_id}",
         )
 
 
@@ -245,6 +264,26 @@ async def test_job_029_returned_retryable_result_uses_the_retry_budget() -> None
     assert result.status == "succeeded"
     assert result.task_results[0].attempt_no == 2
     assert delays == [1.0]
+
+
+@pytest.mark.asyncio
+async def test_job_029_success_without_a_durable_run_id_fails_closed() -> None:
+    task = _Task(
+        task_id="us.daily-bars",
+        outcomes=[
+            ScheduledTaskResult(
+                task_id="us.daily-bars",
+                provider_role="us.bars.primary",
+                status="succeeded",
+            )
+        ],
+    )
+    worker = ScheduledIngestionWorker(tasks=[task], report_date_lock=_Lock())
+
+    result = await worker.run_for_date(date(2026, 7, 27))
+
+    assert result.status == "blocked"
+    assert result.task_results[0].error_code == "MISSING_DURABLE_RUN_ID"
 
 
 @pytest.mark.asyncio

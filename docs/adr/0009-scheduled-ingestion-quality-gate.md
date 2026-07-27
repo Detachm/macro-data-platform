@@ -34,8 +34,11 @@ ADR 0005 已决定内部个人使用不设置运行时来源权利 gate。因此
   内存状态宣称恢复。
 - `ReportInputQualityGate` 从不可变 input snapshot 生成质量结论：缺失、过期、迟到、不可用、
   隔离和无效的必需输入 `blocked`；必需的暂时错误为 `retryable`；修订与可选问题为 `degraded`。
-  input snapshot 没有 materialized facts 时同样 `blocked`。历史 `denied` 标记被忽略；它只可能是
-  旧来源权利元数据，绝不构成质量或来源权利规则。
+  input snapshot 没有 materialized facts、或 payload facts 与声明的 `fact_ids` 不一致时同样
+  `blocked`。历史 `denied` 标记被忽略；它只可能是旧来源权利元数据，绝不构成质量或来源权利规则。
+- 成功的 scheduled task 必须返回其 durable `run_id`；缺失时 worker 改记为
+  `MISSING_DURABLE_RUN_ID` 并 fail closed。后续 task 注册仍必须使用 checkpointed `JobRunner`，
+  以取得该 run 和恢复边界。
 - 本 PR 故意让 `build_registered_tasks()` 返回空元组。报告日历、各地区任务到 input snapshot 的
   materialization、以及生产 cron/触发时间尚未有冻结合同；在它们定义前不得登记 provider 或发起
   live ingestion。空 task bundle 若被直接执行会 fail closed 为 `blocked`；该扩展点是范围边界，
