@@ -6,6 +6,11 @@ from pathlib import Path
 from macro_platform.contracts.common import Region
 from macro_platform.contracts.provider import Dataset
 from macro_platform.providers._regional_fixture import RegionalFixtureProvider
+from macro_platform.providers.cn.live import (
+    CnLiveMacroProvider,
+    CnNbsReleaseProvider,
+    parse_nbs_release_calendar,
+)
 from macro_platform.providers.registry import ProviderRegistry
 
 CN_PROVIDER_ID = "cn.contract-fixture.v1"
@@ -58,5 +63,8 @@ __all__ = [
     "CN_ROLE_BINDINGS",
     "CnContractFixtureProvider",
     "CnSyntheticProvider",
+    "CnLiveMacroProvider",
+    "CnNbsReleaseProvider",
+    "parse_nbs_release_calendar",
     "register_cn_provider_roles",
 ]

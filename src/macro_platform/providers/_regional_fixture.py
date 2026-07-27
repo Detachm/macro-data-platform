@@ -4,11 +4,11 @@ import base64
 import json
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar, Literal, cast
 
 from macro_platform.contracts.common import (
     AssetClass,
@@ -162,6 +162,8 @@ _MACRO_RELEASE_KEYS = _SOURCE_KEYS | frozenset(
         "series_id",
         "release_name",
         "scheduled_at",
+        "scheduled_date",
+        "time_precision",
         "released_at",
         "available_at",
         "period_start",
@@ -184,6 +186,8 @@ _NEWS_KEYS = _SOURCE_KEYS | frozenset(
         "source_tier",
         "canonical_url",
         "published_at",
+        "published_date",
+        "time_precision",
         "first_seen_at",
         "available_at",
         "availability_basis",
@@ -212,6 +216,9 @@ class _FixtureCursor:
     raw_cursor: str | None
     offset: int = 0
     empty_pages: int = 0
+    snapshot_at: str | None = None
+    snapshot_watermark: str | None = None
+    last_record_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -440,7 +447,7 @@ class RegionalFixtureProvider:
             self._parse_macro_release,
             lambda item: (
                 item.region in query.regions
-                and query.scheduled_from <= item.scheduled_at < query.scheduled_to
+                and _macro_release_in_window(item, query)
                 and item.available_at <= query.as_of
                 and _available_for_context(item.available_at, context)
             ),
@@ -455,7 +462,7 @@ class RegionalFixtureProvider:
             self._parse_news,
             lambda item: (
                 self.region in query.regions
-                and query.published_from <= item.published_at < query.published_to
+                and _news_in_window(item, query)
                 and item.available_at <= query.as_of
                 and (not query.languages or item.language in query.languages)
                 and (not query.source_tiers or item.source_tier in query.source_tiers)
@@ -484,6 +491,17 @@ class RegionalFixtureProvider:
         _ensure_keys(payload, _ENVELOPE_KEYS, required={"status", "fetched_at", "pages"}, path="$")
         fetched_at = _datetime(_required(payload, "fetched_at", "fetched_at"), "fetched_at")
         pages = _mapping(_required(payload, "pages", "pages"), "pages")
+        source_watermark = _optional_str(payload, "source_watermark")
+        if cursor.snapshot_at is not None and cursor.snapshot_at != _utc_z(fetched_at):
+            raise ProviderCursorError(
+                f"fixture snapshot timestamp changed for {dataset_key}",
+                code="SNAPSHOT_CHANGED",
+            )
+        if cursor.snapshot_watermark is not None and cursor.snapshot_watermark != source_watermark:
+            raise ProviderCursorError(
+                f"fixture source watermark changed for {dataset_key}",
+                code="SNAPSHOT_CHANGED",
+            )
         page_payload = _fixture_page(pages, dataset_key, cursor.raw_cursor)
         raw_items = _list(_required(page_payload, "items", f"pages.{dataset_key}.items"), "items")
         empty_pages = cursor.empty_pages + 1 if not raw_items else 0
@@ -522,13 +540,23 @@ class RegionalFixtureProvider:
             next_cursor=(
                 _encode_cursor(
                     dataset,
-                    _FixtureCursor(raw_cursor=raw_next_cursor, empty_pages=empty_pages),
+                    _FixtureCursor(
+                        raw_cursor=raw_next_cursor,
+                        empty_pages=empty_pages,
+                        snapshot_at=_utc_z(fetched_at),
+                        snapshot_watermark=source_watermark,
+                        last_record_key=(
+                            items[-1].source.provider_record_id  # type: ignore[attr-defined]
+                            if items
+                            else None
+                        ),
+                    ),
                     fingerprint,
                 )
                 if raw_next_cursor is not None
                 else None
             ),
-            source_watermark=_optional_str(payload, "source_watermark"),
+            source_watermark=source_watermark,
             fetched_at=fetched_at,
             complete=raw_next_cursor is None,
             warnings=warnings,
@@ -811,7 +839,6 @@ class RegionalFixtureProvider:
                 "record_id",
                 "series_id",
                 "release_name",
-                "scheduled_at",
                 "available_at",
                 "period_start",
                 "period_end",
@@ -822,13 +849,28 @@ class RegionalFixtureProvider:
             },
             path="macro_release",
         )
+        scheduled_at = self._optional_normalized_datetime(raw, "scheduled_at")
+        scheduled_date = _optional_date(raw, "scheduled_date")
+        time_precision = _fixture_time_precision(
+            raw,
+            date_key="scheduled_date",
+            instant_key="scheduled_at",
+            path="macro_release.time_precision",
+        )
+        if time_precision == "instant" and scheduled_at is None:
+            raise ProviderSchemaError("macro_release.scheduled_at is required for instant data")
+        if time_precision == "date" and scheduled_date is None:
+            raise ProviderSchemaError("macro_release.scheduled_date is required for date data")
+        if scheduled_at is not None:
+            scheduled_identity = _utc_z(scheduled_at)
+        else:
+            assert scheduled_date is not None
+            scheduled_identity = scheduled_date.isoformat()
         return MacroRelease(
             release_id=_hex_id(
                 "rel",
                 _str(raw["series_id"], "macro_release.series_id"),
-                _utc_z(
-                    self._normalized_datetime(raw["scheduled_at"], "macro_release.scheduled_at")
-                ),
+                scheduled_identity,
                 _str(raw["period_start"], "macro_release.period_start"),
                 _str(raw["period_end"], "macro_release.period_end"),
                 _str(raw["release_name"], "macro_release.release_name"),
@@ -836,9 +878,9 @@ class RegionalFixtureProvider:
             series_id=_str(raw["series_id"], "macro_release.series_id"),
             region=self.region,
             release_name=_str(raw["release_name"], "macro_release.release_name"),
-            scheduled_at=self._normalized_datetime(
-                raw["scheduled_at"], "macro_release.scheduled_at"
-            ),
+            scheduled_at=scheduled_at,
+            scheduled_date=scheduled_date,
+            time_precision=time_precision,
             released_at=self._optional_normalized_datetime(raw, "released_at"),
             available_at=self._normalized_datetime(
                 raw["available_at"], "macro_release.available_at"
@@ -864,7 +906,6 @@ class RegionalFixtureProvider:
                 "language",
                 "source_name",
                 "source_tier",
-                "published_at",
                 "first_seen_at",
                 "available_at",
                 "availability_basis",
@@ -878,6 +919,18 @@ class RegionalFixtureProvider:
         )
         rights = self._usage_rights(_mapping(raw["rights"], "news.rights"))
         content_mode = ContentMode(_str(raw["content_mode"], "news.content_mode"))
+        published_at = self._optional_normalized_datetime(raw, "published_at")
+        published_date = _optional_date(raw, "published_date")
+        time_precision = _fixture_time_precision(
+            raw,
+            date_key="published_date",
+            instant_key="published_at",
+            path="news.time_precision",
+        )
+        if time_precision == "instant" and published_at is None:
+            raise ProviderSchemaError("news.published_at is required for instant data")
+        if time_precision == "date" and published_date is None:
+            raise ProviderSchemaError("news.published_date is required for date data")
         body = _optional_str(raw, "body")
         quality_flags = _str_list(raw["quality_flags"], "news.quality_flags")
         if body is not None and (
@@ -893,7 +946,6 @@ class RegionalFixtureProvider:
             if "canonical_url" in raw and raw["canonical_url"] is not None
             else None
         )
-        published_at = self._normalized_datetime(raw["published_at"], "news.published_at")
         entities = self._entity_refs(raw)
         entity_ids = tuple(sorted(entity.entity_id for entity in entities))
         content_hash = canonical_json_checksum(
@@ -906,20 +958,27 @@ class RegionalFixtureProvider:
         event_content_mode = content_mode
         if body is None and content_mode is ContentMode.FULL_TEXT:
             event_content_mode = ContentMode.SNIPPET
+        if published_at is not None:
+            published_identity = _utc_z(published_at)
+            cluster_published_at = published_at
+        else:
+            assert published_date is not None
+            published_identity = published_date.isoformat()
+            cluster_published_at = datetime.combine(published_date, time.min, tzinfo=UTC)
         return NewsEvent(
             news_id=_hex_id(
                 "news",
                 self.provider_id,
                 _str(raw["record_id"], "news.record_id"),
                 str(canonical_url) if canonical_url is not None else normalized_title,
-                _utc_z(published_at),
+                published_identity,
             ),
             cluster_id=news_cluster_id(
                 canonical_url=str(canonical_url) if canonical_url is not None else None,
                 content_hash_sha256=content_hash,
                 title=title,
                 entity_ids=entity_ids,
-                published_at=published_at,
+                published_at=cluster_published_at,
             ),
             title=title,
             summary=summary,
@@ -930,6 +989,8 @@ class RegionalFixtureProvider:
             source_tier=SourceTier(_str(raw["source_tier"], "news.source_tier")),
             canonical_url=canonical_url,
             published_at=published_at,
+            published_date=published_date,
+            time_precision=time_precision,
             first_seen_at=self._normalized_datetime(raw["first_seen_at"], "news.first_seen_at"),
             available_at=self._normalized_datetime(raw["available_at"], "news.available_at"),
             availability_basis=AvailabilityBasis(
@@ -1189,6 +1250,13 @@ def _limit_page[T: StrictModel](fixture_page: _QueryFixturePage[T], limit: int) 
     end = start + limit
     if start > len(page.items):
         raise ProviderCursorError("fixture cursor offset exceeds the query result set")
+    if start > 0:
+        previous_key = page.items[start - 1].source.provider_record_id  # type: ignore[attr-defined]
+        if fixture_page.cursor.last_record_key != previous_key:
+            raise ProviderCursorError(
+                "fixture cursor predecessor does not match the sorted snapshot",
+                code="SNAPSHOT_CHANGED",
+            )
     next_cursor: str | None
     if end < len(page.items):
         next_cursor = _encode_cursor(
@@ -1197,6 +1265,9 @@ def _limit_page[T: StrictModel](fixture_page: _QueryFixturePage[T], limit: int) 
                 raw_cursor=fixture_page.cursor.raw_cursor,
                 offset=end,
                 empty_pages=fixture_page.cursor.empty_pages,
+                snapshot_at=_utc_z(page.fetched_at),
+                snapshot_watermark=page.source_watermark,
+                last_record_key=page.items[end - 1].source.provider_record_id,  # type: ignore[attr-defined]
             ),
             fixture_page.fingerprint,
         )
@@ -1245,6 +1316,9 @@ def _encode_cursor(dataset: Dataset, cursor: _FixtureCursor, fingerprint: str) -
             "raw_cursor": cursor.raw_cursor,
             "offset": cursor.offset,
             "empty_pages": cursor.empty_pages,
+            "snapshot_at": cursor.snapshot_at,
+            "snapshot_watermark": cursor.snapshot_watermark,
+            "last_record_key": cursor.last_record_key,
         },
         separators=(",", ":"),
         sort_keys=True,
@@ -1280,8 +1354,24 @@ def _decode_cursor(cursor: object, dataset: Dataset, fingerprint: str) -> _Fixtu
         raise ProviderCursorError("fixture cursor is malformed") from exc
     _ensure_keys(
         payload,
-        frozenset({"raw_cursor", "offset", "empty_pages"}),
-        required={"raw_cursor", "offset", "empty_pages"},
+        frozenset(
+            {
+                "raw_cursor",
+                "offset",
+                "empty_pages",
+                "snapshot_at",
+                "snapshot_watermark",
+                "last_record_key",
+            }
+        ),
+        required={
+            "raw_cursor",
+            "offset",
+            "empty_pages",
+            "snapshot_at",
+            "snapshot_watermark",
+            "last_record_key",
+        },
         path="fixture cursor",
     )
     raw_cursor = payload["raw_cursor"]
@@ -1293,7 +1383,23 @@ def _decode_cursor(cursor: object, dataset: Dataset, fingerprint: str) -> _Fixtu
     empty_pages = _int(payload["empty_pages"], "fixture cursor.empty_pages")
     if empty_pages < 0:
         raise ProviderCursorError("fixture cursor empty_pages must not be negative")
-    return _FixtureCursor(raw_cursor=raw_cursor, offset=offset, empty_pages=empty_pages)
+    snapshot_at = payload["snapshot_at"]
+    if snapshot_at is not None:
+        snapshot_at = _str(snapshot_at, "fixture cursor.snapshot_at")
+    snapshot_watermark = payload["snapshot_watermark"]
+    if snapshot_watermark is not None:
+        snapshot_watermark = _str(snapshot_watermark, "fixture cursor.snapshot_watermark")
+    last_record_key = payload["last_record_key"]
+    if last_record_key is not None:
+        last_record_key = _str(last_record_key, "fixture cursor.last_record_key")
+    return _FixtureCursor(
+        raw_cursor=raw_cursor,
+        offset=offset,
+        empty_pages=empty_pages,
+        snapshot_at=snapshot_at,
+        snapshot_watermark=snapshot_watermark,
+        last_record_key=last_record_key,
+    )
 
 
 def _fixture_page(
@@ -1350,6 +1456,24 @@ def _content_satisfies(requested: ContentMode, actual: ContentMode) -> bool:
 
 def _available_for_context(available_at: datetime, context: FetchContext) -> bool:
     return available_at <= context.as_of
+
+
+def _macro_release_in_window(item: MacroRelease, query: MacroReleaseQuery) -> bool:
+    if item.scheduled_at is not None:
+        return query.scheduled_from <= item.scheduled_at < query.scheduled_to
+    assert item.scheduled_date is not None
+    day_start = datetime.combine(item.scheduled_date, time.min, query.scheduled_from.tzinfo)
+    day_end = day_start + timedelta(days=1)
+    return day_start < query.scheduled_to and day_end > query.scheduled_from
+
+
+def _news_in_window(item: NewsEvent, query: NewsQuery) -> bool:
+    if item.published_at is not None:
+        return query.published_from <= item.published_at < query.published_to
+    assert item.published_date is not None
+    day_start = datetime.combine(item.published_date, time.min, query.published_from.tzinfo)
+    day_end = day_start + timedelta(days=1)
+    return day_start < query.published_to and day_end > query.published_from
 
 
 def _hex_id(prefix: str, *parts: object) -> str:
@@ -1459,6 +1583,19 @@ def _optional_decimal(value: Mapping[str, Any], key: str) -> Decimal | None:
     if raw is None:
         return None
     return _decimal(raw, key)
+
+
+def _fixture_time_precision(
+    raw: Mapping[str, Any], *, date_key: str, instant_key: str, path: str
+) -> Literal["instant", "date"]:
+    value = raw.get("time_precision")
+    if value is None:
+        value = "date" if raw.get(date_key) is not None else "instant"
+    if value not in {"instant", "date"}:
+        raise ProviderSchemaError(f"{path} must be 'instant' or 'date'")
+    if raw.get(date_key) is not None and raw.get(instant_key) is not None:
+        raise ProviderSchemaError(f"{path} cannot include both {instant_key} and {date_key}")
+    return cast(Literal["instant", "date"], value)
 
 
 def _date(value: Any, path: str) -> date:

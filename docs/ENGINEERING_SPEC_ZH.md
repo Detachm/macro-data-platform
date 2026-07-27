@@ -509,7 +509,9 @@ class MacroRelease(StrictModel):
     series_id: str
     region: Region
     release_name: str
-    scheduled_at: AwareDatetime
+    scheduled_at: AwareDatetime | None = None
+    scheduled_date: date | None = None
+    time_precision: Literal["instant", "date"] = "instant"
     released_at: AwareDatetime | None = None
     available_at: AwareDatetime
     period_start: date
@@ -574,7 +576,9 @@ class NewsEvent(StrictModel):
     source_name: str
     source_tier: SourceTier
     canonical_url: HttpUrl | None = None
-    published_at: AwareDatetime
+    published_at: AwareDatetime | None = None
+    published_date: date | None = None
+    time_precision: Literal["instant", "date"] = "instant"
     first_seen_at: AwareDatetime
     available_at: AwareDatetime
     availability_basis: AvailabilityBasis

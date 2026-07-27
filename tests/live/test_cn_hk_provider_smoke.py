@@ -1,0 +1,100 @@
+from __future__ import annotations
+
+import os
+from datetime import UTC, date, datetime, timedelta
+from uuid import UUID
+
+import pytest
+
+from macro_platform.contracts.common import Region
+from macro_platform.contracts.macro import MacroObservationQuery, MacroReleaseQuery
+from macro_platform.contracts.news import NewsQuery
+from macro_platform.contracts.provider import FetchContext
+from macro_platform.providers.cn.live import CnNbsReleaseProvider
+from macro_platform.providers.hk.live import HkCsdProvider, HkmaPressReleaseProvider
+
+
+def _live_context() -> FetchContext:
+    now = datetime.now(UTC)
+    return FetchContext(
+        request_id=UUID("00000000-0000-4000-8000-000000000028"),
+        # Public providers return a server response after the request starts;
+        # the small cushion prevents a valid current snapshot being treated as
+        # an unsupported historical as-of query.
+        as_of=now + timedelta(minutes=1),
+        deadline_at=now + timedelta(seconds=30),
+    )
+
+
+def _require_live_smoke() -> None:
+    if os.getenv("RUN_LIVE_SMOKE") != "1":
+        pytest.skip("set RUN_LIVE_SMOKE=1 to call the real public provider")
+
+
+@pytest.mark.live
+@pytest.mark.asyncio
+async def test_cn_nbs_release_calendar_live_smoke() -> None:
+    _require_live_smoke()
+    context = _live_context()
+    provider = CnNbsReleaseProvider()
+    try:
+        page = await provider.fetch_macro_releases(
+            MacroReleaseQuery(
+                regions={Region.CN},
+                scheduled_from=datetime(2020, 1, 1, tzinfo=UTC),
+                scheduled_to=datetime(2030, 1, 1, tzinfo=UTC),
+                as_of=context.as_of,
+                limit=10,
+            ),
+            context,
+        )
+        assert page.source_watermark
+        assert page.items
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.live
+@pytest.mark.asyncio
+async def test_hk_csd_live_smoke() -> None:
+    _require_live_smoke()
+    context = _live_context()
+    provider = HkCsdProvider()
+    try:
+        page = await provider.fetch_macro_observations(
+            MacroObservationQuery(
+                series_ids=["macro:HK:CENSTATD:510-60004:SCC_CM"],
+                period_from=date(2000, 1, 1),
+                period_to=date(2030, 12, 31),
+                as_of=context.as_of,
+                limit=10,
+            ),
+            context,
+        )
+        assert page.source_watermark
+        assert all(item.series_id == "macro:HK:CENSTATD:510-60004:SCC_CM" for item in page.items)
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.live
+@pytest.mark.asyncio
+async def test_hkma_press_release_live_smoke() -> None:
+    _require_live_smoke()
+    context = _live_context()
+    provider = HkmaPressReleaseProvider()
+    try:
+        page = await provider.fetch_news(
+            NewsQuery(
+                regions={Region.HK},
+                published_from=datetime(2000, 1, 1, tzinfo=UTC),
+                published_to=datetime(2030, 1, 1, tzinfo=UTC),
+                as_of=context.as_of,
+                limit=10,
+            ),
+            context,
+        )
+        assert page.source_watermark
+        assert all(item.time_precision == "date" for item in page.items)
+    finally:
+        await provider.aclose()

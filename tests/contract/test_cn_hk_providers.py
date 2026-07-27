@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
@@ -7,6 +8,8 @@ from uuid import UUID
 import pytest
 
 from macro_platform.contracts.common import Region
+from macro_platform.contracts.macro import MacroReleaseQuery
+from macro_platform.contracts.news import NewsQuery
 from macro_platform.contracts.provider import Dataset, FetchContext
 from macro_platform.providers.base import (
     ProviderAuthenticationError,
@@ -79,6 +82,49 @@ async def test_success_fixtures_parse_offline_with_stable_records(
     context: FetchContext,
 ) -> None:
     await assert_success_fixture_contract(provider_cls.from_fixture("success"), context)
+
+
+@pytest.mark.asyncio
+async def test_fixture_date_only_records_preserve_date_precision(
+    context: FetchContext, tmp_path: Path
+) -> None:
+    payload = json.loads((FIXTURE_ROOT / "cn" / "synthetic" / "success.json").read_text())
+    release = payload["pages"]["macro_releases"]["items"][0]
+    release["scheduled_date"] = release.pop("scheduled_at").split("T", 1)[0]
+    release["time_precision"] = "date"
+    news = payload["pages"]["news"]["items"][0]
+    news["published_date"] = news.pop("published_at").split("T", 1)[0]
+    news["time_precision"] = "date"
+    fixture_path = tmp_path / "date-only.json"
+    fixture_path.write_text(json.dumps(payload), encoding="utf-8")
+    provider = CnSyntheticProvider(fixture_path)
+
+    releases = await provider.fetch_macro_releases(
+        MacroReleaseQuery(
+            regions={Region.CN},
+            scheduled_from=datetime(2026, 7, 1, tzinfo=UTC),
+            scheduled_to=datetime(2026, 8, 1, tzinfo=UTC),
+            as_of=NOW,
+        ),
+        context,
+    )
+    news_page = await provider.fetch_news(
+        NewsQuery(
+            regions={Region.CN},
+            published_from=datetime(2026, 7, 1, tzinfo=UTC),
+            published_to=datetime(2026, 8, 1, tzinfo=UTC),
+            as_of=NOW,
+        ),
+        context,
+    )
+
+    assert releases.items[0].scheduled_at is None
+    assert releases.items[0].scheduled_date is not None
+    assert releases.items[0].time_precision == "date"
+    assert news_page.items[0].published_at is None
+    assert news_page.items[0].published_date is not None
+    assert news_page.items[0].time_precision == "date"
+    await provider.aclose()
 
 
 @pytest.mark.parametrize("provider_cls", [CnSyntheticProvider, HkSyntheticProvider])

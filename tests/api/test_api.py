@@ -32,6 +32,8 @@ def test_api_019_liveness_and_request_id() -> None:
 def test_rep_027_production_app_defaults_to_postgres_repository() -> None:
     settings = Settings(
         app_env="production",
+        provider_mode="live",
+        provider_cursor_secret=SecretStr("test-provider-cursor-secret"),
         service_token=SecretStr(TOKEN),
         us_provider_mode="live",
         twelve_data_api_key=SecretStr("test-twelve-data-key"),
@@ -54,16 +56,26 @@ def test_rep_027_production_app_defaults_to_postgres_repository() -> None:
 def test_rep_027_production_app_rejects_empty_repository_override() -> None:
     settings = Settings(
         app_env="production",
+        provider_mode="live",
+        provider_cursor_secret=SecretStr("test-provider-cursor-secret"),
         service_token=SecretStr(TOKEN),
-        us_provider_mode="live",
     )
     with pytest.raises(ValueError, match="PostgreSQL"):
         create_app(settings=settings, repository=EmptyDataRepository())
 
 
 def test_PRV_001_production_app_rejects_fixture_us_provider_mode() -> None:
-    with pytest.raises(ValueError, match="provider mode must be live"):
+    with pytest.raises(ValueError, match="PROVIDER_MODE=live"):
         create_app(settings=Settings(app_env="production", service_token=SecretStr(TOKEN)))
+
+    settings = Settings(
+        app_env="production",
+        provider_mode="live",
+        provider_cursor_secret=SecretStr("test-provider-cursor-secret"),
+        service_token=SecretStr(TOKEN),
+    )
+    with pytest.raises(ValueError, match="provider mode must be live"):
+        create_app(settings=settings)
 
 
 def test_api_008_protected_route_requires_bearer_token() -> None:

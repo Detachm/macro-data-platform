@@ -17,8 +17,8 @@ from macro_platform.api.exception_handlers import (
 from macro_platform.api.routes import editor, health, instruments, macro, market, meta, news
 from macro_platform.config import Settings, get_settings
 from macro_platform.providers.base import ProviderError
+from macro_platform.providers.factory import create_provider_registry
 from macro_platform.providers.registry import ProviderRegistry
-from macro_platform.providers.us.factory import create_us_provider_registry_from_settings
 from macro_platform.services.editor_context_service import DataUnavailableError
 from macro_platform.storage.database import Database
 from macro_platform.storage.repositories import (
@@ -46,13 +46,16 @@ def create_app(
         and type(resolved_repository) is EmptyDataRepository
     ):
         raise ValueError("production app requires a PostgreSQL data repository")
-    if resolved_settings.app_env == "production" and resolved_settings.us_provider_mode != "live":
-        raise ValueError("production US provider mode must be live")
-    resolved_registry = provider_registry or (
-        create_us_provider_registry_from_settings(resolved_settings)
-        if resolved_settings.app_env == "production"
-        else ProviderRegistry()
-    )
+    if provider_registry is not None:
+        resolved_registry = provider_registry
+    elif resolved_settings.provider_mode == "live":
+        resolved_registry = create_provider_registry(resolved_settings)
+    else:
+        # Fixture providers are never auto-loaded. Tests and local tools must
+        # opt into them through create_provider_registry(...).
+        resolved_registry = ProviderRegistry()
+    if resolved_settings.app_env == "production":
+        resolved_registry.assert_production_safe()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:

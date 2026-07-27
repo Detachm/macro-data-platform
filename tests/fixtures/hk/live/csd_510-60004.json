@@ -1,0 +1,23 @@
+{
+  "header": {
+    "status": {"name": "Success", "code": 0},
+    "title": "Consumer Price Index",
+    "count": {"finished": "2026-07-27T03:52:37+00:00"}
+  },
+  "dataSet": [
+    {
+      "freq": "M",
+      "period": "202605",
+      "sv": "SCC_CM",
+      "svDesc": "Average monthly rate of change during the latest 3 months (%)",
+      "figure": "1.5"
+    },
+    {
+      "freq": "M",
+      "period": "202606",
+      "sv": "SCC_CM",
+      "svDesc": "Average monthly rate of change during the latest 3 months (%)",
+      "figure": "1.6"
+    }
+  ]
+}

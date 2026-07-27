@@ -29,6 +29,8 @@ def test_production_editor_context_keeps_content_regardless_of_legacy_rights() -
     app = create_app(
         settings=Settings(
             app_env="production",
+            provider_mode="live",
+            provider_cursor_secret=SecretStr("test-provider-cursor-secret"),
             service_token=SecretStr(TOKEN),
             us_provider_mode="live",
             twelve_data_api_key=SecretStr("test-twelve-data-key"),

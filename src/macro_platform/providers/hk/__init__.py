@@ -6,6 +6,12 @@ from pathlib import Path
 from macro_platform.contracts.common import Region
 from macro_platform.contracts.provider import Dataset
 from macro_platform.providers._regional_fixture import RegionalFixtureProvider
+from macro_platform.providers.hk.live import (
+    HkCsdProvider,
+    HkLiveMacroProvider,
+    HkmaLiveNewsProvider,
+    HkmaPressReleaseProvider,
+)
 from macro_platform.providers.registry import ProviderRegistry
 
 HK_PROVIDER_ID = "hk.contract-fixture.v1"
@@ -61,5 +67,9 @@ __all__ = [
     "HK_ROLE_BINDINGS",
     "HkContractFixtureProvider",
     "HkSyntheticProvider",
+    "HkCsdProvider",
+    "HkLiveMacroProvider",
+    "HkmaLiveNewsProvider",
+    "HkmaPressReleaseProvider",
     "register_hk_provider_roles",
 ]

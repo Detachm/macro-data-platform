@@ -26,7 +26,7 @@ Provider roles: `cn.instruments.primary`, `cn.bars.primary`, `cn.macro.primary`,
 | CN | news/announcements | headline/url fixture-only；禁止保存受限正文 | SSE/SZSE/CNINFO 公告检索页 | CSRC/NBS 官方新闻页，仅政策新闻 | 无 token；无正文/批量抓取授权 |
 | HK | instruments | fixture-only；HKEX 公共证券列表可人工 fixture，付费 master file 未采购 | HKEX Securities Lists | HKEX Securities Master File | 无 Data Marketplace/Historical Data 订阅 |
 | HK | daily bars | fixture-only；真实 live 日线为 gap，必须采购历史数据产品 | HKEX Main Board/GEM Daily Quotations | HKEX Data Marketplace | 无 HKEX Historical Data 账号 |
-| HK | macro/releases | live-ready | DATA.GOV.HK/C&SD API、HKMA Open API | HKMA Economic & Financial Data page | 无需申请、注册或认证 |
+| HK | macro/releases | allowlisted C&SD adapter live-ready；release-calendar coverage requires a separately approved source | DATA.GOV.HK/C&SD API、HKMA Open API | HKMA Economic & Financial Data page | 无需申请、注册或认证 |
 | HK | news/announcements | HKMA press releases live-ready；HKEX issuer announcements fixture-only | HKMA Press Releases API；HKEXnews title search | HKEX IIS paid feed | HKMA 无需凭据；HKEX IIS 无凭据 |
 
 `live-ready` 只表示两日内可在不写入 secret 的前提下实现在线 smoke。`fixture-only` 表示只能用合成或脱敏 fixture 验证 parser/normalizer，不得让 worker 在生产调度中调用该来源。
@@ -171,7 +171,7 @@ Provider roles: `cn.instruments.primary`, `cn.bars.primary`, `cn.macro.primary`,
 |---|---|---|
 | Provider role | `cn.macro.primary` | `cn.macro.fallback` |
 | 来源 | NBS 发布日程、NBS 数据发布库 | NBS 新闻稿/最新发布页面 |
-| 状态 | releases live-ready；observations fixture-only | fixture-only for observation backfill |
+| 状态 | release calendar live-ready；macro observations fixture-only | fixture-only for observation backfill |
 | 官方文档 | NBS 发布日程、NBS 数据发布库、NBS 服务条款 | NBS 最新发布页面 |
 | Base URL/端点 | release calendar: `https://www.stats.gov.cn/sj/fbrc/bnxxfb/`; data portal: `https://data.stats.gov.cn/` | `https://www.stats.gov.cn/` 最新发布/新闻稿页面 |
 | 请求参数 | calendar 无 API 参数；EasyQuery 仅作为未正式登记的候选: `m`, `dbcode`, `rowcode`, `colcode`, `wds`, `dfwds` | 年/月/栏目/关键词网页条件 |
@@ -189,11 +189,11 @@ Provider roles: `cn.instruments.primary`, `cn.bars.primary`, `cn.macro.primary`,
 |---|---|---|---:|---|
 | 指标名称 | `MacroSeries.name`, `MacroRelease.release_name` | 原文保留，必要时映射到固定 `series_id` | 是 | 缺失拒绝 |
 | 指标代码/表号 | `MacroSeries.code`, `series_id` | `macro:CN:NBS:<CODE>`；无官方代码时用人工登记代码 | 是 | 未登记不得入库 |
-| 发布日期/发布时间 | `scheduled_at`, `released_at`, `available_at` | 北京时间转 UTC；只有日期时 `time_precision=date` 在 source notes，不伪造 midnight 作为事件时刻 | 是 | 无 release 时间则 `released_at=null`, `available_at=first_seen_at` |
+| 发布日期/发布时间 | `scheduled_at` / `scheduled_date`, `released_at`, `available_at` | 北京时间转 UTC；只有日期时填 `scheduled_date`、`time_precision=date`，不伪造 midnight timestamp | 是 | 无 release 时间则 `released_at=null`, `available_at=first_seen_at` |
 | 统计期 | `period_start`, `period_end` | 月/季/年按自然统计期 | 是 | 缺失拒绝 |
 | 数值 | `actual`, `MacroObservation.value` | Decimal；百分比单位为 `percent` 中的数值，如 5.2 表示 5.2% | 否 | 未发布时 `actual=null`, status=`scheduled` |
 | 单位 | `unit` | NBS 原单位规范化: `percent`, `index`, `CNY`, `person` 等 | 是 | 未登记拒绝 |
-| 修订状态 | `revision_no`, `value_status`, `vintage_id` | 首发 `revision_no=0`; 后续同统计期新 available_at 递增 | 是 | 无法判定则 `quality_flags` |
+| 修订状态 | `revision_no`, `value_status`, `vintage_id` | C&SD live adapter 仅稳定标识当前值，不声称可获取修订序列；后续同统计期新值需由已批准的历史快照来源补齐 | 是 | 无法判定则 `quality_flags` |
 
 ## CN news/announcements
 
@@ -222,7 +222,7 @@ Provider roles: `cn.instruments.primary`, `cn.bars.primary`, `cn.macro.primary`,
 | 公告标题 | `NewsEvent.title` | 原文保留；去 tracking 噪声 | 是 | 缺失拒绝 |
 | 公告摘要 | `summary` | 仅有授权 snippet 时填；否则 `null` | 否 | `null` |
 | PDF/正文 | `body` | MVP 一律 `null` | 否 | 不保存 |
-| 披露时间 | `published_at`, `first_seen_at`, `available_at` | 北京时间转 UTC；无法证明则 `available_at=first_seen_at` | 是 | 无时间拒绝或隔离 |
+| 披露时间 | `published_at` / `published_date`, `first_seen_at`, `available_at` | 北京时间转 UTC；只有日期时填 `published_date`、`time_precision=date`，无法证明则 `available_at=first_seen_at` | 是 | 无时间拒绝或隔离 |
 | 股票代码 | `entities[]` | 解析为 instrument entity，confidence=`1` | 否 | 未解析则仅保留 mention |
 | 来源名称 | `source_name`, `source_tier` | SSE/SZSE/CNINFO=`official` | 是 | 缺失拒绝 |
 | URL | `canonical_url`, `source.source_url` | canonicalize URL，去 tracking 参数 | 是 | 缺失拒绝 |
@@ -303,7 +303,7 @@ Provider roles: `cn.instruments.primary`, `cn.bars.primary`, `cn.macro.primary`,
 |---|---|---|
 | Provider role | `hk.macro.primary` | `hk.macro.fallback` |
 | 来源 | C&SD open data via DATA.GOV.HK/C&SD API；HKMA Open API | HKMA Economic & Financial Data page |
-| 状态 | live-ready | fixture-only for manual validation |
+| 状态 | allowlisted C&SD adapter live-ready；release-calendar coverage requires a separately approved source | fixture-only for manual validation |
 | 官方文档 | DATA.GOV.HK API spec、C&SD resource pages、HKMA API docs | HKMA data page |
 | Base URL/端点 | C&SD: `https://www.censtatd.gov.hk/api/get.php`; HKMA: `https://api.hkma.gov.hk/public/...` | `https://www.hkma.gov.hk/eng/data-publications-and-research/data-and-statistics/economic-financial-data-for-hong-kong/` |
 | 请求参数 | C&SD: `id`, `lang`, `full_series`; HKMA: dataset parameters plus `pagesize`, `offset`, `fields`, `choose/from/to`, `sortby/sortorder` | HTML table |
@@ -321,7 +321,7 @@ Provider roles: `cn.instruments.primary`, `cn.bars.primary`, `cn.macro.primary`,
 |---|---|---|---:|---|
 | dataset/table id | `series_id`, `MacroSeries.code` | `macro:HK:CENSTATD:<TABLE_ID>` 或 `macro:HK:HKMA:<DATASET>` | 是 | 未登记拒绝 |
 | title/name | `MacroSeries.name`, `MacroRelease.release_name` | 原文保留，语言按 `lang` | 是 | 缺失拒绝 |
-| period/date fields | `period_start`, `period_end`, `scheduled_at` | 月/季/年按统计期；HKMA daily 用 `end_of_date` | 是 | 缺失拒绝 |
+| period/date fields | `period_start`, `period_end`, `scheduled_at` / `scheduled_date` | 月/季/年按统计期；HKMA daily 用 `end_of_date`，仅日期不伪造 timestamp | 是 | 缺失拒绝 |
 | numeric value | `actual`, `MacroObservation.value` | Decimal；单位规范化 | 否 | 未发布 `actual=null` |
 | unit | `unit` | `%` -> `percent`; `HK$ million` -> `HKD` with value in original unit unless mapping指定换算 | 是 | 未登记拒绝 |
 | release/update date | `released_at`, `available_at` | 有精确时间转 UTC；仅日期则 date precision notes + `first_seen` | 否 | `released_at=null`, `available_at=first_seen_at` |
@@ -335,7 +335,7 @@ Provider roles: `cn.instruments.primary`, `cn.bars.primary`, `cn.macro.primary`,
 |---|---|---|
 | Provider role | `hk.news.primary` | `hk.news.fallback` |
 | 来源 | HKMA Press Releases API for official policy news; HKEXnews title search for listed issuer announcements | HKEX IIS paid feed |
-| 状态 | HKMA live-ready；HKEXnews fixture-only | gap |
+| 状态 | HKMA press-release adapter live-ready；HKEXnews fixture-only | gap |
 | 官方文档 | HKMA Press Releases API、HKEXnews About/title search、HKEX Terms | HKEX IIS technical docs |
 | Base URL/端点 | HKMA: `https://api.hkma.gov.hk/public/press-releases`; HKEXnews: `https://www1.hkexnews.hk/search/titlesearch.xhtml` | IIS feed endpoint after contract/certification |
 | 请求参数 | HKMA: `lang`, `offset`, optional common API params; HKEXnews: `category`, `market`, `stockId`, date/title filters | feed subscription params |
@@ -353,7 +353,7 @@ Provider roles: `cn.instruments.primary`, `cn.bars.primary`, `cn.macro.primary`,
 |---|---|---|---:|---|
 | title / Document | `NewsEvent.title` | 原文保留 | 是 | 缺失拒绝 |
 | link / document URL | `canonical_url`, `source.source_url` | canonicalize URL，去 tracking 参数 | 是 | 缺失拒绝 |
-| date / Release Time | `published_at`, `first_seen_at`, `available_at` | 香港时间转 UTC；日期精度不足则 `available_at=first_seen_at` | 是 | 无时间拒绝或隔离 |
+| date / Release Time | `published_at` / `published_date`, `first_seen_at`, `available_at` | 香港时间转 UTC；仅日期时填 `published_date`、`time_precision=date`，`available_at=first_seen_at` | 是 | 无时间拒绝或隔离 |
 | stock code/name | `entities[]` | `XHKG:<code>` -> instrument entity | 否 | 未解析则 mention |
 | press release body | `body` | HKMA press release body 默认不保存；只保存标题和 permitted summary | 否 | `null` |
 | source | `source_name`, `source_tier` | HKMA/HKEXnews=`official` | 是 | 缺失拒绝 |
@@ -407,19 +407,40 @@ Provider roles: `cn.instruments.primary`, `cn.bars.primary`, `cn.macro.primary`,
 
 ### Macro
 
-- `series_id = macro:<REGION>:<AUTHORITY>:<CODE>`，例如 `macro:CN:NBS:CPI_YOY`, `macro:HK:CENSTATD:510-60004`, `macro:HK:HKMA:EFBNCLOSING_BILLS`.
-- `release_id = rel_` + first 32 hex SHA-256(`series_id|scheduled_at_utc|period_start|period_end|release_name`).
+- `series_id = macro:<REGION>:<AUTHORITY>:<CODE>`，例如 `macro:CN:NBS:CPI_YOY`, `macro:HK:CENSTATD:510-60004:SCC_CM`, `macro:HK:HKMA:EFBNCLOSING_BILLS`.
+- `release_id = rel_` + first 32 hex SHA-256(`series_id|scheduled_at_utc_or_scheduled_date|period_start|period_end|release_name`).
 - `observation_id = obs_` + first 32 hex SHA-256(`series_id|period_start|period_end|vintage_id|revision_no|source.provider_record_id`).
 - `vintage_id = <series_id>:<available_at_utc>` for point-in-time revisions.
 
 ### News/announcements
 
-- `news_id = news_` + first 32 hex SHA-256(`source.provider_id|provider_record_id|canonical_url_or_title|published_at_utc`).
-- `provider_record_id` uses official document id if present; otherwise canonical URL; otherwise normalized title + published_at.
+- `news_id = news_` + first 32 hex SHA-256(`source.provider_id|provider_record_id|canonical_url_or_title|published_at_utc_or_published_date`).
+- `provider_record_id` uses official document id if present; otherwise canonical URL; otherwise normalized title + published instant/date.
 - `cluster_id = cluster_` + first 32 hex SHA-256(`region_set|normalized_title|published_date|sorted_entity_ids`) and may be recomputed only by shared news dedup code, not by regional provider-specific DTOs.
 - `supersedes_news_id` is set only for explicit corrections/retractions or same provider record replacement.
 
 ## Provider capabilities freeze
+
+### #28 live adapter boundary
+
+Issue #28 的 live 选择通过 `PROVIDER_MODE` 显式控制：`live` 才会由应用工厂注册 live roles；`fixture` 只绑定 `*.contract_fixture` roles，生产环境拒绝该模式。当前实现的 allowlist 与公共 contract 映射如下：
+
+| adapter | allowlisted endpoint | live datasets | 数据边界 |
+|---|---|---|---|
+| `CnNbsReleaseProvider` | NBS release calendar | `macro_releases` | 只输出发布日程 metadata，不保存正文 |
+| `HkCsdProvider` | C&SD `510-60004` API | `macro_series`, `macro_observations` | 以 API 首次可见时间作为 `available_at`，不声称 PIT 或 revision history |
+| `HkmaPressReleaseProvider` | HKMA press-releases API | `news` | 只输出标题/链接；正文请求明确拒绝 |
+
+C&SD `510-60004` 当前批准 `sv=SCC_CM`、`SA_CM`、`SB_CM`、`SC_CM`，它们分别映射为
+Composite CPI、CPI(A)、CPI(B)、CPI(C) 的季调后三个月平均环比变化，且各自拥有独立的
+canonical series ID。frequency、unit、transformation 和 seasonal adjustment 来自代码内
+registry；未登记的 `sv` 或 metadata 不匹配时阻断 adapter，不按上游字段启发式推断。
+
+这三个 live adapter 均不提供上游历史快照；当 `as_of` 早于本次抓取时间时抛出
+`UnsupportedCapabilityError`，不能把空页当作“确实没有数据”。分页 continuation 会绑定
+源数据 watermark，并校验前一条排序记录；源数据变化时返回 `ProviderCursorError`。
+
+未在 allowlist 中的 host、C&SD dataset、市场行情和 HKEX/CN 公告来源不会被 live factory 注册。CN/HK 核心指数和未获行情授权的数据仍必须走后续已批准来源；不能用 fixture adapter 冒充 live 完成日报。
 
 Adapter authors must register capabilities according to this matrix:
 
@@ -432,8 +453,8 @@ Adapter authors must register capabilities according to this matrix:
 | `cn.news.primary` | news | CN | fixture-only for headline/url; body prohibited |
 | `hk.instruments.primary` | instruments | HK | fixture-only, no live capability |
 | `hk.bars.primary` | bars | HK | fixture-only, no live capability |
-| `hk.macro.primary` | macro_releases/macro_observations | HK | live-ready for DATA.GOV.HK/C&SD and HKMA open APIs |
-| `hk.news.primary` | news | HK | live-ready for HKMA press releases metadata; HKEXnews fixture-only |
+| `hk.macro.primary` | macro_series/macro_observations | HK | live-ready for the allowlisted C&SD table API; release-calendar coverage requires a separately approved source |
+| `hk.news.primary` | news | HK | live-ready for HKMA press-release metadata; HKEXnews fixture-only |
 
 ## 失败与降级
 
@@ -443,7 +464,7 @@ Adapter authors must register capabilities according to this matrix:
 | 403/授权不足 | `ProviderAuthorizationError` | 不重试 | 标 `not_configured`; 需要采购/授权 ADR |
 | 429/限流 | `ProviderRateLimitError` + `retry_after_seconds` | 按 Retry-After 或指数退避 | 当前页不入库，保留 cursor |
 | 超时/网络错误 | `ProviderTimeoutError` | 最多 2 次退避重试 | 仍失败则 job `retry_wait` |
-| 登录页伪 200/验证码/风控页 | `ProviderSchemaError` | 不重试 | 按 PRV-019 立即阻断 provider，禁止解析 HTML 内容，不能当空数据 |
+| 登录页伪 200/验证码/风控页 | `ProviderAuthorizationError` | 不重试 | 按 PRV-019 立即阻断 provider，禁止解析 HTML 内容，不能当空数据 |
 | schema drift/必填字段改名 | `ProviderSchemaError` | 不重试 | 阻断该 adapter，生成 `schema_drift_status` |
 | 空页循环/重复页 | `ProviderCursorError` | 不重试当前 cursor | 停止分页并报告 duplicate cursor/page checksum |
 | cursor 过期 | `ProviderCursorError` | 以原 query 从第一页重建一次 | 仍失败则 job `retry_wait` |
@@ -486,4 +507,4 @@ Adapter authors must register capabilities according to this matrix:
 
 - 实习生 A 可在本文件基础上实现 CN/HK fixture/provider skeleton。
 - review 中需由实习生 B 交叉检查本文件中的 contract 映射、`available_at` basis、cursor/分页和 `UsageRights`，并运行公共 provider contract suite。
-- 后续 Issue 如需新增公共字段、改变 ID、改变 `available_at` 语义或放开外部 LLM/embedding 权限，必须先提交 ADR 和负责人批准。
+- 后续 Issue 如需新增公共字段、改变 ID 或改变 `available_at` 语义，必须先提交 ADR 和负责人批准；`UsageRights` 兼容元数据不构成内部运行时 gate。

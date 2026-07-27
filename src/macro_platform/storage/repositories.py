@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal, Protocol
 from uuid import UUID
 
-from sqlalchemy import delete, func, literal, or_, select, union_all, update
+from sqlalchemy import DateTime, cast, delete, func, literal, or_, select, union_all, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.selectable import Subquery
@@ -335,6 +335,7 @@ class NormalizedFactRepository:
                 series_id=release.series_id,
                 region=release.region.value,
                 scheduled_at=release.scheduled_at,
+                scheduled_date=release.scheduled_date,
                 available_at=release.available_at,
                 source_checksum_sha256=release.source.checksum_sha256,
                 ingestion_run_id=self._ingestion_run_id,
@@ -377,6 +378,7 @@ class NormalizedFactRepository:
                 provider_id=event.source.provider_id,
                 provider_record_id=event.source.provider_record_id,
                 published_at=event.published_at,
+                published_date=event.published_date,
                 available_at=event.available_at,
                 status=event.status,
                 ingestion_run_id=self._ingestion_run_id,
@@ -668,14 +670,20 @@ class PostgresDataRepository:
         return [MacroObservation.model_validate(payload) for payload in payloads]
 
     async def list_macro_releases(self, query: MacroReleaseQuery) -> list[MacroRelease]:
+        date_from, date_to = _date_only_window(query.scheduled_from, query.scheduled_to)
         base_conditions = (
             MacroReleaseRow.region.in_([region.value for region in query.regions]),
-            MacroReleaseRow.scheduled_at >= query.scheduled_from,
-            MacroReleaseRow.scheduled_at < query.scheduled_to,
+            or_(
+                (MacroReleaseRow.scheduled_at >= query.scheduled_from)
+                & (MacroReleaseRow.scheduled_at < query.scheduled_to),
+                (MacroReleaseRow.scheduled_date >= date_from)
+                & (MacroReleaseRow.scheduled_date <= date_to),
+            ),
         )
         base_versions = select(
             MacroReleaseRow.release_id.label("release_id"),
             MacroReleaseRow.scheduled_at.label("scheduled_at"),
+            MacroReleaseRow.scheduled_date.label("scheduled_date"),
             MacroReleaseRow.available_at.label("available_at"),
             literal(0).label("revision_rank"),
             func.coalesce(MacroReleaseRow.source_checksum_sha256, "").label("source_checksum"),
@@ -685,6 +693,7 @@ class PostgresDataRepository:
             select(
                 MacroReleaseRow.release_id.label("release_id"),
                 MacroReleaseRow.scheduled_at.label("scheduled_at"),
+                MacroReleaseRow.scheduled_date.label("scheduled_date"),
                 MacroReleaseRevisionRow.available_at.label("available_at"),
                 literal(1).label("revision_rank"),
                 MacroReleaseRevisionRow.source_checksum_sha256.label("source_checksum"),
@@ -705,13 +714,20 @@ class PostgresDataRepository:
         ranked = select(
             versions.c.payload.label("payload"),
             versions.c.scheduled_at.label("scheduled_at"),
+            versions.c.scheduled_date.label("scheduled_date"),
             versions.c.release_id.label("release_id"),
             rank.label("rank"),
         ).subquery()
         statement = (
             select(ranked.c.payload)
             .where(ranked.c.rank == 1)
-            .order_by(ranked.c.scheduled_at, ranked.c.release_id)
+            .order_by(
+                func.coalesce(
+                    ranked.c.scheduled_at,
+                    cast(ranked.c.scheduled_date, DateTime(timezone=True)),
+                ),
+                ranked.c.release_id,
+            )
             .limit(query.limit)
         )
         async with self._database.session() as session:
@@ -719,13 +735,27 @@ class PostgresDataRepository:
         return [MacroRelease.model_validate(payload) for payload in payloads]
 
     async def list_news(self, query: NewsQuery) -> list[NewsEvent]:
+        date_from, date_to = _date_only_window(query.published_from, query.published_to)
+        published_sort_at = func.coalesce(
+            NewsEventRow.published_at,
+            cast(NewsEventRow.published_date, DateTime(timezone=True)),
+        )
         statement = (
-            select(NewsEventRow.payload, NewsEventRow.published_at, NewsEventRow.news_id)
+            select(
+                NewsEventRow.payload,
+                NewsEventRow.published_at,
+                NewsEventRow.news_id,
+                published_sort_at.label("published_sort_at"),
+            )
             .join(NewsEventRegionRow)
             .where(
                 NewsEventRegionRow.region.in_([region.value for region in query.regions]),
-                NewsEventRow.published_at >= query.published_from,
-                NewsEventRow.published_at < query.published_to,
+                or_(
+                    (NewsEventRow.published_at >= query.published_from)
+                    & (NewsEventRow.published_at < query.published_to),
+                    (NewsEventRow.published_date >= date_from)
+                    & (NewsEventRow.published_date <= date_to),
+                ),
                 NewsEventRow.available_at <= query.as_of,
             )
         )
@@ -749,7 +779,10 @@ class PostgresDataRepository:
             )
         statement = (
             statement.distinct()
-            .order_by(NewsEventRow.published_at.desc(), NewsEventRow.news_id)
+            .order_by(
+                published_sort_at.desc(),
+                NewsEventRow.news_id,
+            )
             .limit(query.limit)
         )
         async with self._database.session() as session:
@@ -771,6 +804,15 @@ class PostgresDataRepository:
         if query.content_mode is ContentMode.SNIPPET:
             return event.model_copy(update={"body": None, "content_mode": ContentMode.SNIPPET})
         return event
+
+
+def _date_only_window(start: datetime, end: datetime) -> tuple[date, date]:
+    """Return the inclusive date-only records that overlap ``[start, end)``."""
+
+    return (
+        start.astimezone(UTC).date(),
+        (end.astimezone(UTC) - timedelta(microseconds=1)).date(),
+    )
 
 
 @dataclass(frozen=True)

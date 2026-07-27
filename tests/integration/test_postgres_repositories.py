@@ -4,7 +4,7 @@ import asyncio
 import json
 import os
 from collections.abc import AsyncIterator, Iterator
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -358,7 +358,7 @@ async def test_db_002_migration_upgrades_0002_to_current_schema(database: Databa
         )
         preserved_run = await session.get(ProviderRunRow, _previous_schema_run_id)
         preserved_instrument = await session.get(InstrumentRow, _previous_schema_instrument_id)
-    assert revision == "0006"
+    assert revision == "0007"
     assert tables == {
         "report_input_snapshots",
         "daily_reports",
@@ -1274,3 +1274,91 @@ async def test_sto_027_macro_release_replay_is_idempotent_and_ties_are_determini
             as_of=NOW,
         )
     ) == [revision]
+
+
+async def test_sto_028_date_only_release_and_news_are_persisted_and_queryable(
+    database: Database,
+) -> None:
+    token = uuid4().hex
+    series = MacroSeries(
+        series_id=f"macro:CN:DATE_ONLY:{token}",
+        region=Region.CN,
+        authority="Storage date-only authority",
+        code=f"DATE_ONLY-{token}",
+        name="Storage date-only series",
+        frequency=Frequency.MONTHLY,
+        unit="index",
+        transformation="level",
+        seasonal_adjustment="not_adjusted",
+        source=_source(f"date-only-series-{token}"),
+    )
+    release_date = date(2040, 1, 1)
+    release = MacroRelease(
+        release_id=f"date-only-release-{token}",
+        series_id=series.series_id,
+        region=Region.CN,
+        release_name="Date-only storage release",
+        scheduled_at=None,
+        scheduled_date=release_date,
+        time_precision="date",
+        available_at=NOW,
+        period_start=release_date,
+        period_end=release_date,
+        unit="index",
+        status="scheduled",
+        source=_source(f"date-only-release-{token}"),
+    )
+    event = news_event().model_copy(
+        update={
+            "news_id": f"date-only-news-{token}",
+            "published_at": None,
+            "published_date": NOW.date(),
+            "time_precision": "date",
+            "regions": [Region.HK],
+            "topics": ["date-only-storage"],
+            "source": _source(f"date-only-news-{token}"),
+        }
+    )
+
+    async with UnitOfWork(database).transaction() as session:
+        run_id = uuid4()
+        session.add(
+            ProviderRunRow(
+                run_id=run_id,
+                idempotency_key=f"date-only-run-{token}",
+                provider_role="storage.contract.date_only",
+                dataset=Dataset.MACRO_RELEASES.value,
+                status="succeeded",
+                started_at=NOW,
+                finished_at=NOW,
+                records_fetched=2,
+                records_accepted=2,
+                records_rejected=0,
+                details={},
+                request_payload={},
+            )
+        )
+        await session.flush()
+        repository = NormalizedFactRepository(session, ingestion_run_id=run_id)
+        await repository.upsert_macro_series(series)
+        await repository.upsert_macro_release(release)
+        await repository.upsert_news_event(event)
+
+    repository = PostgresDataRepository(database)
+    assert await repository.list_macro_releases(
+        MacroReleaseQuery(
+            regions={Region.CN},
+            scheduled_from=datetime(2039, 12, 31, tzinfo=NOW.tzinfo),
+            scheduled_to=datetime(2040, 1, 2, tzinfo=NOW.tzinfo),
+            as_of=NOW,
+        )
+    ) == [release]
+    assert await repository.list_news(
+        NewsQuery(
+            regions={Region.HK},
+            published_from=NOW,
+            published_to=NOW + timedelta(hours=1),
+            as_of=NOW,
+            topics={"date-only-storage"},
+        )
+    ) == [event]

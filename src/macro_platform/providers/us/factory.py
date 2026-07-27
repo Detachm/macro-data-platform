@@ -27,6 +27,7 @@ def create_us_provider_registry(
     *,
     app_env: AppEnvironment,
     provider_mode: UsProviderMode,
+    registry: ProviderRegistry | None = None,
     api_key: SecretStr | None = None,
     live_instruments: Sequence[TwelveDataInstrument] = TWELVE_DATA_DEFAULT_INSTRUMENTS,
     cursor_signing_secret: str | None = None,
@@ -44,15 +45,15 @@ def create_us_provider_registry(
     if app_env == "production" and provider_mode != "live":
         raise ValueError("production US provider mode must be live")
 
-    registry = ProviderRegistry()
+    resolved_registry = registry if registry is not None else ProviderRegistry()
     if provider_mode == "fixture":
         fixture_provider = (
             UsFixtureProvider.from_fixture(fixture_name)
             if clock is None
             else UsFixtureProvider.from_fixture(fixture_name, clock=clock)
         )
-        register_us_provider_roles(registry, fixture_provider)
-        return registry
+        register_us_provider_roles(resolved_registry, fixture_provider)
+        return resolved_registry
 
     if api_key is None or not api_key.get_secret_value().strip():
         raise ValueError("live Twelve Data provider requires a runtime API key")
@@ -65,13 +66,14 @@ def create_us_provider_registry(
         cursor_signing_secret=cursor_signing_secret,
         clock=clock,
     )
-    register_us_twelve_data_provider_roles(registry, live_provider)
-    return registry
+    register_us_twelve_data_provider_roles(resolved_registry, live_provider)
+    return resolved_registry
 
 
 def create_us_provider_registry_from_settings(
     settings: Settings,
     *,
+    registry: ProviderRegistry | None = None,
     live_instruments: Sequence[TwelveDataInstrument] = TWELVE_DATA_DEFAULT_INSTRUMENTS,
     client: httpx.AsyncClient | None = None,
     clock: Callable[[], datetime] | None = None,
@@ -82,6 +84,7 @@ def create_us_provider_registry_from_settings(
     return create_us_provider_registry(
         app_env=settings.app_env,
         provider_mode=settings.us_provider_mode,
+        registry=registry,
         api_key=settings.twelve_data_api_key,
         live_instruments=live_instruments,
         cursor_signing_secret=(

@@ -1,0 +1,13 @@
+{
+  "header": {"success": true, "err_code": "0000"},
+  "result": {
+    "datasize": 1,
+    "records": [
+      {
+        "title": "HKMA press release",
+        "link": "https://www.hkma.gov.hk/eng/news/1/",
+        "date": "2026-07-27"
+      }
+    ]
+  }
+}

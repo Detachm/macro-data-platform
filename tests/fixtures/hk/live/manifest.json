@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "fixture_kind": "deidentified_upstream_response",
+  "provider_ids": [
+    "hk.censtatd.v1",
+    "hk.hkma.press-releases.v1"
+  ],
+  "region": "HK",
+  "offline_only": true,
+  "sources": {
+    "csd": "https://www.censtatd.gov.hk/api/get.php?id=510-60004&lang=en&full_series=1",
+    "hkma": "https://api.hkma.gov.hk/public/press-releases"
+  },
+  "captured_at": "2026-07-27T04:00:00Z",
+  "redaction": "official response fields only; no credentials or restricted body text",
+  "fixtures": {
+    "csd_510-60004.json": {
+      "sha256": "08cc7a341ab03a458ed1f3b98c812fa48888c51cfed44e7a38d63e418f09ccfc"
+    },
+    "hkma_press_releases.json": {
+      "sha256": "842c6f0b2878d5de6c88763f6e58a1686353acc7b491b5e75bb9d34a8debf65e"
+    }
+  }
+}
