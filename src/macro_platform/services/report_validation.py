@@ -30,9 +30,9 @@ REQUIRED_REPORT_INPUT_IDS = frozenset(
 )
 
 _BLOCKING_INPUT_STATUSES = frozenset(
-    {"missing", "stale", "late", "unavailable", "denied", "quarantined", "invalid"}
+    {"missing", "stale", "late", "unavailable", "quarantined", "invalid"}
 )
-_KNOWN_INPUT_STATUSES = _BLOCKING_INPUT_STATUSES | {"available", "revised"}
+_KNOWN_INPUT_STATUSES = _BLOCKING_INPUT_STATUSES | {"available", "revised", "retryable"}
 
 
 @dataclass(frozen=True)
@@ -912,6 +912,17 @@ def _quality_issues(snapshot: ReportInputSnapshot) -> list[ReportValidationIssue
                     code=code,
                     message=str(raw.get("reason", "input has a revised value")),
                     severity="warning",
+                    input_id=input_id,
+                )
+            )
+            continue
+        if status == "retryable":
+            code = "RETRYABLE_REQUIRED_INPUT" if required else "RETRYABLE_OPTIONAL_INPUT"
+            issues.append(
+                ReportValidationIssue(
+                    code=code,
+                    message=str(raw.get("reason", "input refresh is retryable")),
+                    severity="error" if required else "warning",
                     input_id=input_id,
                 )
             )

@@ -30,3 +30,13 @@ CONTEXT_BUILD_DURATION = Histogram(
     "Editor context build duration",
     ("preset_id",),
 )
+SCHEDULED_REPORT_RUNS = Counter(
+    "scheduled_report_run_total",
+    "Scheduled report-date worker runs",
+    ("status",),
+)
+SCHEDULED_TASK_RUNS = Counter(
+    "scheduled_task_run_total",
+    "Scheduled ingestion task terminal results",
+    ("task_id", "provider_role", "status"),
+)

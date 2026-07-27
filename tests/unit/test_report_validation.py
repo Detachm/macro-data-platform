@@ -234,6 +234,31 @@ def test_rpt_031_required_quality_input_cannot_be_downgraded() -> None:
     }
 
 
+def test_rpt_029_retryable_required_input_blocks_until_the_worker_recovers() -> None:
+    payload = _success_payload()
+    base_snapshot = _snapshot()
+    snapshot = base_snapshot.model_copy(
+        update={
+            "payload": {
+                **base_snapshot.payload,
+                "input_quality": {
+                    **base_snapshot.payload["input_quality"],
+                    "market.hk.core_indices.previous_close": {
+                        "status": "retryable",
+                        "required": True,
+                        "reason": "provider retry budget is not exhausted",
+                    },
+                },
+            }
+        }
+    )
+
+    result = ReportValidator().validate(_stored_report(payload), snapshot)
+
+    assert not result.publishable
+    assert {issue.code for issue in result.issues} == {"RETRYABLE_REQUIRED_INPUT"}
+
+
 def test_rpt_031_fallback_is_deterministic_when_validated_facts_are_sufficient() -> None:
     snapshot = _snapshot()
 
