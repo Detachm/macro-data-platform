@@ -967,6 +967,9 @@ class ReportRepository:
                 lifecycle_status=report.lifecycle_status,
                 generated_at=report.generated_at,
                 generation_id=report.generation_id,
+                validation_errors=[
+                    issue.model_dump(mode="json") for issue in report.validation_errors
+                ],
                 payload=report.payload,
             )
             .on_conflict_do_nothing()
@@ -1004,10 +1007,39 @@ class ReportRepository:
             or existing.lifecycle_status != report.lifecycle_status
             or existing.generated_at != report.generated_at
             or getattr(existing, "generation_id", None) != report.generation_id
+            or getattr(existing, "validation_errors", [])
+            != [issue.model_dump(mode="json") for issue in report.validation_errors]
             or existing.payload != report.payload
         ):
             raise ValueError("daily report is immutable")
         return False
+
+    async def update_report_validation(
+        self,
+        report: StoredDailyReport,
+        *,
+        expected_lifecycle_status: str,
+    ) -> bool:
+        """Atomically advance report validation state without overwriting another worker."""
+
+        updated = await self._session.execute(
+            update(DailyReportRow)
+            .where(
+                DailyReportRow.report_id == report.report_id,
+                DailyReportRow.lifecycle_status == expected_lifecycle_status,
+            )
+            .values(
+                status=report.status,
+                publication_decision=report.publication_decision,
+                lifecycle_status=report.lifecycle_status,
+                validation_errors=[
+                    issue.model_dump(mode="json") for issue in report.validation_errors
+                ],
+                payload=report.payload,
+            )
+            .returning(DailyReportRow.report_id)
+        )
+        return updated.scalar_one_or_none() is not None
 
     async def reserve_delivery_attempt(self, attempt: DeliveryAttempt) -> bool:
         inserted = await self._session.execute(
@@ -1099,6 +1131,7 @@ class ReportRepository:
             payload=row.payload,
             lifecycle_status=row.lifecycle_status,
             generation_id=getattr(row, "generation_id", None),
+            validation_errors=getattr(row, "validation_errors", []),
         )
 
     async def load_input_snapshot(self, snapshot_id: str) -> ReportInputSnapshot | None:

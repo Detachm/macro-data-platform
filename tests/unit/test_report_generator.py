@@ -11,6 +11,7 @@ import pytest
 from macro_platform.contracts.common import Region
 from macro_platform.contracts.report import DailyReport
 from macro_platform.services.llm import (
+    LlmError,
     LlmResponse,
     LlmStructuredOutputError,
     LlmTimeoutError,
@@ -40,11 +41,34 @@ def _snapshot() -> ReportInputSnapshot:
     source_ref_ids = [
         item["source_ref_id"] for item in report["sections"]["source_references"]["items"]
     ]
+    facts = [
+        {
+            "fact_id": fact_id,
+            "section_id": "key_movements",
+            "display_text": f"已验证事实 {fact_id}",
+            "available_at": input_snapshot["cutoff_at"],
+            "report_date": report["report_date"],
+            "source_ref_ids": source_ref_ids,
+        }
+        for fact_id in input_snapshot["fact_ids"]
+    ]
     payload = {
         **input_snapshot,
         "editor_context": {"facts": ["approved fact payload"]},
         "source_ref_ids": source_ref_ids,
+        "facts": facts,
         "source_references": report["sections"]["source_references"]["items"],
+        "input_quality": {
+            input_id: {"status": "available", "required": True}
+            for input_id in (
+                "market.cn.core_indices.previous_close",
+                "news.cn.official_headlines_24h",
+                "market.hk.core_indices.previous_close",
+                "news.hk.official_headlines_24h",
+                "market.us.core_indices.previous_close",
+                "calendar.macro_releases_7d",
+            )
+        },
     }
     return ReportInputSnapshot(
         snapshot_id=input_snapshot["snapshot_id"],
@@ -93,6 +117,14 @@ class _FakeReportStore:
         if self.accept_report:
             self.reports.append(report)
         return self.accept_report
+
+    async def update_report_validation(
+        self, report: StoredDailyReport, *, expected_lifecycle_status: str
+    ) -> bool:
+        assert expected_lifecycle_status == "generated"
+        assert self.reports
+        self.reports[-1] = report
+        return True
 
 
 def test_rpt_030_daily_report_contract_accepts_canonical_fixture() -> None:
@@ -181,8 +213,8 @@ async def test_rpt_030_generation_retries_timeout_and_records_trace() -> None:
     )
 
     assert result.report is not None
-    assert result.report.lifecycle_status == "generated"
-    assert result.report.payload["publication"]["decision"] == "not_published"
+    assert result.report.lifecycle_status == "validated"
+    assert result.report.payload["publication"]["decision"] == "published"
     assert result.attempt.lifecycle_status == "generated"
     assert result.attempt.attempt_no == 2
     assert result.attempt.prompt_version == "daily-report-v1.0"
@@ -216,10 +248,36 @@ async def test_rpt_030_malformed_output_is_persisted_as_failed() -> None:
         parameters={},
     )
 
-    assert result.report is None
+    assert result.report is not None
+    assert result.report.status == "complete"
+    assert result.report.publication_decision == "published"
     assert result.attempt.lifecycle_status == "failed"
     assert result.attempt.error_code == "MALFORMED_STRUCTURED_OUTPUT"
-    assert not store.reports
+    assert len(store.reports) == 1
+
+
+@pytest.mark.asyncio
+async def test_rpt_031_llm_unavailable_uses_failsafe_fallback() -> None:
+    snapshot = _snapshot()
+    store = _FakeReportStore(snapshot)
+
+    result = await ReportGenerationService(
+        _FakeLlm([LlmError("provider unavailable")]),
+        clock=lambda: NOW,
+        max_attempts=1,
+    ).generate(
+        store,
+        snapshot_id=snapshot.snapshot_id,
+        report_id="daily-report-2026-07-23-unavailable",
+        report_version="fallback-v1",
+        model="test-model",
+        parameters={},
+    )
+
+    assert result.report is not None
+    assert result.report.status == "complete"
+    assert result.attempt.lifecycle_status == "failed"
+    assert result.attempt.error_code == "LLM_UNAVAILABLE"
 
 
 @pytest.mark.asyncio
@@ -245,7 +303,7 @@ async def test_rpt_030_existing_report_version_is_not_overwritten() -> None:
 
 
 @pytest.mark.asyncio
-async def test_rpt_030_rejects_unknown_nested_fact_ids_before_persistence() -> None:
+async def test_rpt_031_rejects_unknown_nested_fact_ids_and_uses_fallback() -> None:
     snapshot = _snapshot()
     output = _success_payload()
     output["sections"]["key_movements"]["items"][0]["fact_ids"] = ["unknown-fact"]
@@ -264,6 +322,9 @@ async def test_rpt_030_rejects_unknown_nested_fact_ids_before_persistence() -> N
         parameters={},
     )
 
-    assert result.report is None
+    assert result.report is not None
+    assert result.report.lifecycle_status == "validated"
+    assert result.report.publication_decision == "published"
     assert result.attempt.lifecycle_status == "failed"
     assert result.attempt.error_code == "MALFORMED_STRUCTURED_OUTPUT"
+    assert len(store.reports) == 1

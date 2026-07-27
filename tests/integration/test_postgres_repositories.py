@@ -40,6 +40,7 @@ from macro_platform.contracts.market import (
 )
 from macro_platform.contracts.news import ContentMode, NewsQuery
 from macro_platform.contracts.provider import Dataset, IngestJobRequest, IngestJobResult
+from macro_platform.contracts.report import ReportValidationIssue
 from macro_platform.jobs.ingestion_checkpoint import CommittedPage, IngestionCheckpointService
 from macro_platform.jobs.runner import IngestionExecutionContext, JobRunner
 from macro_platform.storage.database import Database
@@ -356,7 +357,7 @@ async def test_db_002_migration_upgrades_0002_to_current_schema(database: Databa
         )
         preserved_run = await session.get(ProviderRunRow, _previous_schema_run_id)
         preserved_instrument = await session.get(InstrumentRow, _previous_schema_instrument_id)
-    assert revision == "0004"
+    assert revision == "0005"
     assert tables == {
         "report_input_snapshots",
         "daily_reports",
@@ -416,6 +417,35 @@ async def test_rpt_030_generation_attempt_is_auditable_and_recoverable(
     assert recovered_attempt == generated_attempt
     assert row is not None
     assert row.lifecycle_status == "generated"
+
+
+async def test_rpt_031_validation_errors_round_trip_with_report(
+    database: Database,
+) -> None:
+    token = uuid4().hex
+    snapshot, report, _ = _report_commands(token)
+    issue = ReportValidationIssue(
+        code="FACT_VALUE_MISMATCH",
+        message="test validation error",
+        fact_id="fact.market.cn.index.csi300.change_pct",
+    )
+    report = report.model_copy(update={"validation_errors": [issue]})
+
+    async with UnitOfWork(database).transaction() as session:
+        repository = ReportRepository(session)
+        assert await repository.put_input_snapshot(snapshot)
+        assert await repository.put_report(report)
+        validated = report.model_copy(update={"lifecycle_status": "validated"})
+        assert await repository.update_report_validation(
+            validated,
+            expected_lifecycle_status="generated",
+        )
+        report = validated
+
+    async with database.session() as session:
+        recovered = await ReportRepository(session).load_report(report.report_id)
+
+    assert recovered == report
 
 
 async def test_rep_027_001_report_and_delivery_replays_are_idempotent(

@@ -376,6 +376,7 @@ class DailyReportRow(Base):
         nullable=True,
         index=True,
     )
+    validation_errors: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

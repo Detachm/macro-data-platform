@@ -15,10 +15,16 @@ from macro_platform.contracts.editor import EditorContextRequest
 from macro_platform.contracts.report import DailyReport, ReportSourceReference
 from macro_platform.services.llm import (
     LlmClient,
+    LlmError,
     LlmRequest,
     LlmResponse,
     LlmStructuredOutputError,
     LlmTimeoutError,
+)
+from macro_platform.services.report_validation import (
+    ReportValidationError,
+    ReportValidationService,
+    ReportValidationStore,
 )
 from macro_platform.storage.reporting import (
     ReportGenerationAttempt,
@@ -45,9 +51,7 @@ _FORBIDDEN_PROMPT_KEYS = frozenset(
 )
 
 
-class ReportGenerationStore(Protocol):
-    async def load_input_snapshot(self, snapshot_id: str) -> ReportInputSnapshot | None: ...
-
+class ReportGenerationStore(ReportValidationStore, Protocol):
     async def put_generation_attempt(self, attempt: ReportGenerationAttempt) -> bool: ...
 
     async def update_generation_attempt(self, attempt: ReportGenerationAttempt) -> None: ...
@@ -158,6 +162,7 @@ class ReportGenerationService:
         *,
         clock: Callable[[], datetime],
         prompt_builder: ReportPromptBuilder | None = None,
+        validation_service: ReportValidationService | None = None,
         timeout_seconds: float = 30,
         max_attempts: int = 2,
     ) -> None:
@@ -168,6 +173,7 @@ class ReportGenerationService:
         self._llm = llm
         self._clock = clock
         self._prompt_builder = prompt_builder or ReportPromptBuilder()
+        self._validation_service = validation_service or ReportValidationService()
         self._timeout_seconds = timeout_seconds
         self._max_attempts = max_attempts
 
@@ -224,6 +230,8 @@ class ReportGenerationService:
                 error_code = "LLM_TIMEOUT"
             except (LlmStructuredOutputError, ValidationError, ValueError, TypeError):
                 error_code = "MALFORMED_STRUCTURED_OUTPUT"
+            except LlmError:
+                error_code = "LLM_UNAVAILABLE"
             else:
                 try:
                     report = StoredDailyReport(
@@ -258,11 +266,36 @@ class ReportGenerationService:
                     )
                     await store.update_generation_attempt(attempt)
                     return ReportGenerationResult(report=None, attempt=attempt)
+                try:
+                    validation = await self._validation_service.validate_or_fallback(
+                        store,
+                        snapshot_id=snapshot.snapshot_id,
+                        report_id=report_id,
+                        report_version=report_version,
+                        generated_at=self._clock().astimezone(UTC),
+                        candidate=report,
+                    )
+                except ReportValidationError as validation_error:
+                    attempt = attempt.model_copy(
+                        update={
+                            "lifecycle_status": "failed",
+                            "error_code": "REPORT_VALIDATION_PERSISTENCE_FAILED",
+                        }
+                    )
+                    await store.update_generation_attempt(attempt)
+                    raise ReportGenerationError(
+                        f"report validation could not be persisted: {validation_error}"
+                    ) from validation_error
+                report = validation.report
                 attempt = attempt.model_copy(
                     update={
                         "lifecycle_status": "generated",
                         "response_payload": response.structured_output,
-                        "error_code": None,
+                        "error_code": (
+                            None
+                            if report.lifecycle_status == "validated"
+                            else "REPORT_VALIDATION_FAILED"
+                        ),
                     }
                 )
                 await store.update_generation_attempt(attempt)
@@ -273,7 +306,21 @@ class ReportGenerationService:
                     update={"lifecycle_status": "failed", "error_code": error_code}
                 )
                 await store.update_generation_attempt(attempt)
-                return ReportGenerationResult(report=None, attempt=attempt)
+                try:
+                    fallback = await self._validation_service.validate_or_fallback(
+                        store,
+                        snapshot_id=snapshot.snapshot_id,
+                        report_id=report_id,
+                        report_version=report_version,
+                        generated_at=self._clock().astimezone(UTC),
+                        candidate=None,
+                        generation_id=attempt.generation_id,
+                    )
+                except ReportValidationError as fallback_error:
+                    raise ReportGenerationError(
+                        f"report fallback could not be persisted: {fallback_error}"
+                    ) from fallback_error
+                return ReportGenerationResult(report=fallback.report, attempt=attempt)
 
         raise AssertionError("report generation loop must return")
 
