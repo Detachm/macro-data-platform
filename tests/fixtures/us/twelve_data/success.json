@@ -1,0 +1,25 @@
+{
+  "meta": {
+    "symbol": "SPY",
+    "interval": "1day",
+    "currency": "USD"
+  },
+  "values": [
+    {
+      "datetime": "2026-07-21",
+      "open": "600.00",
+      "high": "605.00",
+      "low": "599.00",
+      "close": "604.00",
+      "volume": "100"
+    },
+    {
+      "datetime": "2026-07-22",
+      "open": "610.00",
+      "high": "615.00",
+      "low": "609.00",
+      "close": "614.00",
+      "volume": "200"
+    }
+  ]
+}

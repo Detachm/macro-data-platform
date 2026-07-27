@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = Field(default=8000, ge=1, le=65535)
     provider_timeout_seconds: int = Field(default=30, ge=1, le=300)
+    us_provider_mode: Literal["fixture", "live"] = "fixture"
+    twelve_data_api_key: SecretStr | None = None
+    twelve_data_cursor_secret: SecretStr | None = None
 
     @model_validator(mode="after")
     def reject_development_secret_in_production(self) -> Settings:

@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "fixture_kind": "synthetic",
+  "provider_id": "us.twelve-data.v1",
+  "fixtures": [
+    "success.json",
+    "empty.json",
+    "missing_fields.json",
+    "auth_failure.json",
+    "rate_limited.json",
+    "timeout.json",
+    "malformed_json.json",
+    "schema_changed.json",
+    "duplicate_page.json"
+  ],
+  "notes": "Synthetic, credential-free Twelve Data response shapes. Transport failures are represented by the test harness, never as a provider response."
+}

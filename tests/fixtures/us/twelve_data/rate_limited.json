@@ -1,0 +1,5 @@
+{
+  "status": "error",
+  "code": 429,
+  "message": "Synthetic rate limit"
+}

@@ -16,7 +16,7 @@
 
 ## 接口与覆盖
 
-- Base URL 与端点（不得写 token）：`GET https://api.twelvedata.com/time_series`；使用 `symbol=<SPY|QQQ|DIA>`、`interval=1day`、`start_date`、`end_date`、`outputsize` 和仅来自运行时 Secret Manager 的 `apikey`。
+- Base URL 与端点（不得写 token）：`GET https://api.twelvedata.com/time_series`；使用 `symbol=<SPY|QQQ|DIA>`、`interval=1day`、`start_date`、`end_date`、`outputsize`、`order=ASC` 和仅来自运行时 Secret Manager 的 `apikey`。
 - 请求参数、分页/cursor 语义：以单 symbol、有限日期窗口请求；该端点不提供 cursor。adapter 必须限制窗口和响应条数，并拒绝重复或倒序日期，不得把超出白名单的 symbol 请求给 provider。
 - 频率、时区和上游时间字段：Twelve Data 的 `1day` 行以交易所本地交易日日期给出；按 `America/New_York` 交易日历构造 `trading_date`、session 边界和 UTC 时间。日线不把请求的 `timezone` 参数当作时间语义。
 - 历史深度、更新延迟、修订策略：深度、额度和可用历史依套餐而定；日线响应没有可审计的 dissemination timestamp 时，修订行以 checksum/revision 保存，`available_at=first_seen`，绝不从交易日日期伪造发布时间。
