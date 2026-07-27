@@ -44,12 +44,21 @@ def assert_section_limits(report: dict[str, Any]) -> None:
 
 def assert_section_facts_are_in_snapshot(report: dict[str, Any]) -> None:
     declared_fact_ids = set(report["input_snapshot"]["fact_ids"])
-    referenced_fact_ids = {
-        fact_id
-        for section in report["sections"].values()
-        for fact_id in section.get("fact_ids", [])
+    declared_source_ref_ids = {
+        item["source_ref_id"] for item in report["sections"]["source_references"]["items"]
     }
-    assert referenced_fact_ids <= declared_fact_ids
+
+    def walk(value: Any) -> list[dict[str, Any]]:
+        if isinstance(value, dict):
+            return [value, *[item for child in value.values() for item in walk(child)]]
+        if isinstance(value, list):
+            return [item for child in value for item in walk(child)]
+        return []
+
+    for section in report["sections"].values():
+        for item in walk(section):
+            assert set(item.get("fact_ids", [])) <= declared_fact_ids
+            assert set(item.get("source_ref_ids", [])) <= declared_source_ref_ids
 
 
 def test_daily_report_v1_success_fixture_is_the_canonical_complete_contract() -> None:
@@ -142,13 +151,33 @@ def test_daily_report_v1_spec_references_both_canonical_examples_and_operating_r
 
 def test_daily_report_v1_feishu_card_fixture_is_delivery_only() -> None:
     card = json.loads(FEISHU_CARD_PATH.read_text(encoding="utf-8"))
+    report = load_json_fixture("daily_report_v1_success.json")
 
     assert card["schema"] == "2.0"
     assert card["report_contract_version"] == "1.0"
     assert card["report_id"] == "daily-report-2026-07-23-v1"
     assert card["publication_decision"] == "published"
     assert card["body"]["elements"]
-    assert all(element["tag"] in {"markdown", "hr", "note"} for element in card["body"]["elements"])
+    assert all(element["tag"] in {"markdown", "hr"} for element in card["body"]["elements"])
+    assert all(element["tag"] != "note" for element in card["body"]["elements"])
+    assert report["sections"]["executive_summary"]["text"] in card["body"]["elements"][0]["content"]
+    assert (
+        report["sections"]["data_quality_notice"]["text"] in card["body"]["elements"][2]["content"]
+    )
+
+
+def test_daily_report_v1_contract_checks_nested_fact_and_source_references() -> None:
+    report = load_json_fixture("daily_report_v1_success.json")
+    report["sections"]["key_movements"]["items"][0]["fact_ids"] = ["fact.unknown"]
+
+    with pytest.raises(AssertionError):
+        assert_section_facts_are_in_snapshot(report)
+
+    report = load_json_fixture("daily_report_v1_success.json")
+    report["sections"]["upcoming_calendar"]["items"][0]["source_ref_ids"] = ["src.unknown"]
+
+    with pytest.raises(AssertionError):
+        assert_section_facts_are_in_snapshot(report)
 
 
 @pytest.mark.parametrize(

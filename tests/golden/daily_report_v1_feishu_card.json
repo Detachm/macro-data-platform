@@ -23,16 +23,11 @@
       },
       {
         "tag": "markdown",
-        "content": "**数据质量**\n必需数据均在截止时间前到达。"
+        "content": "**数据质量**\n必需数据均在截止时间前到达，未发现过期或权限问题。"
       },
       {
-        "tag": "note",
-        "elements": [
-          {
-            "tag": "plain_text",
-            "content": "DailyReport v1.0 · 仅展示已验证事实"
-          }
-        ]
+        "tag": "markdown",
+        "content": "DailyReport v1.0 · 仅展示已验证事实"
       }
     ]
   }
