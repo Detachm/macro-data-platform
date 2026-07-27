@@ -8,8 +8,13 @@ import pytest
 
 from macro_platform.contracts.common import Region
 from macro_platform.contracts.macro import MacroObservationQuery, MacroReleaseQuery
+from macro_platform.contracts.market import Adjustment, BarQuery, Interval
 from macro_platform.contracts.news import NewsQuery
 from macro_platform.contracts.provider import FetchContext
+from macro_platform.providers.cn.baostock import (
+    BAOSTOCK_DEFAULT_INSTRUMENTS,
+    BaoStockDailyBarsProvider,
+)
 from macro_platform.providers.cn.live import CnNbsReleaseProvider
 from macro_platform.providers.hk.live import HkCsdProvider, HkmaPressReleaseProvider
 
@@ -29,6 +34,37 @@ def _live_context() -> FetchContext:
 def _require_live_smoke() -> None:
     if os.getenv("RUN_LIVE_SMOKE") != "1":
         pytest.skip("set RUN_LIVE_SMOKE=1 to call the real public provider")
+
+
+@pytest.mark.live
+@pytest.mark.asyncio
+async def test_cn_baostock_core_index_daily_bar_live_smoke() -> None:
+    _require_live_smoke()
+    context = _live_context()
+    csi300 = BAOSTOCK_DEFAULT_INSTRUMENTS[1]
+    provider = BaoStockDailyBarsProvider(
+        instruments=[csi300],
+        cursor_signing_secret="live-smoke-only-cursor-secret",
+    )
+    try:
+        page = await provider.fetch_bars(
+            BarQuery(
+                instrument_ids=[csi300.instrument_id],
+                interval=Interval.D1,
+                start=context.as_of - timedelta(days=14),
+                end=context.as_of + timedelta(days=1),
+                adjustment=Adjustment.RAW,
+                as_of=context.as_of,
+                limit=20,
+            ),
+            context,
+        )
+    finally:
+        await provider.aclose()
+
+    assert page.items
+    assert {bar.source.source_symbol for bar in page.items} == {"sh.000300"}
+    assert all(bar.interval is Interval.D1 for bar in page.items)
 
 
 @pytest.mark.live

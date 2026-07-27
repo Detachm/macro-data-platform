@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 from macro_platform.config import Settings
-from macro_platform.providers.cn import CnSyntheticProvider, register_cn_provider_roles
+from macro_platform.providers.cn import (
+    BaoStockDailyBarsProvider,
+    CnSyntheticProvider,
+    register_cn_baostock_provider_roles,
+    register_cn_provider_roles,
+)
 from macro_platform.providers.cn.live import CnNbsReleaseProvider
 from macro_platform.providers.hk import HkSyntheticProvider, register_hk_provider_roles
 from macro_platform.providers.hk.live import HkCsdProvider, HkmaPressReleaseProvider
@@ -31,6 +36,10 @@ def create_provider_registry(settings: Settings) -> ProviderRegistry:
             timeout_seconds=settings.provider_timeout_seconds,
             cursor_signing_secret=cursor_secret,
         )
+        cn_baostock = BaoStockDailyBarsProvider(
+            timeout_seconds=settings.provider_timeout_seconds,
+            cursor_signing_secret=cursor_secret,
+        )
         hk_csd = HkCsdProvider(
             timeout_seconds=settings.provider_timeout_seconds,
             cursor_signing_secret=cursor_secret,
@@ -40,6 +49,7 @@ def create_provider_registry(settings: Settings) -> ProviderRegistry:
             cursor_signing_secret=cursor_secret,
         )
         registry.register(cn)
+        register_cn_baostock_provider_roles(registry, cn_baostock)
         registry.register(hk_csd)
         registry.register(hkma)
         registry.bind_role("cn.macro.primary", cn.provider_id)

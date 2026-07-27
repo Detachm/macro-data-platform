@@ -21,7 +21,7 @@ Provider roles: `cn.instruments.primary`, `cn.bars.primary`, `cn.macro.primary`,
 | 区域 | 数据类 | 两日 MVP 结论 | 主来源 | fallback | 两日内凭据 |
 |---|---|---|---|---|---|
 | CN | instruments | fixture-only；可用官方网页建立脱敏/合成 fixture，暂不承诺自动 live 抓取 | SSE/SZSE 股票列表 | CNINFO 公司要览，仅校验 alias | 无 token；无自动抓取授权审批 |
-| CN | daily bars | fixture-only；真实 live 日线为 gap，必须采购或取得行情许可 | SSE historical day-end / SSE Level-1；SZSE Level-1 EOD | 无合规免费 fallback | 无 CIIS/SSE InfoNet/SSIC 凭据 |
+| CN | daily bars | `live-ready`，但只覆盖 3 个批准的核心指数；个股、行业和其他指数仍为 gap | BaoStock `query_history_k_data_plus` | SSE/SZSE 授权 EOD 产品用于扩展覆盖 | BaoStock 无需注册；无 API token |
 | CN | macro/releases | release calendar live-ready；macro observation 先 fixture-only | NBS 发布日程、NBS 数据发布库 | NBS 新闻稿页面 | 无 token；EasyQuery 无官方外部 API 文档，observation 不 live-ready |
 | CN | news/announcements | headline/url fixture-only；禁止保存受限正文 | SSE/SZSE/CNINFO 公告检索页 | CSRC/NBS 官方新闻页，仅政策新闻 | 无 token；无正文/批量抓取授权 |
 | HK | instruments | fixture-only；HKEX 公共证券列表可人工 fixture，付费 master file 未采购 | HKEX Securities Lists | HKEX Securities Master File | 无 Data Marketplace/Historical Data 订阅 |
@@ -137,31 +137,31 @@ Provider roles: `cn.instruments.primary`, `cn.bars.primary`, `cn.macro.primary`,
 | 项 | primary | fallback |
 |---|---|---|
 | Provider role | `cn.bars.primary` | `cn.bars.fallback` |
-| 来源 | SSE historical day-end / SSE Level-1；SZSE Level-1 End-of-day Data | 无合规免费 fallback |
-| 状态 | fixture-only | gap |
-| 官方文档 | SSE historical data、SSE InfoNet Level-1、SZSE Data Services | 不适用 |
-| Base URL/端点 | 采购后由 CIIS/SSE InfoNet/SSIC 提供数据文件、网关或下载端点；当前不得虚构 URL | 不适用 |
-| 请求参数 | 采购规格确定前冻结为: `symbol`, `trade_date`, `market`, `adjustment=raw` | 不适用 |
-| 分页 | 文件型按交易日分片；接口型按供应商 cursor/sequence | 不适用 |
-| 限流 | 按合同；当前无合同不得 live | 不适用 |
-| 历史深度 | SSE 文档列明历史数据可至 1990-12-19；SZSE 以合同为准 | 不适用 |
-| 时区 | `Asia/Shanghai` | 不适用 |
-| 更新时间 | EOD/日终；SSE/SZSE 具体分发时刻按合同 | 不适用 |
-| available_at basis | 有供应商分发时间用 `provider_disseminated`; 有交易所发布时间用 `exchange_published`; 否则 `first_seen`，且不得用于 PIT 回测声称 | 不适用 |
-| 凭据 | 无 CIIS/SSE InfoNet/SSIC 账号、证书或下载权限，两日内不可用 | 无 |
+| 来源 | BaoStock Python client 的 `query_history_k_data_plus` | SSE/SZSE 授权 EOD 产品，用于扩大个股和指数覆盖 |
+| 状态 | live-ready；仅 `sh.000001`、`sh.000300`、`sz.399001` 三个静态 allowlist 映射 | gap |
+| 官方文档 | [BaoStock](https://www.baostock.com/)；项目内 adapter 版本固定为 `baostock 0.9.x` | 采购后登记产品说明和端点 |
+| Base URL/端点 | BaoStock stateful Python client；adapter 不直接拼接未登记 HTTP URL | 按合同 |
+| 请求参数 | `code`, `start_date`, `end_date`, `frequency=d`, `adjustflag=3`；只接受 raw 日线 | 按合同 |
+| 分页 | 上游单次请求按代码和日期窗口；adapter 以签名 cursor、结果 checksum 和前驱 `bar_id` 做本地 continuation | 按合同 |
+| 限流 | 上游未公布 SLA；每个 client session 串行，30 秒 deadline，错误后由 job retry 策略处理 | 按合同 |
+| 历史深度 | adapter 单个日期窗口最多 5 个日历年；实际可用历史范围以 BaoStock 返回为准 | 按合同 |
+| 时区 | `Asia/Shanghai` | 按合同 |
+| 更新时间 | EOD/日终；不声称上游分发时刻 | 按合同 |
+| available_at basis | `retrieved_at`，`availability_basis=first_seen`；不支持历史 PIT snapshot | 按合同 |
+| 凭据 | 无账号、token 或 secret；登录/登出仅为 BaoStock client session | 按合同 |
 
 ### 上游字段到公共 contracts 映射
 
 | 上游字段 | 公共字段 | 变换/口径 | 必填 | 缺失策略 |
 |---|---|---|---:|---|
-| 证券代码 | `MarketBar.canonical_symbol`, `instrument_id` | 先用 alias registry 解析到 `instrument_id` | 是 | 未解析拒绝记录 |
+| `code` | `MarketBar.canonical_symbol`, `instrument_id` | 仅静态 mapping: `sh.000001`→`XSHG:000001`、`sh.000300`→`XSHG:000300`、`sz.399001`→`XSHE:399001` | 是 | 未在 allowlist 或返回 symbol 不匹配时拒绝记录 |
 | 交易日期 | `trading_date`, `bar_start`, `bar_end` | 日期精度；`bar_start` 为交易日开盘时刻 UTC，`bar_end` 为收盘时刻 UTC | 是 | 缺失拒绝记录 |
 | 开盘价/最高价/最低价/收盘价 | `open/high/low/close` | Decimal 字符串；不使用 float | 是 | 缺失拒绝记录 |
 | 成交量 | `volume` | 股/份，非负 Decimal | 否 | `null`，加 flag |
 | 成交金额 | `turnover` | CNY，非负 Decimal | 否 | `null`，加 flag |
 | 均价 | `vwap` | 若上游无字段则不自行计算 | 否 | `null` |
 | 复权标识 | `adjustment` | 首期只允许 `raw` | 是 | 非 raw 且无 `adjustment_as_of` 拒绝 |
-| 分发/更新时间 | `available_at`, `source.provider_updated_at` | 按上游分发或更新时间转换 UTC | 是 | 无证明则 `retrieved_at` + `first_seen` |
+| 本次抓取时间 | `available_at`, `source.retrieved_at` | 转 UTC，`availability_basis=first_seen` | 是 | 无时间则拒绝记录 |
 
 ## CN macro/releases
 
@@ -366,6 +366,7 @@ Provider roles: `cn.instruments.primary`, `cn.bars.primary`, `cn.macro.primary`,
 | SSE/SZSE public instruments pages | Yes, metadata fixture only | Yes, internal non-commercial review | No for raw page/content | No | No | 法律声明仅允许非商业浏览/下载；商业、出售牟利、传播需书面许可。到期: 每次使用前复核 |
 | SSE/SZSE/CNINFO announcements | Yes, headline/url fixture only | Yes, internal review | No | No | No | SSE/SZSE 法律声明和 CNINFO 页面性质；公告正文不入库。到期: 每次使用前复核 |
 | SSE/SZSE licensed daily bars | No until contract | No until contract | No | No | No | 未取得 CIIS/SSE InfoNet/SSIC 行情合同和凭据 |
+| BaoStock core-index daily bars | Yes, normalized internal facts for the three allowlisted indices | Yes, internal analysis | No | No | No | 项目负责人于 2026-07-27 选择该公开、无需注册来源；adapter 不保存凭据或原始响应，且不将公开访问视为再分发授权。每次来源条款变化前复核 |
 | NBS release calendar/news pages | Yes, source-attributed metadata | Yes | Yes for facts/metadata only, no long verbatim text | Yes for numeric metadata only | No raw redistribution beyond attributed excerpts | NBS 服务条款允许转载/引用需注明来源，排除禁止转载/需授权内容 |
 | NBS data portal observations | Yes for fixtures only | Yes for fixtures only | No | No | No | 官方数据发布库；EasyQuery 未作为正式外部 API 文档，当前不冻结 live observation 权利 |
 | HKEX public securities lists | Yes, metadata fixture only | Yes, internal review | No raw page/content | No | No | HKEX Terms 禁止未经许可使用 marks/information；市场数据另需许可 |
@@ -380,7 +381,7 @@ Provider roles: `cn.instruments.primary`, `cn.bars.primary`, `cn.macro.primary`,
 
 - 对 fixture-only 或 gap 来源，若产生 fixture 记录，`usage_rights.storage_allowed=true` 仅限合成/脱敏 fixture；真实上游正文不得保存。
 - 对 open-data numeric/metadata 来源，`storage_allowed=true`, `internal_analysis_allowed=true`; `external_llm_allowed` 和 `embedding_allowed` 只有在上表明确为 Yes 且有可验证授权依据时才为 true。HKMA Open API 在负责人/法务确认前均为 false；`redistribution_allowed` 只能在上表明确为 Yes 时为 true。
-- 对未采购市场数据，全部 false；不得生成 live provider capabilities。
+- 对未采购市场数据，全部 false；不得生成 live provider capabilities。BaoStock 的三条批准核心指数映射是本文明确列出的例外，只能按本表范围运行。
 - 新闻 `body` 只有在书面合同明确允许 storage 时才能非空；external LLM 和 embedding
   权限分别只限制外发和向量化，不得在公共 `NewsEvent` validation 中解释为禁止内部保存。
 
@@ -428,6 +429,7 @@ Issue #28 的 live 选择通过 `PROVIDER_MODE` 显式控制：`live` 才会由�
 | adapter | allowlisted endpoint | live datasets | 数据边界 |
 |---|---|---|---|
 | `CnNbsReleaseProvider` | NBS release calendar | `macro_releases` | 只输出发布日程 metadata，不保存正文 |
+| `BaoStockDailyBarsProvider` | BaoStock `query_history_k_data_plus` | `bars` | 仅 `sh.000001`、`sh.000300`、`sz.399001`；`1d raw`，`available_at=first_seen` |
 | `HkCsdProvider` | C&SD `510-60004` API | `macro_series`, `macro_observations` | 以 API 首次可见时间作为 `available_at`，不声称 PIT 或 revision history |
 | `HkmaPressReleaseProvider` | HKMA press-releases API | `news` | 只输出标题/链接；正文请求明确拒绝 |
 
@@ -440,14 +442,14 @@ registry；未登记的 `sv` 或 metadata 不匹配时阻断 adapter，不按上
 `UnsupportedCapabilityError`，不能把空页当作“确实没有数据”。分页 continuation 会绑定
 源数据 watermark，并校验前一条排序记录；源数据变化时返回 `ProviderCursorError`。
 
-未在 allowlist 中的 host、C&SD dataset、市场行情和 HKEX/CN 公告来源不会被 live factory 注册。CN/HK 核心指数和未获行情授权的数据仍必须走后续已批准来源；不能用 fixture adapter 冒充 live 完成日报。
+未在 allowlist 中的 host、C&SD dataset、BaoStock symbol、市场行情和 HKEX/CN 公告来源不会被 live factory 注册。HK 日线、CN 个股及未获行情授权的数据仍必须走后续已批准来源；不能用 fixture adapter 冒充 live 完成日报。
 
 Adapter authors must register capabilities according to this matrix:
 
 | Provider role | Dataset | Region | Capability status |
 |---|---|---|---|
 | `cn.instruments.primary` | instruments | CN | fixture-only, no live capability |
-| `cn.bars.primary` | bars | CN | fixture-only, no live capability |
+| `cn.bars.primary` | bars | CN | live-ready for three BaoStock core-index mappings only; no historical PIT |
 | `cn.macro.primary` | macro_releases | CN | live-ready for release calendar only |
 | `cn.macro.primary` | macro_observations | CN | fixture-only |
 | `cn.news.primary` | news | CN | fixture-only for headline/url; body prohibited |
@@ -482,9 +484,10 @@ Adapter authors must register capabilities according to this matrix:
 在线 smoke 最小请求和成本:
 
 - CN release calendar: 每日一次 GET NBS 发布日程页面；无 token；成本为公共网页请求。
+- CN core-index bars: BaoStock client 查询 `sh.000300` 最近 10 个日历日；无 token；成本为公共客户端请求。
 - HK macro: 每日一次 C&SD table API 或 HKMA Open API，`pagesize<=100`; 无 token；成本为公共 API 请求。
 - HKMA press releases: 每日一次 `lang=en&offset=0`; 无 token；成本为公共 API 请求。
-- 所有 `fixture-only` 和 `gap` 来源在线 smoke 禁止运行。
+- 所有未列为 `live-ready` 的 `fixture-only` 和 `gap` 来源在线 smoke 禁止运行。
 
 ## 运行指标与退出方案
 
