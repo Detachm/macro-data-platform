@@ -357,11 +357,9 @@ async def test_us_fixture_provider_contract_covers_news_002_003_012_013_and_017(
         restricted = next(
             item for item in page.items if item.source.provider_record_id.endswith(":news-017")
         )
-        events = await NewsService(FixtureNewsRepository([restricted])).events(
-            _news_query(), for_external_llm=True
-        )
-        assert events[0].summary is None
-        assert events[0].content_mode is ContentMode.HEADLINE
+        events = await NewsService(FixtureNewsRepository([restricted])).events(_news_query())
+        assert events[0].summary is not None
+        assert events[0].content_mode is ContentMode.SNIPPET
 
 
 @pytest.mark.parametrize("_test_id", [pytest.param("PRV-017", id="PRV-017")])

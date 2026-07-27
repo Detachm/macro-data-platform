@@ -10,7 +10,7 @@
 ## 处置
 
 1. 根据 `request_id`、`run_id`、provider role 和 dataset 定位失败批次，禁止在工单或日志中粘贴密钥/正文。
-2. 核对上游状态、合同权限、配额和数据源登记文档；401/403 不做无限重试。
+2. 核对上游状态、凭据、配额和数据源登记文档；401/403 不做无限重试。
 3. 检查最近成功 watermark、rejection 样本和 schema checksum，不手工跳过 checkpoint。
 4. 若允许 fallback，显式切换 provider role，并让 coverage/provenance 标记 degraded；禁止无痕混源。
 5. 修复 adapter 时先加入能复现的脱敏 fixture，再运行公共 contract suite。
@@ -19,7 +19,7 @@
 
 ## 升级
 
-- 授权、合同或 external LLM 权利不明确：立即停止相关内容传输，升级项目负责人。
+- 凭据疑似泄漏或账号权限异常：立即停止任务并轮换凭据。
 - 公共 contract/API/migration 需要变化：提交 ADR，不在 provider 热修中夹带破坏性修改。
 - 三地区日报关键数据均不可用：使用 `fail_on_incomplete=true` 阻断生成，不让 LLM 猜测缺失事实。
 

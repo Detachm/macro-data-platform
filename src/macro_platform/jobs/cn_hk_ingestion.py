@@ -12,7 +12,6 @@ from macro_platform.contracts.provider import (
     IngestJobResult,
     ProviderPage,
 )
-from macro_platform.governance.source_policy import RetentionRule
 from macro_platform.jobs.ingestion_checkpoint import CommittedPage, IngestionCheckpointService
 from macro_platform.jobs.runner import IngestionExecutionContext
 from macro_platform.normalization.common import canonical_json_checksum
@@ -145,17 +144,10 @@ class CnHkFixtureIngestHandler:
             next_cursor=page.next_cursor,
             accepted_record_ids=[item.source.provider_record_id for item in page.items],
         )
-        retention_rule = (
-            RetentionRule.CANONICAL_FACTS
-            if execution.retention_policy is None
-            else execution.retention_policy.rule_for(self._provider.region)
-        )
         async with UnitOfWork(database).transaction() as session:
             repository = IngestionCheckpointRepository(session, ingestion_run_id=run_id)
 
             async def write_records(_: object) -> None:
-                if retention_rule is not RetentionRule.CANONICAL_FACTS:
-                    return
                 for item in page.items:
                     await repository.upsert_market_observation(item)
 
@@ -171,11 +163,7 @@ class CnHkFixtureIngestHandler:
             records_fetched=len(page.items),
             records_accepted=len(page.items),
             records_rejected=0,
-            records_inserted=(
-                len(page.items)
-                if committed and retention_rule is RetentionRule.CANONICAL_FACTS
-                else 0
-            ),
+            records_inserted=(len(page.items) if committed else 0),
             records_updated=0,
             next_cursor=page.next_cursor,
             source_watermark=page.source_watermark,

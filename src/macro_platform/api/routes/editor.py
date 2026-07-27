@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from macro_platform.api.dependencies import RepositoryDep, RequestIdDep, SourcePolicyDep
+from macro_platform.api.dependencies import RepositoryDep, RequestIdDep
 from macro_platform.contracts.common import SuccessEnvelope
 from macro_platform.contracts.editor import EditorContext, EditorContextRequest
 from macro_platform.normalization.common import utc_now
@@ -18,14 +18,12 @@ router = APIRouter(prefix="/v1/editor", tags=["editor"])
 async def build_context(
     body: EditorContextRequest,
     repository: RepositoryDep,
-    source_policy: SourcePolicyDep,
     request_id: RequestIdDep,
 ) -> SuccessEnvelope[EditorContext]:
     service = EditorContextService(
         MarketService(repository),
         MacroService(repository),
-        NewsService(repository, source_policy=source_policy),
-        source_policy=source_policy,
+        NewsService(repository),
     )
     context = await service.build(body)
     return SuccessEnvelope[EditorContext](

@@ -97,9 +97,7 @@ Blocked by: #21 as recorded in tests/fixtures/{cn,hk}/manifest.json.
 - `NEWS-002`、`NEWS-003`、`PRV-017`：URL canonicalization、标题 normalization 和
   canonical checksum。
 - `NEWS-012`、`NEWS-013`、`NEWS-017`：title-only 新闻、空 vendor annotation，并保留
-  rights 字段骨架；storage 已许可的正文可内部保存，EditorContext 对
-  `external_llm_allowed=false` 的新闻输出 headline-only，
-  不返回受限 summary/body。
+  legacy rights 字段骨架；内部个人运行时不读取 rights 作准入判断，summary/body 保持原样。
 
 已实现的 `PRV-011`、`PRV-012`、`PRV-014`、`PRV-016` 由 #20 的真实 PostgreSQL
 handler 回归覆盖：分别验证外层回滚后 PIT 审计仍保留、原始时区审计、并发 reservation/

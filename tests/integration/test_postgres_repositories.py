@@ -40,13 +40,6 @@ from macro_platform.contracts.market import (
 )
 from macro_platform.contracts.news import ContentMode, NewsQuery
 from macro_platform.contracts.provider import Dataset, IngestJobRequest, IngestJobResult
-from macro_platform.governance.source_policy import (
-    ApprovalStatus,
-    ProductionSourcePolicy,
-    RetentionRule,
-    SourcePolicyEntry,
-    SourcePolicyManifest,
-)
 from macro_platform.jobs.ingestion_checkpoint import CommittedPage, IngestionCheckpointService
 from macro_platform.jobs.runner import IngestionExecutionContext, JobRunner
 from macro_platform.storage.database import Database
@@ -272,7 +265,6 @@ class _ProductionCheckpointedHandler:
         database: Database,
         execution: IngestionExecutionContext,
     ) -> IngestJobResult:
-        assert execution.retention_policy is not None
         assert isinstance(checkpoints, IngestionCheckpointService)
         assert isinstance(database, Database)
         self.calls += 1
@@ -306,7 +298,6 @@ class _BlockingProductionCheckpointedHandler(_ProductionCheckpointedHandler):
         database: Database,
         execution: IngestionExecutionContext,
     ) -> IngestJobResult:
-        assert execution.retention_policy is not None
         assert isinstance(checkpoints, IngestionCheckpointService)
         assert isinstance(database, Database)
         self.calls += 1
@@ -345,31 +336,6 @@ class _WrongRunProductionCheckpointedHandler(_ProductionCheckpointedHandler):
         self.execution = execution
         result = await super().run_checkpointed(request, checkpoints, database, execution)
         return result.model_copy(update={"run_id": uuid4()})
-
-
-def _production_policy() -> ProductionSourcePolicy:
-    return ProductionSourcePolicy(
-        SourcePolicyManifest(
-            policy_version="storage-contract-test",
-            entries=[
-                SourcePolicyEntry(
-                    policy_id="storage-contract-ingestion",
-                    provider_id=_ProductionCheckpointedHandler.provider_id,
-                    dataset=Dataset.MARKET_OBSERVATIONS,
-                    regions={Region.CN},
-                    owner="@kazming666",
-                    credential_requirement="none",
-                    ingestion_allowed=True,
-                    external_llm_allowed=False,
-                    citation_allowed=False,
-                    retention_rule=RetentionRule.CANONICAL_FACTS,
-                    approval_status=ApprovalStatus.APPROVED,
-                    production_enabled=True,
-                    evidence=["docs/adr/0002-daily-report-storage-idempotency.md"],
-                )
-            ],
-        )
-    )
 
 
 async def test_db_002_migration_upgrades_0002_to_current_schema(database: Database) -> None:
@@ -687,7 +653,7 @@ async def test_rep_027_production_runner_replays_completed_ingestion_without_pro
     database: Database,
 ) -> None:
     handler = _ProductionCheckpointedHandler()
-    runner = JobRunner(handler, database=database, source_policy=_production_policy())
+    runner = JobRunner(handler, database=database)
 
     first = await runner.execute(_ingest_request())
     second = await runner.execute(_ingest_request())
@@ -703,7 +669,6 @@ async def test_rep_027_production_runner_waits_for_an_active_idempotent_run(
     runner = JobRunner(
         handler,
         database=database,
-        source_policy=_production_policy(),
         running_run_wait_seconds=1,
         running_run_poll_seconds=0.01,
     )
@@ -735,7 +700,6 @@ async def test_rep_027_production_runner_isolates_concurrent_execution_contexts(
     runner = JobRunner(
         handler,
         database=database,
-        source_policy=_production_policy(),
         running_run_wait_seconds=1,
         running_run_poll_seconds=0.01,
     )
@@ -764,7 +728,7 @@ async def test_rep_027_marks_durable_run_failed_when_result_validation_fails(
     database: Database,
 ) -> None:
     handler = _WrongRunProductionCheckpointedHandler()
-    runner = JobRunner(handler, database=database, source_policy=_production_policy())
+    runner = JobRunner(handler, database=database)
     request = _ingest_request().model_copy(
         update={"provider_role": f"cn.contract.invalid.{uuid4().hex[:8]}"}
     )

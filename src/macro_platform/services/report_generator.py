@@ -36,7 +36,6 @@ _FORBIDDEN_PROMPT_KEYS = frozenset(
     {
         "api_key",
         "authorization",
-        "body",
         "cookie",
         "credential",
         "password",
@@ -97,7 +96,7 @@ class ReportGenerationError(RuntimeError):
 
 
 class ReportPromptBuilder:
-    """Builds the fixed report prompt from a persisted, already-approved snapshot."""
+    """Builds the fixed report prompt from a persisted input snapshot."""
 
     prompt_version = REPORT_PROMPT_VERSION
 
@@ -122,7 +121,7 @@ class ReportPromptBuilder:
         _assert_prompt_safe(prompt_payload)
         _assert_prompt_safe(dict(parameters), path="parameters")
 
-        source_references = _external_llm_source_references(snapshot)
+        source_references = _source_references(snapshot)
         source_ref_ids = [source.source_ref_id for source in source_references]
         return LlmRequest(
             model=model,
@@ -336,8 +335,7 @@ class ReportGenerationService:
                 "fact_ids": [],
                 "source_ref_ids": [],
                 "items": [
-                    source.model_dump(mode="json")
-                    for source in _external_llm_source_references(snapshot)
+                    source.model_dump(mode="json") for source in _source_references(snapshot)
                 ],
             }
         return output
@@ -362,7 +360,7 @@ def _assert_prompt_safe(value: Any, *, path: str = "input_payload") -> None:
             _assert_prompt_safe(child, path=f"{path}[{index}]")
 
 
-def _external_llm_source_references(
+def _source_references(
     snapshot: ReportInputSnapshot,
 ) -> list[ReportSourceReference]:
     raw_references = snapshot.payload.get("source_references")
@@ -380,10 +378,6 @@ def _external_llm_source_references(
         )
     if len(set(source_ref_ids)) != len(source_ref_ids):
         raise ReportGenerationError("input snapshot source_ref_ids must be unique")
-    if denied := [source.source_ref_id for source in references if not source.external_llm_allowed]:
-        raise ReportGenerationError(
-            "input snapshot contains sources denied for external LLM: " + ", ".join(denied)
-        )
     return references
 
 

@@ -59,6 +59,12 @@ class SourceRef(StrictModel):
 
 
 class UsageRights(StrictModel):
+    """Legacy source metadata retained for v1 payload compatibility.
+
+    The internal personal-use runtime does not gate storage, LLM input, embeddings,
+    citations, or report generation on these values.
+    """
+
     storage_allowed: bool
     internal_analysis_allowed: bool
     external_llm_allowed: bool

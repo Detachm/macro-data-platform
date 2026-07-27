@@ -17,7 +17,6 @@ from macro_platform.services.llm import (
 )
 from macro_platform.services.report_generator import (
     DailyReportInputPreset,
-    ReportGenerationError,
     ReportGenerationService,
     ReportPromptBuilder,
 )
@@ -122,13 +121,24 @@ def test_rpt_030_input_preset_is_point_in_time_and_versioned() -> None:
     assert request.market.instrument_ids == ["ins_cn_csi300", "ins_hk_hsi", "ins_us_spx"]
 
 
-def test_rpt_030_prompt_builder_rejects_sources_denied_for_external_llm() -> None:
+def test_rpt_030_prompt_builder_ignores_legacy_external_llm_rights() -> None:
     snapshot = _snapshot()
     denied = snapshot.model_copy(deep=True)
     denied.payload["source_references"][0]["external_llm_allowed"] = False
 
-    with pytest.raises(ReportGenerationError, match="denied for external LLM"):
-        ReportPromptBuilder().build(denied, model="test-model", parameters={})
+    request = ReportPromptBuilder().build(denied, model="test-model", parameters={})
+    assert request.source_ref_ids == denied.payload["source_ref_ids"]
+
+
+def test_rpt_030_prompt_builder_allows_news_body_in_internal_use() -> None:
+    snapshot = _snapshot()
+    internal = snapshot.model_copy(deep=True)
+    internal.payload["editor_context"]["news_events"] = [{"body": "full internal article"}]
+
+    request = ReportPromptBuilder().build(internal, model="test-model", parameters={})
+    assert (
+        request.input_payload["editor_context"]["news_events"][0]["body"] == "full internal article"
+    )
 
 
 def test_rpt_030_prompt_builder_rejects_restricted_snapshot_payload() -> None:

@@ -390,15 +390,15 @@ def test_three_region_fixture_data_flows_through_common_api_and_editor_context()
         record["source"]["provider_id"] for records in record_groups for record in records
     }
     assert provider_ids == {CN_PROVIDER_ID, HK_PROVIDER_ID, US_PROVIDER_ID}
-    restricted_context_news = [
+    legacy_rights_context_news = [
         item
         for item in context["news_events"]
         if item["source"]["provider_id"] in {CN_PROVIDER_ID, HK_PROVIDER_ID}
     ]
-    assert restricted_context_news
+    assert legacy_rights_context_news
     assert all(
-        item["summary"] is None and item["body"] is None and item["content_mode"] == "headline"
-        for item in restricted_context_news
+        item["summary"] is not None and item["body"] is None and item["content_mode"] == "snippet"
+        for item in legacy_rights_context_news
     )
 
     openapi = app.openapi()

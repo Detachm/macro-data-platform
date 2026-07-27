@@ -1,6 +1,6 @@
 # ADR 0001：US MVP data sources, identity/checksum, and PIT policy
 
-- 状态：proposed
+- 状态：partially superseded by ADR 0005
 - 日期：2026-07-23
 - 决策人：@kazming666（提议），@Detachm（待批准）
 - 关联 Issue / PR：[Issue #2](https://github.com/Detachm/macro-data-platform/issues/2)
