@@ -407,7 +407,7 @@ Provider roles: `cn.instruments.primary`, `cn.bars.primary`, `cn.macro.primary`,
 
 ### Macro
 
-- `series_id = macro:<REGION>:<AUTHORITY>:<CODE>`，例如 `macro:CN:NBS:CPI_YOY`, `macro:HK:CENSTATD:510-60004`, `macro:HK:HKMA:EFBNCLOSING_BILLS`.
+- `series_id = macro:<REGION>:<AUTHORITY>:<CODE>`，例如 `macro:CN:NBS:CPI_YOY`, `macro:HK:CENSTATD:510-60004:SCC_CM`, `macro:HK:HKMA:EFBNCLOSING_BILLS`.
 - `release_id = rel_` + first 32 hex SHA-256(`series_id|scheduled_at_utc_or_scheduled_date|period_start|period_end|release_name`).
 - `observation_id = obs_` + first 32 hex SHA-256(`series_id|period_start|period_end|vintage_id|revision_no|source.provider_record_id`).
 - `vintage_id = <series_id>:<available_at_utc>` for point-in-time revisions.
@@ -431,9 +431,10 @@ Issue #28 的 live 选择通过 `PROVIDER_MODE` 显式控制：`live` 才会由�
 | `HkCsdProvider` | C&SD `510-60004` API | `macro_series`, `macro_observations` | 以 API 首次可见时间作为 `available_at`，不声称 PIT 或 revision history |
 | `HkmaPressReleaseProvider` | HKMA press-releases API | `news` | 只输出标题/链接；正文请求明确拒绝 |
 
-C&SD `510-60004` 当前只批准 `sv=CPI_COMP`（`Composite CPI (%)`）。series 的
-frequency、unit、transformation 和 seasonal adjustment 来自代码内 registry；未登记的
-`sv` 或 metadata 不匹配时阻断 adapter，不按上游字段启发式推断。
+C&SD `510-60004` 当前批准 `sv=SCC_CM`、`SA_CM`、`SB_CM`、`SC_CM`，它们分别映射为
+Composite CPI、CPI(A)、CPI(B)、CPI(C) 的季调后三个月平均环比变化，且各自拥有独立的
+canonical series ID。frequency、unit、transformation 和 seasonal adjustment 来自代码内
+registry；未登记的 `sv` 或 metadata 不匹配时阻断 adapter，不按上游字段启发式推断。
 
 这三个 live adapter 均不提供上游历史快照；当 `as_of` 早于本次抓取时间时抛出
 `UnsupportedCapabilityError`，不能把空页当作“确实没有数据”。分页 continuation 会绑定

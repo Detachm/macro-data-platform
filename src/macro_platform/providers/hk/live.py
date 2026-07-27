@@ -63,17 +63,47 @@ class _CsdSeriesDefinition:
 
 
 # C&SD dataset 510-60004 is deliberately narrow: new ``sv`` values require
-# an allowlist review before they can become canonical platform series.
+# an allowlist review before they can become canonical platform series.  The
+# endpoint exposes four CPI expenditure groups as distinct ``sv`` values, so
+# each needs its own canonical series identity; combining them would corrupt
+# the observation history.
 HK_CSD_SERIES_REGISTRY = {
-    "CPI_COMP": _CsdSeriesDefinition(
-        name="Composite CPI (%)",
-        source_description="Composite CPI (%)",
+    "SCC_CM": _CsdSeriesDefinition(
+        name="Composite CPI average monthly change (latest three months)",
+        source_description="Average monthly rate of change during the latest 3 months (%)",
         source_frequency="M",
         frequency=Frequency.MONTHLY,
         unit="percent",
-        transformation="yoy",
-        seasonal_adjustment="unknown",
-    )
+        transformation="mom",
+        seasonal_adjustment="adjusted",
+    ),
+    "SA_CM": _CsdSeriesDefinition(
+        name="CPI(A) average monthly change (latest three months)",
+        source_description="Average monthly rate of change during the latest 3 months (%)",
+        source_frequency="M",
+        frequency=Frequency.MONTHLY,
+        unit="percent",
+        transformation="mom",
+        seasonal_adjustment="adjusted",
+    ),
+    "SB_CM": _CsdSeriesDefinition(
+        name="CPI(B) average monthly change (latest three months)",
+        source_description="Average monthly rate of change during the latest 3 months (%)",
+        source_frequency="M",
+        frequency=Frequency.MONTHLY,
+        unit="percent",
+        transformation="mom",
+        seasonal_adjustment="adjusted",
+    ),
+    "SC_CM": _CsdSeriesDefinition(
+        name="CPI(C) average monthly change (latest three months)",
+        source_description="Average monthly rate of change during the latest 3 months (%)",
+        source_frequency="M",
+        frequency=Frequency.MONTHLY,
+        unit="percent",
+        transformation="mom",
+        seasonal_adjustment="adjusted",
+    ),
 }
 
 
@@ -104,10 +134,6 @@ class HkCsdProvider(LiveHttpProvider):
             raise ValueError("C&SD dataset is outside the approved allowlist")
         self.dataset_id = dataset_id
         self.language = language
-
-    @property
-    def _series_id(self) -> str:
-        return f"macro:HK:CENSTATD:{self.dataset_id}"
 
     def capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities(
@@ -160,10 +186,11 @@ class HkCsdProvider(LiveHttpProvider):
         assert_cursor_snapshot_at(snapshot_at, fetched_at)
         series_by_id: dict[str, MacroSeries] = {}
         for row in rows:
-            _series_definition(row)
-            if self._series_id in series_by_id:
+            sv, _definition = _series_definition(row)
+            series_id = _series_id(self.dataset_id, sv)
+            if series_id in series_by_id:
                 continue
-            series_by_id[self._series_id] = self._series_from_row(
+            series_by_id[series_id] = self._series_from_row(
                 row, fetched_at=fetched_at, source_url=str(response.url)
             )
         if not series_by_id:
@@ -227,7 +254,7 @@ class HkCsdProvider(LiveHttpProvider):
         observations: list[MacroObservation] = []
         for row in rows:
             sv, definition = _series_definition(row)
-            series_id = self._series_id
+            series_id = _series_id(self.dataset_id, sv)
             if series_id not in requested:
                 continue
             period = _required_text(row, "period", "dataSet.period")
@@ -327,10 +354,10 @@ class HkCsdProvider(LiveHttpProvider):
         description = _required_text(row, "svDesc", "dataSet.svDesc")
         _sv, definition = _series_definition(row)
         return MacroSeries(
-            series_id=self._series_id,
+            series_id=_series_id(self.dataset_id, sv),
             region=Region.HK,
             authority="CENSTATD",
-            code=self.dataset_id,
+            code=f"{self.dataset_id}:{sv}",
             name=definition.name,
             description=definition.source_description,
             frequency=definition.frequency,
@@ -626,8 +653,12 @@ def _series_definition(row: Mapping[str, Any]) -> tuple[str, _CsdSeriesDefinitio
     return sv, definition
 
 
+def _series_id(dataset_id: str, sv: str) -> str:
+    return f"macro:HK:CENSTATD:{dataset_id}:{sv}"
+
+
 def _ensure_requested_series_are_registered(series_ids: list[str], dataset_id: str) -> None:
-    allowed_ids = {f"macro:HK:CENSTATD:{dataset_id}"}
+    allowed_ids = {_series_id(dataset_id, sv) for sv in HK_CSD_SERIES_REGISTRY}
     unknown_ids = set(series_ids) - allowed_ids
     if unknown_ids:
         raise ProviderSchemaError(

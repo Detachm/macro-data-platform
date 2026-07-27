@@ -92,8 +92,8 @@ async def test_hk_csd_live_contract_covers_series_and_observation_provenance() -
             {
                 "freq": "M",
                 "period": "202605",
-                "sv": "CPI_COMP",
-                "svDesc": "Composite CPI (%)",
+                "sv": "SCC_CM",
+                "svDesc": "Average monthly rate of change during the latest 3 months (%)",
                 "figure": "1.5",
             }
         ],

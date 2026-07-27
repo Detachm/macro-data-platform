@@ -203,14 +203,18 @@ class MacroObservationRow(Base):
 
 class MacroReleaseRow(Base):
     __tablename__ = "macro_releases"
-    __table_args__ = (Index("ix_macro_releases_region_scheduled", "region", "scheduled_at"),)
+    __table_args__ = (
+        Index("ix_macro_releases_region_scheduled", "region", "scheduled_at"),
+        Index("ix_macro_releases_region_scheduled_date", "region", "scheduled_date"),
+    )
 
     release_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     series_id: Mapped[str] = mapped_column(
         ForeignKey("macro_series.series_id", ondelete="RESTRICT")
     )
     region: Mapped[str] = mapped_column(String(8))
-    scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    scheduled_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     source_checksum_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ingestion_run_id: Mapped[UUID | None] = mapped_column(
@@ -245,6 +249,7 @@ class NewsEventRow(Base):
     __tablename__ = "news_events"
     __table_args__ = (
         Index("ix_news_events_published", "published_at", "news_id"),
+        Index("ix_news_events_published_date", "published_date", "news_id"),
         Index("ix_news_events_available", "available_at"),
         Index("ix_news_events_cluster", "cluster_id"),
     )
@@ -253,7 +258,8 @@ class NewsEventRow(Base):
     cluster_id: Mapped[str | None] = mapped_column(String(96), nullable=True)
     provider_id: Mapped[str] = mapped_column(String(64))
     provider_record_id: Mapped[str] = mapped_column(String(256))
-    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    published_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String(24))
     ingestion_run_id: Mapped[UUID | None] = mapped_column(

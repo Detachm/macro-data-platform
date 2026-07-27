@@ -15,7 +15,7 @@
   "redaction": "official response fields only; no credentials or restricted body text",
   "fixtures": {
     "csd_510-60004.json": {
-      "sha256": "7249522fe1ab11708f23d597e3442dde14b9906fdb8b0ad8377bf9fae7497d9e"
+      "sha256": "08cc7a341ab03a458ed1f3b98c812fa48888c51cfed44e7a38d63e418f09ccfc"
     },
     "hkma_press_releases.json": {
       "sha256": "842c6f0b2878d5de6c88763f6e58a1686353acc7b491b5e75bb9d34a8debf65e"

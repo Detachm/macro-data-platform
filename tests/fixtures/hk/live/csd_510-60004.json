@@ -8,15 +8,15 @@
     {
       "freq": "M",
       "period": "202605",
-      "sv": "CPI_COMP",
-      "svDesc": "Composite CPI (%)",
+      "sv": "SCC_CM",
+      "svDesc": "Average monthly rate of change during the latest 3 months (%)",
       "figure": "1.5"
     },
     {
       "freq": "M",
       "period": "202606",
-      "sv": "CPI_COMP",
-      "svDesc": "Composite CPI (%)",
+      "sv": "SCC_CM",
+      "svDesc": "Average monthly rate of change during the latest 3 months (%)",
       "figure": "1.6"
     }
   ]

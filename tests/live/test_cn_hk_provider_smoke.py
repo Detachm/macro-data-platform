@@ -63,7 +63,7 @@ async def test_hk_csd_live_smoke() -> None:
     try:
         page = await provider.fetch_macro_observations(
             MacroObservationQuery(
-                series_ids=["macro:HK:CENSTATD:510-60004"],
+                series_ids=["macro:HK:CENSTATD:510-60004:SCC_CM"],
                 period_from=date(2000, 1, 1),
                 period_to=date(2030, 12, 31),
                 as_of=context.as_of,
@@ -72,7 +72,7 @@ async def test_hk_csd_live_smoke() -> None:
             context,
         )
         assert page.source_watermark
-        assert all(item.series_id == "macro:HK:CENSTATD:510-60004" for item in page.items)
+        assert all(item.series_id == "macro:HK:CENSTATD:510-60004:SCC_CM" for item in page.items)
     finally:
         await provider.aclose()
 

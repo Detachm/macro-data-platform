@@ -13,7 +13,8 @@ metadata。上游有些记录只有日期，没有可证明的发布时间；C&S
 
 - 公共 `MacroRelease` 和 `NewsEvent` 使用 `time_precision` 区分 `instant` 与 `date`；日期精度记录使用 `scheduled_date` / `published_date`，不伪造午夜 timestamp。
 - CN/HK fixture parser 与 live adapter 使用相同的日期精度 contract，并在分页 cursor 中绑定 query、snapshot watermark、snapshot timestamp 和排序前驱。
-- C&SD 只接受代码 registry 中登记的 series、描述和频率；metadata drift 隔离为 `ProviderSchemaError`。
+- C&SD 只接受代码 registry 中登记的 series、描述和频率；`510-60004` 的 `SCC_CM`、`SA_CM`、`SB_CM`、`SC_CM` 分别对应独立 canonical series，metadata drift 隔离为 `ProviderSchemaError`。
+- `MacroRelease` / `NewsEvent` 的日期精度同时写入规范化存储列；读取时按完整日期窗口匹配，不能因 timestamp 为空而漏掉记录。
 - live fixture 仅保存合成或脱敏的公开响应样例；不包含凭据、Cookie 或受限正文。
 - `UsageRights` 保留为兼容溯源元数据，不参与内部个人使用工作流的运行时发布拦截。
 

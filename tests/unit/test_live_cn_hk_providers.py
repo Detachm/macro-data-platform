@@ -158,14 +158,14 @@ async def test_recorded_upstream_fixtures_parse_through_live_adapters() -> None:
     )
     csd_page = await csd_provider.fetch_macro_observations(
         MacroObservationQuery(
-            series_ids=["macro:HK:CENSTATD:510-60004"],
+            series_ids=["macro:HK:CENSTATD:510-60004:SCC_CM"],
             period_from=date(2026, 5, 1),
             period_to=date(2026, 6, 30),
             as_of=NOW,
         ),
         CONTEXT,
     )
-    assert {item.series_id for item in csd_page.items} == {"macro:HK:CENSTATD:510-60004"}
+    assert {item.series_id for item in csd_page.items} == {"macro:HK:CENSTATD:510-60004:SCC_CM"}
     await csd_provider.aclose()
 
     hkma_payload = json.loads(_recorded_fixture("hk/live/hkma_press_releases.json"))
@@ -294,16 +294,37 @@ async def test_hk_csd_adapter_normalizes_series_and_observations() -> None:
             {
                 "freq": "M",
                 "period": "202606",
-                "sv": "CPI_COMP",
-                "svDesc": "Composite CPI (%)",
+                "sv": "SCC_CM",
+                "svDesc": "Average monthly rate of change during the latest 3 months (%)",
                 "figure": "1.6",
             },
             {
                 "freq": "M",
                 "period": "202605",
-                "sv": "CPI_COMP",
-                "svDesc": "Composite CPI (%)",
+                "sv": "SCC_CM",
+                "svDesc": "Average monthly rate of change during the latest 3 months (%)",
                 "figure": "1.5",
+            },
+            {
+                "freq": "M",
+                "period": "202606",
+                "sv": "SA_CM",
+                "svDesc": "Average monthly rate of change during the latest 3 months (%)",
+                "figure": "1.4",
+            },
+            {
+                "freq": "M",
+                "period": "202606",
+                "sv": "SB_CM",
+                "svDesc": "Average monthly rate of change during the latest 3 months (%)",
+                "figure": "1.3",
+            },
+            {
+                "freq": "M",
+                "period": "202606",
+                "sv": "SC_CM",
+                "svDesc": "Average monthly rate of change during the latest 3 months (%)",
+                "figure": "1.2",
             },
         ],
     }
@@ -315,7 +336,7 @@ async def test_hk_csd_adapter_normalizes_series_and_observations() -> None:
     provider = HkCsdProvider(client=client, clock=lambda: NOW)
 
     series_page = await provider.fetch_macro_series(MacroSeriesQuery(regions={Region.HK}), CONTEXT)
-    series_id = series_page.items[0].series_id
+    series_id = "macro:HK:CENSTATD:510-60004:SCC_CM"
     observations = await provider.fetch_macro_observations(
         MacroObservationQuery(
             series_ids=[series_id],
@@ -327,10 +348,17 @@ async def test_hk_csd_adapter_normalizes_series_and_observations() -> None:
     )
 
     assert series_page.complete is True
-    assert series_page.items[0].code == "510-60004"
-    assert series_page.items[0].frequency.value == "monthly"
-    assert series_page.items[0].transformation == "yoy"
-    assert series_page.items[0].unit == "percent"
+    assert {item.series_id for item in series_page.items} == {
+        "macro:HK:CENSTATD:510-60004:SA_CM",
+        "macro:HK:CENSTATD:510-60004:SB_CM",
+        "macro:HK:CENSTATD:510-60004:SC_CM",
+        "macro:HK:CENSTATD:510-60004:SCC_CM",
+    }
+    composite = next(item for item in series_page.items if item.series_id == series_id)
+    assert composite.code == "510-60004:SCC_CM"
+    assert composite.frequency.value == "monthly"
+    assert composite.transformation == "mom"
+    assert composite.unit == "percent"
     assert [item.period_start for item in observations.items] == [
         date(2026, 5, 1),
         date(2026, 6, 1),
@@ -376,15 +404,15 @@ async def test_hk_csd_adapter_rejects_changed_snapshot_cursor() -> None:
             {
                 "freq": "M",
                 "period": "202605",
-                "sv": "CPI_COMP",
-                "svDesc": "Composite CPI (%)",
+                "sv": "SCC_CM",
+                "svDesc": "Average monthly rate of change during the latest 3 months (%)",
                 "figure": "1.5",
             },
             {
                 "freq": "M",
                 "period": "202606",
-                "sv": "CPI_COMP",
-                "svDesc": "Composite CPI (%)",
+                "sv": "SCC_CM",
+                "svDesc": "Average monthly rate of change during the latest 3 months (%)",
                 "figure": "1.6",
             },
         ],
@@ -401,7 +429,7 @@ async def test_hk_csd_adapter_rejects_changed_snapshot_cursor() -> None:
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     provider = HkCsdProvider(client=client, clock=lambda: NOW)
-    series_id = "macro:HK:CENSTATD:510-60004"
+    series_id = "macro:HK:CENSTATD:510-60004:SCC_CM"
     query = MacroObservationQuery(
         series_ids=[series_id],
         period_from=date(2026, 5, 1),
@@ -428,8 +456,8 @@ async def test_non_pit_csd_observation_rejects_historical_as_of() -> None:
             {
                 "freq": "M",
                 "period": "202605",
-                "sv": "CPI_COMP",
-                "svDesc": "Composite CPI (%)",
+                "sv": "SCC_CM",
+                "svDesc": "Average monthly rate of change during the latest 3 months (%)",
                 "figure": "1.5",
             }
         ],
@@ -444,7 +472,7 @@ async def test_non_pit_csd_observation_rejects_historical_as_of() -> None:
     with pytest.raises(UnsupportedCapabilityError):
         await provider.fetch_macro_observations(
             MacroObservationQuery(
-                series_ids=["macro:HK:CENSTATD:510-60004"],
+                series_ids=["macro:HK:CENSTATD:510-60004:SCC_CM"],
                 period_from=date(2026, 5, 1),
                 period_to=date(2026, 5, 31),
                 as_of=NOW - timedelta(days=1),
@@ -468,8 +496,8 @@ async def test_csd_rejects_unsupported_revision_policies(
             {
                 "freq": "M",
                 "period": "202605",
-                "sv": "CPI_COMP",
-                "svDesc": "Composite CPI (%)",
+                "sv": "SCC_CM",
+                "svDesc": "Average monthly rate of change during the latest 3 months (%)",
                 "figure": "1.5",
             }
         ],
@@ -484,7 +512,7 @@ async def test_csd_rejects_unsupported_revision_policies(
     with pytest.raises(UnsupportedCapabilityError):
         await provider.fetch_macro_observations(
             MacroObservationQuery(
-                series_ids=["macro:HK:CENSTATD:510-60004"],
+                series_ids=["macro:HK:CENSTATD:510-60004:SCC_CM"],
                 period_from=date(2026, 5, 1),
                 period_to=date(2026, 5, 31),
                 as_of=NOW,
@@ -641,8 +669,8 @@ async def test_csd_rejects_frequency_drift_against_the_approved_registry() -> No
             {
                 "freq": "Q",
                 "period": "202605",
-                "sv": "CPI_COMP",
-                "svDesc": "Composite CPI (%)",
+                "sv": "SCC_CM",
+                "svDesc": "Average monthly rate of change during the latest 3 months (%)",
                 "figure": "1.5",
             }
         ],
