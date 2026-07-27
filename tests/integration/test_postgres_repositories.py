@@ -1201,7 +1201,7 @@ async def test_STO_027_market_bar_revisions_preserve_first_seen_and_pit_history(
         ).all()
     assert stored_base is not None
     assert stored_base.available_at == NOW
-    assert stored_base.payload["close"] == "10.5"
+    assert stored_base.payload["close"] == base.model_dump(mode="json")["close"]
     assert len(revisions) == 2
     assert {revision.source_checksum_sha256 for revision in revisions} == {"a" * 64, "b" * 64}
 
