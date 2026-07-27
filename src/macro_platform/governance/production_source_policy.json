@@ -1,0 +1,652 @@
+{
+  "policy_version": "2026-07-27",
+  "default_decision": "deny",
+  "entries": [
+    {
+      "policy_id": "cn.sse-szse.instruments",
+      "provider_id": "cn.sse-szse.instruments.v1",
+      "dataset": "instruments",
+      "regions": [
+        "CN"
+      ],
+      "owner": "@Nouzee",
+      "credential_requirement": "automation_approval_required",
+      "ingestion_allowed": false,
+      "external_llm_allowed": false,
+      "citation_allowed": false,
+      "retention_rule": "none",
+      "approval_status": "denied",
+      "production_enabled": false,
+      "evidence": [
+        "docs/data-sources/cn-hk-mvp.md#cn-instruments"
+      ]
+    },
+    {
+      "policy_id": "cn.sse-szse.daily-bars",
+      "provider_id": "cn.sse-szse.daily-bars.v1",
+      "dataset": "bars",
+      "regions": [
+        "CN"
+      ],
+      "owner": "@Nouzee",
+      "credential_requirement": "licensed_access_required",
+      "ingestion_allowed": false,
+      "external_llm_allowed": false,
+      "citation_allowed": false,
+      "retention_rule": "none",
+      "approval_status": "denied",
+      "production_enabled": false,
+      "evidence": [
+        "docs/data-sources/cn-hk-mvp.md#cn-daily-bars"
+      ]
+    },
+    {
+      "policy_id": "cn.nbs.release-calendar",
+      "provider_id": "cn.nbs.release-calendar.v1",
+      "dataset": "macro_releases",
+      "regions": [
+        "CN"
+      ],
+      "owner": "@Nouzee",
+      "credential_requirement": "none",
+      "ingestion_allowed": true,
+      "external_llm_allowed": true,
+      "citation_allowed": true,
+      "retention_rule": "metadata_only",
+      "approval_status": "pending",
+      "production_enabled": false,
+      "evidence": [
+        "docs/data-sources/cn-hk-mvp.md#cn-macroreleases"
+      ]
+    },
+    {
+      "policy_id": "cn.nbs.data-portal.series",
+      "provider_id": "cn.nbs.data-portal.v1",
+      "dataset": "macro_series",
+      "regions": [
+        "CN"
+      ],
+      "owner": "@Nouzee",
+      "credential_requirement": "provider_contract_required",
+      "ingestion_allowed": false,
+      "external_llm_allowed": false,
+      "citation_allowed": false,
+      "retention_rule": "none",
+      "approval_status": "denied",
+      "production_enabled": false,
+      "evidence": [
+        "docs/data-sources/cn-hk-mvp.md#cn-macroreleases"
+      ]
+    },
+    {
+      "policy_id": "cn.nbs.data-portal.observations",
+      "provider_id": "cn.nbs.data-portal.v1",
+      "dataset": "macro_observations",
+      "regions": [
+        "CN"
+      ],
+      "owner": "@Nouzee",
+      "credential_requirement": "provider_contract_required",
+      "ingestion_allowed": false,
+      "external_llm_allowed": false,
+      "citation_allowed": false,
+      "retention_rule": "none",
+      "approval_status": "denied",
+      "production_enabled": false,
+      "evidence": [
+        "docs/data-sources/cn-hk-mvp.md#cn-macroreleases"
+      ]
+    },
+    {
+      "policy_id": "cn.official-announcements.news",
+      "provider_id": "cn.official-announcements.v1",
+      "dataset": "news",
+      "regions": [
+        "CN"
+      ],
+      "owner": "@Nouzee",
+      "credential_requirement": "automation_approval_required",
+      "ingestion_allowed": false,
+      "external_llm_allowed": false,
+      "citation_allowed": false,
+      "retention_rule": "none",
+      "approval_status": "denied",
+      "production_enabled": false,
+      "evidence": [
+        "docs/data-sources/cn-hk-mvp.md#cn-newsannouncements"
+      ]
+    },
+    {
+      "policy_id": "hk.hkex.securities-lists",
+      "provider_id": "hk.hkex.securities-lists.v1",
+      "dataset": "instruments",
+      "regions": [
+        "HK"
+      ],
+      "owner": "@Nouzee",
+      "credential_requirement": "rights_review_required",
+      "ingestion_allowed": false,
+      "external_llm_allowed": false,
+      "citation_allowed": false,
+      "retention_rule": "none",
+      "approval_status": "denied",
+      "production_enabled": false,
+      "evidence": [
+        "docs/data-sources/cn-hk-mvp.md#hk-instruments"
+      ]
+    },
+    {
+      "policy_id": "hk.hkex.daily-quotations",
+      "provider_id": "hk.hkex.daily-quotations.v1",
+      "dataset": "bars",
+      "regions": [
+        "HK"
+      ],
+      "owner": "@Nouzee",
+      "credential_requirement": "subscription_required",
+      "ingestion_allowed": false,
+      "external_llm_allowed": false,
+      "citation_allowed": false,
+      "retention_rule": "none",
+      "approval_status": "denied",
+      "production_enabled": false,
+      "evidence": [
+        "docs/data-sources/cn-hk-mvp.md#hk-daily-bars"
+      ]
+    },
+    {
+      "policy_id": "hk.censtatd.macro_series",
+      "provider_id": "hk.censtatd.v1",
+      "dataset": "macro_series",
+      "regions": [
+        "HK"
+      ],
+      "owner": "@Nouzee",
+      "credential_requirement": "none",
+      "ingestion_allowed": true,
+      "external_llm_allowed": true,
+      "citation_allowed": true,
+      "retention_rule": "canonical_facts",
+      "approval_status": "pending",
+      "production_enabled": false,
+      "evidence": [
+        "docs/data-sources/cn-hk-mvp.md#hk-macroreleases"
+      ]
+    },
+    {
+      "policy_id": "hk.censtatd.macro_observations",
+      "provider_id": "hk.censtatd.v1",
+      "dataset": "macro_observations",
+      "regions": [
+        "HK"
+      ],
+      "owner": "@Nouzee",
+      "credential_requirement": "none",
+      "ingestion_allowed": true,
+      "external_llm_allowed": true,
+      "citation_allowed": true,
+      "retention_rule": "canonical_facts",
+      "approval_status": "pending",
+      "production_enabled": false,
+      "evidence": [
+        "docs/data-sources/cn-hk-mvp.md#hk-macroreleases"
+      ]
+    },
+    {
+      "policy_id": "hk.hkma.open-api.macro_series",
+      "provider_id": "hk.hkma.open-api.v1",
+      "dataset": "macro_series",
+      "regions": [
+        "HK"
+      ],
+      "owner": "@Nouzee",
+      "credential_requirement": "none",
+      "ingestion_allowed": true,
+      "external_llm_allowed": false,
+      "citation_allowed": true,
+      "retention_rule": "canonical_facts",
+      "approval_status": "pending",
+      "production_enabled": false,
+      "evidence": [
+        "docs/data-sources/cn-hk-mvp.md#hk-macroreleases"
+      ]
+    },
+    {
+      "policy_id": "hk.hkma.open-api.macro_observations",
+      "provider_id": "hk.hkma.open-api.v1",
+      "dataset": "macro_observations",
+      "regions": [
+        "HK"
+      ],
+      "owner": "@Nouzee",
+      "credential_requirement": "none",
+      "ingestion_allowed": true,
+      "external_llm_allowed": false,
+      "citation_allowed": true,
+      "retention_rule": "canonical_facts",
+      "approval_status": "pending",
+      "production_enabled": false,
+      "evidence": [
+        "docs/data-sources/cn-hk-mvp.md#hk-macroreleases"
+      ]
+    },
+    {
+      "policy_id": "hk.hkma.open-api.macro_releases",
+      "provider_id": "hk.hkma.open-api.v1",
+      "dataset": "macro_releases",
+      "regions": [
+        "HK"
+      ],
+      "owner": "@Nouzee",
+      "credential_requirement": "none",
+      "ingestion_allowed": true,
+      "external_llm_allowed": false,
+      "citation_allowed": true,
+      "retention_rule": "canonical_facts",
+      "approval_status": "pending",
+      "production_enabled": false,
+      "evidence": [
+        "docs/data-sources/cn-hk-mvp.md#hk-macroreleases"
+      ]
+    },
+    {
+      "policy_id": "hk.hkma.press-releases",
+      "provider_id": "hk.hkma.press-releases.v1",
+      "dataset": "news",
+      "regions": [
+        "HK"
+      ],
+      "owner": "@Nouzee",
+      "credential_requirement": "none",
+      "ingestion_allowed": true,
+      "external_llm_allowed": true,
+      "citation_allowed": true,
+      "retention_rule": "metadata_only",
+      "approval_status": "pending",
+      "production_enabled": false,
+      "evidence": [
+        "docs/data-sources/cn-hk-mvp.md#hk-newsannouncements"
+      ]
+    },
+    {
+      "policy_id": "hk.hkexnews.title-search",
+      "provider_id": "hk.hkexnews.title-search.v1",
+      "dataset": "news",
+      "regions": [
+        "HK"
+      ],
+      "owner": "@Nouzee",
+      "credential_requirement": "contract_or_automation_approval_required",
+      "ingestion_allowed": false,
+      "external_llm_allowed": false,
+      "citation_allowed": false,
+      "retention_rule": "none",
+      "approval_status": "denied",
+      "production_enabled": false,
+      "evidence": [
+        "docs/data-sources/cn-hk-mvp.md#hk-newsannouncements"
+      ]
+    },
+    {
+      "policy_id": "us.nasdaq-trader.instruments",
+      "provider_id": "us.nasdaq-trader.v1",
+      "dataset": "instruments",
+      "regions": [
+        "US"
+      ],
+      "owner": "@kazming666",
+      "credential_requirement": "rights_review_required",
+      "ingestion_allowed": false,
+      "external_llm_allowed": false,
+      "citation_allowed": false,
+      "retention_rule": "none",
+      "approval_status": "denied",
+      "production_enabled": false,
+      "evidence": [
+        "docs/data-sources/us-nasdaq-trader-symbol-directory.md"
+      ]
+    },
+    {
+      "policy_id": "us.polygon-massive.daily-bars",
+      "provider_id": "us.polygon-massive.v1",
+      "dataset": "bars",
+      "regions": [
+        "US"
+      ],
+      "owner": "@kazming666",
+      "credential_requirement": "commercial_agreement_required",
+      "ingestion_allowed": false,
+      "external_llm_allowed": false,
+      "citation_allowed": false,
+      "retention_rule": "none",
+      "approval_status": "denied",
+      "production_enabled": false,
+      "evidence": [
+        "docs/data-sources/us-polygon-massive-market-data.md"
+      ]
+    },
+    {
+      "policy_id": "us.alpha-vantage.bars",
+      "provider_id": "us.alpha-vantage.v1",
+      "dataset": "bars",
+      "regions": [
+        "US"
+      ],
+      "owner": "@kazming666",
+      "credential_requirement": "commercial_agreement_and_api_key_required",
+      "ingestion_allowed": false,
+      "external_llm_allowed": false,
+      "citation_allowed": false,
+      "retention_rule": "none",
+      "approval_status": "denied",
+      "production_enabled": false,
+      "evidence": [
+        "docs/data-sources/us-alpha-vantage.md"
+      ]
+    },
+    {
+      "policy_id": "us.alpha-vantage.market_observations",
+      "provider_id": "us.alpha-vantage.v1",
+      "dataset": "market_observations",
+      "regions": [
+        "US"
+      ],
+      "owner": "@kazming666",
+      "credential_requirement": "commercial_agreement_and_api_key_required",
+      "ingestion_allowed": false,
+      "external_llm_allowed": false,
+      "citation_allowed": false,
+      "retention_rule": "none",
+      "approval_status": "denied",
+      "production_enabled": false,
+      "evidence": [
+        "docs/data-sources/us-alpha-vantage.md"
+      ]
+    },
+    {
+      "policy_id": "us.alpha-vantage.news",
+      "provider_id": "us.alpha-vantage.v1",
+      "dataset": "news",
+      "regions": [
+        "US"
+      ],
+      "owner": "@kazming666",
+      "credential_requirement": "commercial_agreement_and_api_key_required",
+      "ingestion_allowed": false,
+      "external_llm_allowed": false,
+      "citation_allowed": false,
+      "retention_rule": "none",
+      "approval_status": "denied",
+      "production_enabled": false,
+      "evidence": [
+        "docs/data-sources/us-alpha-vantage.md"
+      ]
+    },
+    {
+      "policy_id": "us.federal-reserve.h10-h15",
+      "provider_id": "us.federal-reserve.h10-h15.v1",
+      "dataset": "market_observations",
+      "regions": [
+        "US"
+      ],
+      "owner": "@kazming666",
+      "credential_requirement": "none",
+      "ingestion_allowed": true,
+      "external_llm_allowed": true,
+      "citation_allowed": true,
+      "retention_rule": "canonical_facts",
+      "approval_status": "pending",
+      "production_enabled": false,
+      "evidence": [
+        "docs/data-sources/us-federal-reserve-h10-h15.md"
+      ]
+    },
+    {
+      "policy_id": "us.treasury.interest-rates",
+      "provider_id": "us.treasury-interest-rates.v1",
+      "dataset": "market_observations",
+      "regions": [
+        "US"
+      ],
+      "owner": "@kazming666",
+      "credential_requirement": "none",
+      "ingestion_allowed": true,
+      "external_llm_allowed": true,
+      "citation_allowed": true,
+      "retention_rule": "canonical_facts",
+      "approval_status": "pending",
+      "production_enabled": false,
+      "evidence": [
+        "docs/data-sources/us-treasury-interest-rates.md"
+      ]
+    },
+    {
+      "policy_id": "us.bls.macro_series",
+      "provider_id": "us.bls.v1",
+      "dataset": "macro_series",
+      "regions": [
+        "US"
+      ],
+      "owner": "@kazming666",
+      "credential_requirement": "api_key_optional",
+      "ingestion_allowed": true,
+      "external_llm_allowed": true,
+      "citation_allowed": true,
+      "retention_rule": "canonical_facts",
+      "approval_status": "pending",
+      "production_enabled": false,
+      "evidence": [
+        "docs/data-sources/us-bls-api.md"
+      ]
+    },
+    {
+      "policy_id": "us.bls.macro_observations",
+      "provider_id": "us.bls.v1",
+      "dataset": "macro_observations",
+      "regions": [
+        "US"
+      ],
+      "owner": "@kazming666",
+      "credential_requirement": "api_key_optional",
+      "ingestion_allowed": true,
+      "external_llm_allowed": true,
+      "citation_allowed": true,
+      "retention_rule": "canonical_facts",
+      "approval_status": "pending",
+      "production_enabled": false,
+      "evidence": [
+        "docs/data-sources/us-bls-api.md"
+      ]
+    },
+    {
+      "policy_id": "us.bls.macro_releases",
+      "provider_id": "us.bls.v1",
+      "dataset": "macro_releases",
+      "regions": [
+        "US"
+      ],
+      "owner": "@kazming666",
+      "credential_requirement": "api_key_optional",
+      "ingestion_allowed": true,
+      "external_llm_allowed": true,
+      "citation_allowed": true,
+      "retention_rule": "canonical_facts",
+      "approval_status": "pending",
+      "production_enabled": false,
+      "evidence": [
+        "docs/data-sources/us-bls-api.md"
+      ]
+    },
+    {
+      "policy_id": "us.bea.macro_series",
+      "provider_id": "us.bea.v1",
+      "dataset": "macro_series",
+      "regions": [
+        "US"
+      ],
+      "owner": "@kazming666",
+      "credential_requirement": "user_id_required",
+      "ingestion_allowed": true,
+      "external_llm_allowed": true,
+      "citation_allowed": true,
+      "retention_rule": "canonical_facts",
+      "approval_status": "pending",
+      "production_enabled": false,
+      "evidence": [
+        "docs/data-sources/us-bea-api.md"
+      ]
+    },
+    {
+      "policy_id": "us.bea.macro_observations",
+      "provider_id": "us.bea.v1",
+      "dataset": "macro_observations",
+      "regions": [
+        "US"
+      ],
+      "owner": "@kazming666",
+      "credential_requirement": "user_id_required",
+      "ingestion_allowed": true,
+      "external_llm_allowed": true,
+      "citation_allowed": true,
+      "retention_rule": "canonical_facts",
+      "approval_status": "pending",
+      "production_enabled": false,
+      "evidence": [
+        "docs/data-sources/us-bea-api.md"
+      ]
+    },
+    {
+      "policy_id": "us.bea.macro_releases",
+      "provider_id": "us.bea.v1",
+      "dataset": "macro_releases",
+      "regions": [
+        "US"
+      ],
+      "owner": "@kazming666",
+      "credential_requirement": "user_id_required",
+      "ingestion_allowed": true,
+      "external_llm_allowed": true,
+      "citation_allowed": true,
+      "retention_rule": "canonical_facts",
+      "approval_status": "pending",
+      "production_enabled": false,
+      "evidence": [
+        "docs/data-sources/us-bea-api.md"
+      ]
+    },
+    {
+      "policy_id": "us.sec-edgar.instruments",
+      "provider_id": "us.sec-edgar.v1",
+      "dataset": "instruments",
+      "regions": [
+        "US"
+      ],
+      "owner": "@kazming666",
+      "credential_requirement": "identifying_user_agent_required",
+      "ingestion_allowed": true,
+      "external_llm_allowed": true,
+      "citation_allowed": true,
+      "retention_rule": "metadata_only",
+      "approval_status": "pending",
+      "production_enabled": false,
+      "evidence": [
+        "docs/data-sources/us-sec-edgar.md"
+      ]
+    },
+    {
+      "policy_id": "us.sec-edgar.filing-metadata",
+      "provider_id": "us.sec-edgar.v1",
+      "dataset": "news",
+      "regions": [
+        "US"
+      ],
+      "owner": "@kazming666",
+      "credential_requirement": "identifying_user_agent_required",
+      "ingestion_allowed": true,
+      "external_llm_allowed": true,
+      "citation_allowed": true,
+      "retention_rule": "metadata_only",
+      "approval_status": "pending",
+      "production_enabled": false,
+      "evidence": [
+        "docs/data-sources/us-sec-edgar.md"
+      ]
+    },
+    {
+      "policy_id": "us.fred-alfred.macro_series",
+      "provider_id": "us.fred-alfred.v1",
+      "dataset": "macro_series",
+      "regions": [
+        "US"
+      ],
+      "owner": "@kazming666",
+      "credential_requirement": "api_key_and_rights_review_required",
+      "ingestion_allowed": false,
+      "external_llm_allowed": false,
+      "citation_allowed": false,
+      "retention_rule": "none",
+      "approval_status": "denied",
+      "production_enabled": false,
+      "evidence": [
+        "docs/data-sources/us-fred-alfred.md"
+      ]
+    },
+    {
+      "policy_id": "us.fred-alfred.macro_observations",
+      "provider_id": "us.fred-alfred.v1",
+      "dataset": "macro_observations",
+      "regions": [
+        "US"
+      ],
+      "owner": "@kazming666",
+      "credential_requirement": "api_key_and_rights_review_required",
+      "ingestion_allowed": false,
+      "external_llm_allowed": false,
+      "citation_allowed": false,
+      "retention_rule": "none",
+      "approval_status": "denied",
+      "production_enabled": false,
+      "evidence": [
+        "docs/data-sources/us-fred-alfred.md"
+      ]
+    },
+    {
+      "policy_id": "us.gdelt.news",
+      "provider_id": "us.gdelt.v1",
+      "dataset": "news",
+      "regions": [
+        "US"
+      ],
+      "owner": "@kazming666",
+      "credential_requirement": "rights_review_required",
+      "ingestion_allowed": false,
+      "external_llm_allowed": false,
+      "citation_allowed": false,
+      "retention_rule": "none",
+      "approval_status": "denied",
+      "production_enabled": false,
+      "evidence": [
+        "docs/data-sources/us-gdelt.md"
+      ]
+    },
+    {
+      "policy_id": "us.newsapi.news",
+      "provider_id": "us.newsapi.v1",
+      "dataset": "news",
+      "regions": [
+        "US"
+      ],
+      "owner": "@kazming666",
+      "credential_requirement": "licensed_media_contract_and_api_key_required",
+      "ingestion_allowed": false,
+      "external_llm_allowed": false,
+      "citation_allowed": false,
+      "retention_rule": "none",
+      "approval_status": "denied",
+      "production_enabled": false,
+      "evidence": [
+        "docs/data-sources/us-newsapi.md"
+      ]
+    }
+  ]
+}
