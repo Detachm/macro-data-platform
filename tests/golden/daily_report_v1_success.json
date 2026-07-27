@@ -1,0 +1,250 @@
+{
+  "contract_name": "DailyReport",
+  "contract_version": "1.0",
+  "report_id": "daily-report-2026-07-23-v1",
+  "report_date": "2026-07-23",
+  "timezone": "Asia/Shanghai",
+  "schedule": {
+    "publish_time_local": "08:30:00",
+    "late_data_cutoff_local": "08:15:00",
+    "run_policy": "every_calendar_day",
+    "holiday_policy": "publish_with_notice",
+    "calendar_id": "cn_hk_report_calendar_v1",
+    "calendar_lookahead_days": 7,
+    "freshness": {
+      "market_close_max_age_hours": 36,
+      "official_news_max_age_hours": 24,
+      "macro_observation_max_age_days": 45
+    }
+  },
+  "calendar": {
+    "day_type": "business_day",
+    "holiday_notice": null
+  },
+  "generated_at": "2026-07-23T00:20:04Z",
+  "input_snapshot": {
+    "snapshot_id": "snapshot-daily-macro-2026-07-23-v1",
+    "snapshot_version": "1.0",
+    "as_of": "2026-07-23T00:15:00Z",
+    "cutoff_at": "2026-07-23T00:15:00Z",
+    "fingerprint_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "fact_ids": [
+      "fact.market.cn.core_indices.previous_close",
+      "fact.market.hk.core_indices.previous_close",
+      "fact.market.us.core_indices.previous_close",
+      "fact.calendar.cn.pmi_20260729",
+      "fact.calendar.us.pce_20260729",
+      "fact.market.cn.breadth.turnover",
+      "fact.news.cn.official_headlines_24h",
+      "fact.market.hk.southbound.net_flow",
+      "fact.news.hk.official_headlines_24h",
+      "fact.market.us.volatility.vix",
+      "fact.market.cn.index.csi300.change_pct"
+    ]
+  },
+  "status": "complete",
+  "publication": {
+    "decision": "published",
+    "reason_code": null,
+    "scheduled_publish_at": "2026-07-23T00:30:00Z",
+    "published_at": "2026-07-23T00:30:12Z"
+  },
+  "data_quality": {
+    "status": "complete",
+    "missing_required_inputs": [],
+    "stale_inputs": [],
+    "late_inputs": [],
+    "revised_inputs": [],
+    "unavailable_inputs": []
+  },
+  "sections": {
+    "executive_summary": {
+      "section_id": "executive_summary",
+      "status": "complete",
+      "character_count": 37,
+      "max_characters": 800,
+      "text": "中港市场温和偏强，美股隔夜收高；未来一周关注中国 PMI 与美国 PCE。",
+      "fact_ids": [
+        "fact.market.cn.core_indices.previous_close",
+        "fact.market.hk.core_indices.previous_close",
+        "fact.market.us.core_indices.previous_close",
+        "fact.calendar.cn.pmi_20260729",
+        "fact.calendar.us.pce_20260729"
+      ],
+      "source_ref_ids": ["src-cn-market-1", "src-hk-market-1", "src-us-market-1", "src-calendar-1"]
+    },
+    "cn_highlights": {
+      "section_id": "cn_highlights",
+      "status": "complete",
+      "character_count": 34,
+      "max_characters": 1000,
+      "text": "沪深主要指数收高，成交额较前一交易日回升；官方头条暂无重大政策冲击。",
+      "fact_ids": [
+        "fact.market.cn.core_indices.previous_close",
+        "fact.market.cn.breadth.turnover",
+        "fact.news.cn.official_headlines_24h"
+      ],
+      "source_ref_ids": ["src-cn-market-1", "src-cn-news-1"]
+    },
+    "hk_highlights": {
+      "section_id": "hk_highlights",
+      "status": "complete",
+      "character_count": 20,
+      "max_characters": 1000,
+      "text": "恒指与恒生科技指数上涨，南向资金净流入。",
+      "fact_ids": [
+        "fact.market.hk.core_indices.previous_close",
+        "fact.market.hk.southbound.net_flow",
+        "fact.news.hk.official_headlines_24h"
+      ],
+      "source_ref_ids": ["src-hk-market-1", "src-hk-news-1"]
+    },
+    "us_highlights": {
+      "section_id": "us_highlights",
+      "status": "complete",
+      "character_count": 20,
+      "max_characters": 1000,
+      "text": "标普 500 与纳指收高，VIX 回落。",
+      "fact_ids": [
+        "fact.market.us.core_indices.previous_close",
+        "fact.market.us.volatility.vix"
+      ],
+      "source_ref_ids": ["src-us-market-1"]
+    },
+    "key_movements": {
+      "section_id": "key_movements",
+      "status": "complete",
+      "character_count": 66,
+      "max_characters": 1200,
+      "items": [
+        {
+          "movement_id": "movement-cn-1",
+          "label": "沪深 300",
+          "direction": "up",
+          "text": "沪深 300 上涨 0.82%。",
+          "fact_ids": ["fact.market.cn.index.csi300.change_pct"],
+          "source_ref_ids": ["src-cn-market-1"]
+        },
+        {
+          "movement_id": "movement-hk-1",
+          "label": "南向资金",
+          "direction": "inflow",
+          "text": "南向资金净流入 18.4 亿港元。",
+          "fact_ids": ["fact.market.hk.southbound.net_flow"],
+          "source_ref_ids": ["src-hk-market-1"]
+        },
+        {
+          "movement_id": "movement-us-1",
+          "label": "VIX",
+          "direction": "down",
+          "text": "VIX 下跌 0.36 点至 13.8。",
+          "fact_ids": ["fact.market.us.volatility.vix"],
+          "source_ref_ids": ["src-us-market-1"]
+        }
+      ]
+    },
+    "upcoming_calendar": {
+      "section_id": "upcoming_calendar",
+      "status": "complete",
+      "character_count": 20,
+      "max_characters": 1600,
+      "lookahead_days": 7,
+      "items": [
+        {
+          "event_id": "macro-release-cn-pmi-20260729",
+          "region": "CN",
+          "name": "中国制造业 PMI",
+          "scheduled_at": "2026-07-29T01:30:00Z",
+          "fact_ids": ["fact.calendar.cn.pmi_20260729"],
+          "source_ref_ids": ["src-calendar-1"]
+        },
+        {
+          "event_id": "macro-release-us-pce-20260729",
+          "region": "US",
+          "name": "美国 PCE 物价指数",
+          "scheduled_at": "2026-07-29T12:30:00Z",
+          "fact_ids": ["fact.calendar.us.pce_20260729"],
+          "source_ref_ids": ["src-calendar-1"]
+        }
+      ]
+    },
+    "data_quality_notice": {
+      "section_id": "data_quality_notice",
+      "status": "complete",
+      "character_count": 25,
+      "max_characters": 600,
+      "text": "必需数据均在截止时间前到达，未发现过期或权限问题。",
+      "issue_codes": [],
+      "fact_ids": [],
+      "source_ref_ids": []
+    },
+    "source_references": {
+      "section_id": "source_references",
+      "status": "complete",
+      "character_count": 0,
+      "max_characters": 4000,
+      "items": [
+        {
+          "source_ref_id": "src-cn-market-1",
+          "provider_id": "cn.market.fixture",
+          "provider_record_id": "cn-market:2026-07-22",
+          "source_name": "CN market daily fixture",
+          "source_url": "https://example.invalid/sources/cn-market-2026-07-22",
+          "retrieved_at": "2026-07-23T00:05:00Z",
+          "checksum_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+          "external_llm_allowed": true
+        },
+        {
+          "source_ref_id": "src-hk-market-1",
+          "provider_id": "hk.market.fixture",
+          "provider_record_id": "hk-market:2026-07-22",
+          "source_name": "HK market daily fixture",
+          "source_url": "https://example.invalid/sources/hk-market-2026-07-22",
+          "retrieved_at": "2026-07-23T00:06:00Z",
+          "checksum_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+          "external_llm_allowed": true
+        },
+        {
+          "source_ref_id": "src-us-market-1",
+          "provider_id": "us.market.fixture",
+          "provider_record_id": "us-market:2026-07-22",
+          "source_name": "US market daily fixture",
+          "source_url": "https://example.invalid/sources/us-market-2026-07-22",
+          "retrieved_at": "2026-07-23T00:07:00Z",
+          "checksum_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+          "external_llm_allowed": true
+        },
+        {
+          "source_ref_id": "src-cn-news-1",
+          "provider_id": "cn.news.fixture",
+          "provider_record_id": "cn-news:2026-07-22:001",
+          "source_name": "CN official headlines fixture",
+          "source_url": "https://example.invalid/sources/cn-news-2026-07-22-001",
+          "retrieved_at": "2026-07-23T00:08:00Z",
+          "checksum_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+          "external_llm_allowed": true
+        },
+        {
+          "source_ref_id": "src-hk-news-1",
+          "provider_id": "hk.news.fixture",
+          "provider_record_id": "hk-news:2026-07-22:001",
+          "source_name": "HK official headlines fixture",
+          "source_url": "https://example.invalid/sources/hk-news-2026-07-22-001",
+          "retrieved_at": "2026-07-23T00:09:00Z",
+          "checksum_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+          "external_llm_allowed": true
+        },
+        {
+          "source_ref_id": "src-calendar-1",
+          "provider_id": "macro.calendar.fixture",
+          "provider_record_id": "calendar:2026-07-23:cn-hk-us",
+          "source_name": "Macro release calendar fixture",
+          "source_url": "https://example.invalid/sources/calendar-2026-07-23",
+          "retrieved_at": "2026-07-23T00:10:00Z",
+          "checksum_sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+          "external_llm_allowed": true
+        }
+      ]
+    }
+  }
+}
