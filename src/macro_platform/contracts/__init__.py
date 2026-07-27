@@ -41,12 +41,14 @@ from macro_platform.contracts.provider import (
     ProviderHealth,
     ProviderPage,
 )
+from macro_platform.contracts.report import DailyReport, ReportSection, ReportSourceReference
 
 __all__ = [
     "ApiError",
     "AvailabilityBasis",
     "BarQuery",
     "Dataset",
+    "DailyReport",
     "DecimalValue",
     "EditorContext",
     "EditorContextRequest",
@@ -74,6 +76,8 @@ __all__ = [
     "ProviderCapabilities",
     "ProviderHealth",
     "ProviderPage",
+    "ReportSection",
+    "ReportSourceReference",
     "Region",
     "SourceRef",
     "StrictModel",

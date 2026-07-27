@@ -60,9 +60,15 @@ from macro_platform.storage.models import (
     MarketBarRow,
     MarketObservationRow,
     ProviderRunRow,
+    ReportGenerationAttemptRow,
     ReportInputSnapshotRow,
 )
-from macro_platform.storage.reporting import DeliveryAttempt, ReportInputSnapshot, StoredDailyReport
+from macro_platform.storage.reporting import (
+    DeliveryAttempt,
+    ReportGenerationAttempt,
+    ReportInputSnapshot,
+    StoredDailyReport,
+)
 from macro_platform.storage.repositories import (
     IngestionCheckpointRepository,
     IngestionRunRepository,
@@ -376,20 +382,22 @@ async def test_db_002_migration_upgrades_0002_to_current_schema(database: Databa
                         "SELECT tablename FROM pg_tables "
                         "WHERE schemaname = 'public' AND tablename IN "
                         "('report_input_snapshots', 'daily_reports', 'daily_report_source_refs', "
-                        "'delivery_attempts', 'macro_release_revisions')"
+                        "'delivery_attempts', 'macro_release_revisions', "
+                        "'report_generation_attempts')"
                     )
                 )
             ).all()
         )
         preserved_run = await session.get(ProviderRunRow, _previous_schema_run_id)
         preserved_instrument = await session.get(InstrumentRow, _previous_schema_instrument_id)
-    assert revision == "0003"
+    assert revision == "0004"
     assert tables == {
         "report_input_snapshots",
         "daily_reports",
         "daily_report_source_refs",
         "delivery_attempts",
         "macro_release_revisions",
+        "report_generation_attempts",
     }
     assert preserved_run is not None
     assert preserved_run.idempotency_key is None
@@ -399,6 +407,49 @@ async def test_db_002_migration_upgrades_0002_to_current_schema(database: Databa
     assert (
         preserved_instrument.payload["source"]["provider_record_id"] == "legacy-instrument-record"
     )
+
+
+async def test_rpt_030_generation_attempt_is_auditable_and_recoverable(
+    database: Database,
+) -> None:
+    token = uuid4().hex
+    snapshot, report, _ = _report_commands(token)
+    generation_id = uuid4()
+    attempt = ReportGenerationAttempt(
+        generation_id=generation_id,
+        report_id=report.report_id,
+        report_version=report.report_version,
+        input_snapshot_id=snapshot.snapshot_id,
+        prompt_version="daily-report-v1.0",
+        model="contract-test-model",
+        model_parameters={"temperature": 0},
+        input_fingerprint_sha256=snapshot.fingerprint_sha256,
+        source_ref_ids=[],
+    )
+
+    async with UnitOfWork(database).transaction() as session:
+        repository = ReportRepository(session)
+        assert await repository.put_input_snapshot(snapshot)
+        assert await repository.put_generation_attempt(attempt)
+        assert not await repository.put_generation_attempt(attempt)
+        generated_attempt = attempt.model_copy(
+            update={
+                "lifecycle_status": "generated",
+                "response_payload": {"contract_name": "DailyReport"},
+            }
+        )
+        await repository.update_generation_attempt(generated_attempt)
+        assert await repository.put_report(
+            report.model_copy(update={"generation_id": generation_id})
+        )
+
+    async with database.session() as session:
+        recovered_attempt = await ReportRepository(session).load_generation_attempt(generation_id)
+        row = await session.get(ReportGenerationAttemptRow, generation_id)
+
+    assert recovered_attempt == generated_attempt
+    assert row is not None
+    assert row.lifecycle_status == "generated"
 
 
 async def test_rep_027_001_report_and_delivery_replays_are_idempotent(

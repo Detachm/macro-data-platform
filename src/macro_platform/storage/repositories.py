@@ -54,9 +54,15 @@ from macro_platform.storage.models import (
     NewsEventRow,
     NewsEventTopicRow,
     ProviderRunRow,
+    ReportGenerationAttemptRow,
     ReportInputSnapshotRow,
 )
-from macro_platform.storage.reporting import DeliveryAttempt, ReportInputSnapshot, StoredDailyReport
+from macro_platform.storage.reporting import (
+    DeliveryAttempt,
+    ReportGenerationAttempt,
+    ReportInputSnapshot,
+    StoredDailyReport,
+)
 
 
 class DataRepository(Protocol):
@@ -832,6 +838,71 @@ class ReportRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
+    async def put_generation_attempt(self, attempt: ReportGenerationAttempt) -> bool:
+        inserted = await self._session.execute(
+            insert(ReportGenerationAttemptRow)
+            .values(
+                generation_id=attempt.generation_id,
+                report_id=attempt.report_id,
+                report_version=attempt.report_version,
+                input_snapshot_id=attempt.input_snapshot_id,
+                lifecycle_status=attempt.lifecycle_status,
+                attempt_no=attempt.attempt_no,
+                prompt_version=attempt.prompt_version,
+                model=attempt.model,
+                model_parameters=attempt.model_parameters,
+                input_fingerprint_sha256=attempt.input_fingerprint_sha256,
+                source_ref_ids=attempt.source_ref_ids,
+                error_code=attempt.error_code,
+                response_payload=attempt.response_payload,
+            )
+            .on_conflict_do_nothing()
+            .returning(ReportGenerationAttemptRow.generation_id)
+        )
+        if inserted.scalar_one_or_none() is not None:
+            return True
+        existing = await self.load_generation_attempt(attempt.generation_id)
+        if existing is None:
+            raise ValueError("generation attempt identity is already owned by another attempt")
+        if existing != attempt:
+            raise ValueError("generation attempt is immutable")
+        return False
+
+    async def update_generation_attempt(self, attempt: ReportGenerationAttempt) -> None:
+        updated = await self._session.execute(
+            update(ReportGenerationAttemptRow)
+            .where(ReportGenerationAttemptRow.generation_id == attempt.generation_id)
+            .values(
+                lifecycle_status=attempt.lifecycle_status,
+                attempt_no=attempt.attempt_no,
+                error_code=attempt.error_code,
+                response_payload=attempt.response_payload,
+            )
+            .returning(ReportGenerationAttemptRow.generation_id)
+        )
+        if updated.scalar_one_or_none() is None:
+            raise ValueError("generation attempt does not exist")
+
+    async def load_generation_attempt(self, generation_id: UUID) -> ReportGenerationAttempt | None:
+        row = await self._session.get(ReportGenerationAttemptRow, generation_id)
+        if row is None:
+            return None
+        return ReportGenerationAttempt(
+            generation_id=row.generation_id,
+            report_id=row.report_id,
+            report_version=row.report_version,
+            input_snapshot_id=row.input_snapshot_id,
+            lifecycle_status=row.lifecycle_status,
+            attempt_no=row.attempt_no,
+            prompt_version=row.prompt_version,
+            model=row.model,
+            model_parameters=row.model_parameters,
+            input_fingerprint_sha256=row.input_fingerprint_sha256,
+            source_ref_ids=row.source_ref_ids,
+            error_code=row.error_code,
+            response_payload=row.response_payload,
+        )
+
     async def put_input_snapshot(self, snapshot: ReportInputSnapshot) -> bool:
         inserted = await self._session.execute(
             insert(ReportInputSnapshotRow)
@@ -872,7 +943,15 @@ class ReportRepository:
         if snapshot is None:
             raise ValueError("daily report references an unknown input snapshot")
         payload_snapshot = report.payload.get("input_snapshot")
-        if payload_snapshot != snapshot.payload:
+        expected_payload_snapshot = {
+            "snapshot_id": snapshot.snapshot_id,
+            "snapshot_version": snapshot.snapshot_version,
+            "as_of": snapshot.as_of.isoformat().replace("+00:00", "Z"),
+            "cutoff_at": snapshot.cutoff_at.isoformat().replace("+00:00", "Z"),
+            "fingerprint_sha256": snapshot.fingerprint_sha256,
+            "fact_ids": snapshot.fact_ids,
+        }
+        if payload_snapshot != expected_payload_snapshot:
             raise ValueError("daily report payload input_snapshot must match stored snapshot")
         report.validate_fact_references(snapshot.fact_ids)
         inserted = await self._session.execute(
@@ -885,7 +964,9 @@ class ReportRepository:
                 input_snapshot_id=report.input_snapshot_id,
                 status=report.status,
                 publication_decision=report.publication_decision,
+                lifecycle_status=report.lifecycle_status,
                 generated_at=report.generated_at,
+                generation_id=report.generation_id,
                 payload=report.payload,
             )
             .on_conflict_do_nothing()
@@ -920,7 +1001,9 @@ class ReportRepository:
             or existing.input_snapshot_id != report.input_snapshot_id
             or existing.status != report.status
             or existing.publication_decision != report.publication_decision
+            or existing.lifecycle_status != report.lifecycle_status
             or existing.generated_at != report.generated_at
+            or getattr(existing, "generation_id", None) != report.generation_id
             or existing.payload != report.payload
         ):
             raise ValueError("daily report is immutable")
@@ -1014,6 +1097,8 @@ class ReportRepository:
             publication_decision=row.publication_decision,
             generated_at=row.generated_at,
             payload=row.payload,
+            lifecycle_status=row.lifecycle_status,
+            generation_id=getattr(row, "generation_id", None),
         )
 
     async def load_input_snapshot(self, snapshot_id: str) -> ReportInputSnapshot | None:

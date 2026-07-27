@@ -1,6 +1,11 @@
 from macro_platform.storage.database import Database
 from macro_platform.storage.models import Base
-from macro_platform.storage.reporting import DeliveryAttempt, ReportInputSnapshot, StoredDailyReport
+from macro_platform.storage.reporting import (
+    DeliveryAttempt,
+    ReportGenerationAttempt,
+    ReportInputSnapshot,
+    StoredDailyReport,
+)
 from macro_platform.storage.repositories import (
     DataRepository,
     EmptyDataRepository,
@@ -23,6 +28,7 @@ __all__ = [
     "NormalizedFactRepository",
     "PostgresDataRepository",
     "ReportInputSnapshot",
+    "ReportGenerationAttempt",
     "ReportRepository",
     "StoredDailyReport",
     "UnitOfWork",

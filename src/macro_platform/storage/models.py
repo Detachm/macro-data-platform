@@ -7,6 +7,7 @@ from uuid import UUID
 
 from sqlalchemy import (
     BigInteger,
+    CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
@@ -314,10 +315,48 @@ class ReportInputSnapshotRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class ReportGenerationAttemptRow(Base):
+    __tablename__ = "report_generation_attempts"
+    __table_args__ = (
+        UniqueConstraint("report_id", "report_version", name="uq_report_generation_report_version"),
+        CheckConstraint(
+            "lifecycle_status IN ('draft', 'generated', 'failed', 'validated', 'superseded')",
+            name="ck_report_generation_lifecycle_status",
+        ),
+        CheckConstraint("attempt_no >= 1", name="ck_report_generation_attempt_no_positive"),
+        Index("ix_report_generation_snapshot", "input_snapshot_id", "created_at"),
+        Index("ix_report_generation_status", "lifecycle_status", "updated_at"),
+    )
+
+    generation_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    report_id: Mapped[str] = mapped_column(String(128))
+    report_version: Mapped[str] = mapped_column(String(64))
+    input_snapshot_id: Mapped[str] = mapped_column(
+        ForeignKey("report_input_snapshots.snapshot_id", ondelete="RESTRICT"), index=True
+    )
+    lifecycle_status: Mapped[str] = mapped_column(String(24))
+    attempt_no: Mapped[int] = mapped_column(Integer, default=1)
+    prompt_version: Mapped[str] = mapped_column(String(64))
+    model: Mapped[str] = mapped_column(String(128))
+    model_parameters: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    input_fingerprint_sha256: Mapped[str] = mapped_column(String(64))
+    source_ref_ids: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    response_payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class DailyReportRow(Base):
     __tablename__ = "daily_reports"
     __table_args__ = (
         UniqueConstraint("report_date", "report_version", name="uq_daily_report_date_version"),
+        CheckConstraint(
+            "lifecycle_status IN ('draft', 'generated', 'failed', 'validated', 'superseded')",
+            name="ck_daily_reports_lifecycle_status",
+        ),
         Index("ix_daily_reports_date_created", "report_date", "created_at"),
     )
 
@@ -330,7 +369,13 @@ class DailyReportRow(Base):
     )
     status: Mapped[str] = mapped_column(String(24))
     publication_decision: Mapped[str] = mapped_column(String(24))
+    lifecycle_status: Mapped[str] = mapped_column(String(24), default="generated")
     generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    generation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("report_generation_attempts.generation_id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
