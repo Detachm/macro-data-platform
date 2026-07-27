@@ -874,6 +874,7 @@ class ReportRepository:
         payload_snapshot = report.payload.get("input_snapshot")
         if payload_snapshot != snapshot.payload:
             raise ValueError("daily report payload input_snapshot must match stored snapshot")
+        report.validate_fact_references(snapshot.fact_ids)
         inserted = await self._session.execute(
             insert(DailyReportRow)
             .values(
