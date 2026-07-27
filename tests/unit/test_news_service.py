@@ -2,9 +2,18 @@ from __future__ import annotations
 
 from macro_platform.contracts.common import Region
 from macro_platform.contracts.news import ContentMode, NewsQuery
+from macro_platform.contracts.provider import Dataset
+from macro_platform.governance.source_policy import (
+    ApprovalStatus,
+    PolicyPurpose,
+    ProductionSourcePolicy,
+    RetentionRule,
+    SourcePolicyEntry,
+    SourcePolicyManifest,
+)
 from macro_platform.services.news_service import NewsService
 from macro_platform.storage.repositories import EmptyDataRepository
-from tests.helpers import NOW, news_event
+from tests.helpers import NOW, news_event, source_ref
 
 
 class NewsRepository(EmptyDataRepository):
@@ -43,3 +52,63 @@ async def test_internal_query_preserves_original_event() -> None:
     original = news_event()
     service = NewsService(NewsRepository([original]))
     assert await service.events(query(ContentMode.SNIPPET)) == [original]
+
+
+async def test_gov_026_unapproved_source_is_excluded_from_external_llm_input() -> None:
+    approved = news_event().model_copy(
+        update={"news_id": "approved", "source": source_ref("approved.news.v1")}
+    )
+    pending = news_event().model_copy(
+        update={"news_id": "pending", "source": source_ref("pending.news.v1")}
+    )
+    policy = ProductionSourcePolicy(
+        SourcePolicyManifest(
+            policy_version="test",
+            entries=[
+                SourcePolicyEntry(
+                    policy_id="approved-news",
+                    provider_id="approved.news.v1",
+                    dataset=Dataset.NEWS,
+                    regions={Region.CN},
+                    owner="@kazming666",
+                    credential_requirement="none",
+                    ingestion_allowed=True,
+                    external_llm_allowed=True,
+                    citation_allowed=True,
+                    retention_rule=RetentionRule.METADATA_ONLY,
+                    approval_status=ApprovalStatus.APPROVED,
+                    production_enabled=True,
+                    evidence=["docs/data-sources/cn-hk-mvp.md"],
+                ),
+                SourcePolicyEntry(
+                    policy_id="pending-news",
+                    provider_id="pending.news.v1",
+                    dataset=Dataset.NEWS,
+                    regions={Region.CN},
+                    owner="@kazming666",
+                    credential_requirement="none",
+                    ingestion_allowed=True,
+                    external_llm_allowed=True,
+                    citation_allowed=True,
+                    retention_rule=RetentionRule.METADATA_ONLY,
+                    approval_status=ApprovalStatus.PENDING,
+                    production_enabled=False,
+                    evidence=["docs/data-sources/cn-hk-mvp.md"],
+                ),
+            ],
+        )
+    )
+    service = NewsService(NewsRepository([approved, pending]), source_policy=policy)
+
+    events = await service.events(query(ContentMode.SNIPPET), for_external_llm=True)
+
+    assert [event.news_id for event in events] == ["approved"]
+    assert (
+        policy.decision(
+            provider_id="pending.news.v1",
+            dataset=Dataset.NEWS,
+            region=Region.CN,
+            purpose=PolicyPurpose.EXTERNAL_LLM,
+        ).allowed
+        is False
+    )

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import timedelta
+from typing import TypeVar
 
 from macro_platform.contracts.common import Region
 from macro_platform.contracts.editor import (
@@ -26,10 +28,18 @@ from macro_platform.contracts.market import (
     MarketSnapshotQuery,
 )
 from macro_platform.contracts.news import ContentMode, NewsEvent, NewsQuery
+from macro_platform.contracts.provider import Dataset
+from macro_platform.governance.source_policy import (
+    NonProductionSourcePolicy,
+    PolicyPurpose,
+    SourcePolicy,
+)
 from macro_platform.normalization.common import canonical_json_checksum, stable_id, utc_now
 from macro_platform.services.macro_service import MacroService
 from macro_platform.services.market_service import MarketService
 from macro_platform.services.news_service import NewsService
+
+RecordT = TypeVar("RecordT")
 
 
 class DataUnavailableError(RuntimeError):
@@ -42,10 +52,13 @@ class EditorContextService:
         market_service: MarketService,
         macro_service: MacroService,
         news_service: NewsService,
+        *,
+        source_policy: SourcePolicy | None = None,
     ) -> None:
         self._market = market_service
         self._macro = macro_service
         self._news = news_service
+        self._source_policy = source_policy or NonProductionSourcePolicy()
 
     async def build(self, request: EditorContextRequest) -> EditorContext:
         as_of = request.as_of or utc_now()
@@ -66,6 +79,12 @@ class EditorContextService:
                     as_of=as_of,
                 )
             )
+            snapshots = self._filter_snapshots(snapshots)
+            bars = self._filter_records(
+                bars,
+                dataset=Dataset.BARS,
+                source_and_region=lambda record: (record.source.provider_id, record.region),
+            )
 
         market_observations = []
         if request.market.metric_codes:
@@ -77,6 +96,11 @@ class EditorContextService:
                     end=as_of + timedelta(microseconds=1),
                     as_of=as_of,
                 )
+            )
+            market_observations = self._filter_records(
+                market_observations,
+                dataset=Dataset.MARKET_OBSERVATIONS,
+                source_and_region=lambda record: (record.source.provider_id, record.region),
             )
 
         macro_observations = []
@@ -91,6 +115,11 @@ class EditorContextService:
                     revision_policy=request.macro.revision_policy,
                 )
             )
+            macro_observations = self._filter_records(
+                macro_observations,
+                dataset=Dataset.MACRO_OBSERVATIONS,
+                source_and_region=lambda record: (record.source.provider_id, record.region),
+            )
 
         macro_releases = await self._macro.releases(
             MacroReleaseQuery(
@@ -99,6 +128,11 @@ class EditorContextService:
                 scheduled_to=as_of + timedelta(days=request.macro.upcoming_days),
                 as_of=as_of,
             )
+        )
+        macro_releases = self._filter_records(
+            macro_releases,
+            dataset=Dataset.MACRO_RELEASES,
+            source_and_region=lambda record: (record.source.provider_id, record.region),
         )
 
         requested_news_mode = ContentMode(request.news.content_mode)
@@ -116,6 +150,7 @@ class EditorContextService:
             ),
             for_external_llm=True,
         )
+        news_events = self._filter_news_events(news_events)
         news_events = self._limit_news_clusters(news_events, request.news.max_per_cluster)
 
         coverage = self._coverage(
@@ -161,6 +196,64 @@ class EditorContextService:
             news_events=news_events,
             coverage=coverage,
             data_fingerprint_sha256=fingerprint,
+        )
+
+    def _filter_snapshots(self, records: list[MarketSnapshot]) -> list[MarketSnapshot]:
+        return [
+            record
+            for record in records
+            if all(
+                self._source_is_allowed_for_llm_context(
+                    source.provider_id,
+                    Dataset.BARS,
+                    record.region,
+                )
+                for source in record.source_records
+            )
+        ]
+
+    def _filter_records(
+        self,
+        records: list[RecordT],
+        *,
+        dataset: Dataset,
+        source_and_region: Callable[[RecordT], tuple[str, Region]],
+    ) -> list[RecordT]:
+        selected: list[RecordT] = []
+        for record in records:
+            provider_id, region = source_and_region(record)
+            if self._source_is_allowed_for_llm_context(provider_id, dataset, region):
+                selected.append(record)
+        return selected
+
+    def _filter_news_events(self, records: list[NewsEvent]) -> list[NewsEvent]:
+        return [
+            record
+            for record in records
+            if all(
+                self._source_is_allowed_for_llm_context(
+                    record.source.provider_id,
+                    Dataset.NEWS,
+                    region,
+                )
+                for region in record.regions
+            )
+        ]
+
+    def _source_is_allowed_for_llm_context(
+        self,
+        provider_id: str,
+        dataset: Dataset,
+        region: Region,
+    ) -> bool:
+        return all(
+            self._source_policy.decision(
+                provider_id=provider_id,
+                dataset=dataset,
+                region=region,
+                purpose=purpose,
+            ).allowed
+            for purpose in {PolicyPurpose.EDITOR_CONTEXT, PolicyPurpose.EXTERNAL_LLM}
         )
 
     @staticmethod

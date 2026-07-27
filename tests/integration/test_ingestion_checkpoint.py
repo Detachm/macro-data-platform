@@ -20,6 +20,7 @@ from testcontainers.postgres import PostgresContainer
 from macro_platform.contracts.common import Region
 from macro_platform.contracts.market import InstrumentQuery
 from macro_platform.contracts.provider import Dataset, FetchContext, IngestJobRequest
+from macro_platform.governance.source_policy import NonProductionSourcePolicy
 from macro_platform.jobs.cn_hk_ingestion import CnHkFixtureIngestHandler
 from macro_platform.jobs.ingestion_checkpoint import CommittedPage, IngestionCheckpointService
 from macro_platform.jobs.runner import JobRunner
@@ -124,7 +125,11 @@ async def test_cn_hk_runner_executes_durable_market_observation_ingestion(
     database: Database, region: Region
 ) -> None:
     request = _ingest_request(region)
-    runner = JobRunner(CnHkFixtureIngestHandler(_success_provider(region)), database=database)
+    runner = JobRunner(
+        CnHkFixtureIngestHandler(_success_provider(region)),
+        database=database,
+        source_policy=NonProductionSourcePolicy(),
+    )
 
     first = await runner.execute(request)
     second = await runner.execute(request)
@@ -163,6 +168,7 @@ async def test_cn_hk_runner_persists_pit_rejection_before_outer_failure(
     runner = JobRunner(
         CnHkFixtureIngestHandler(_success_provider(region), supports_point_in_time=False),
         database=database,
+        source_policy=NonProductionSourcePolicy(),
     )
 
     with pytest.raises(UnsupportedCapabilityError):
@@ -183,14 +189,20 @@ async def test_cn_hk_handler_recovers_from_expired_cursor_with_watermark(
     database: Database, region: Region
 ) -> None:
     request = _ingest_request(region)
-    await JobRunner(CnHkFixtureIngestHandler(_success_provider(region)), database=database).execute(
-        request
-    )
+    await JobRunner(
+        CnHkFixtureIngestHandler(_success_provider(region)),
+        database=database,
+        source_policy=NonProductionSourcePolicy(),
+    ).execute(request)
     expired_request = request.model_copy(update={"cursor": "expired-cursor"})
     handler = CnHkFixtureIngestHandler(_provider_for(region)).with_recovery_provider(
         _success_provider(region)
     )
-    result = await JobRunner(handler, database=database).execute(expired_request)
+    result = await JobRunner(
+        handler,
+        database=database,
+        source_policy=NonProductionSourcePolicy(),
+    ).execute(expired_request)
 
     assert result.source_watermark is not None
     assert result.records_inserted == 0
@@ -203,9 +215,11 @@ async def test_cn_hk_handler_rejects_recovery_from_a_different_source_snapshot(
 ) -> None:
     provider_role = f"{region.value.lower()}.contract_fixture.watermark_mismatch"
     request = _ingest_request(region).model_copy(update={"provider_role": provider_role})
-    await JobRunner(CnHkFixtureIngestHandler(_success_provider(region)), database=database).execute(
-        request
-    )
+    await JobRunner(
+        CnHkFixtureIngestHandler(_success_provider(region)),
+        database=database,
+        source_policy=NonProductionSourcePolicy(),
+    ).execute(request)
 
     provider_cls = CnSyntheticProvider if region is Region.CN else HkSyntheticProvider
     fixture_payload = json.loads(
@@ -233,7 +247,11 @@ async def test_cn_hk_handler_rejects_recovery_from_a_different_source_snapshot(
         provider_cls(changed_snapshot)
     )
     with pytest.raises(ProviderCursorError) as error:
-        await JobRunner(handler, database=database).execute(expired_request)
+        await JobRunner(
+            handler,
+            database=database,
+            source_policy=NonProductionSourcePolicy(),
+        ).execute(expired_request)
 
     assert error.value.code == "CURSOR_RECOVERY_MISMATCH"
     async with database.session() as session:
@@ -283,7 +301,11 @@ async def test_cn_hk_handler_persists_raw_timestamp_audits_across_market_pages(
 
     provider_role = f"{region.value.lower()}.contract_fixture.paginated_market"
     request = _ingest_request(region).model_copy(update={"provider_role": provider_role})
-    runner = JobRunner(CnHkFixtureIngestHandler(provider_cls(paginated_fixture)), database=database)
+    runner = JobRunner(
+        CnHkFixtureIngestHandler(provider_cls(paginated_fixture)),
+        database=database,
+        source_policy=NonProductionSourcePolicy(),
+    )
     first = await runner.execute(request)
     assert first.next_cursor is not None
     second = await runner.execute(request.model_copy(update={"cursor": first.next_cursor}))

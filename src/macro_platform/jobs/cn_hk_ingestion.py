@@ -39,6 +39,10 @@ class CnHkFixtureIngestHandler:
         self._recovery_provider = provider
         return self
 
+    @property
+    def provider_id(self) -> str:
+        return self._provider.provider_id
+
     async def run(self, request: IngestJobRequest) -> IngestJobResult:
         raise RuntimeError("CN/HK ingestion must be run through JobRunner with a database")
 

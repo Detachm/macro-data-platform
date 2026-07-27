@@ -7,6 +7,7 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from macro_platform.config import Settings, get_settings
+from macro_platform.governance.source_policy import SourcePolicy
 from macro_platform.providers.registry import ProviderRegistry
 from macro_platform.storage.database import Database
 from macro_platform.storage.repositories import DataRepository
@@ -30,6 +31,10 @@ def provider_registry(request: Request) -> ProviderRegistry:
     return cast(ProviderRegistry, request.app.state.provider_registry)
 
 
+def source_policy(request: Request) -> SourcePolicy:
+    return cast(SourcePolicy, request.app.state.source_policy)
+
+
 async def require_service_token(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     settings: Annotated[Settings, Depends(get_settings)],
@@ -50,4 +55,5 @@ async def require_service_token(
 DatabaseDep = Annotated[Database, Depends(database)]
 RepositoryDep = Annotated[DataRepository, Depends(repository)]
 RegistryDep = Annotated[ProviderRegistry, Depends(provider_registry)]
+SourcePolicyDep = Annotated[SourcePolicy, Depends(source_policy)]
 RequestIdDep = Annotated[UUID, Depends(request_id)]

@@ -72,3 +72,6 @@ uv run pytest tests/contract/test_us_fixture_provider_contract.py -q
 Fixture 文件和所覆盖的错误/时间场景记录在
 `tests/fixtures/us/provider/manifest.json`。默认 CI 不运行任何 live smoke；如需联网，必须遵循
 `docs/data-sources/us-mvp.md` 的 Phase 2 审批、凭据和限速要求。
+生产来源与外部 LLM 的准入以
+[`docs/data-sources/production-source-policy.md`](docs/data-sources/production-source-policy.md)
+及其机器可读策略为准，缺失或未批准的条目默认拒绝。
