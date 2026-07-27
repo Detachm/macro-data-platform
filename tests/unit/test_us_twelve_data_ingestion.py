@@ -262,6 +262,9 @@ async def test_PRV_016_handler_recovers_from_the_committed_cursor_without_replay
         update={"start": datetime(2026, 7, 21, 4, tzinfo=UTC), "cursor": "expired"}
     )
     recovery_context = provider.request_timeout_seconds
+    live_as_of = (
+        request.as_of + timedelta(seconds=recovery_context) + ingestion_module._PIT_CLOCK_SKEW
+    )
     first_page = await provider.fetch_bars(
         query=ingestion_module.BarQuery(
             instrument_ids=list(provider.instrument_ids),
@@ -269,12 +272,12 @@ async def test_PRV_016_handler_recovers_from_the_committed_cursor_without_replay
             start=request.start,
             end=request.end,
             adjustment=ingestion_module.Adjustment.RAW,
-            as_of=request.as_of,
+            as_of=live_as_of,
             limit=1,
         ),
         context=ingestion_module.FetchContext(
             request_id=RUN_ID,
-            as_of=request.as_of,
+            as_of=live_as_of,
             deadline_at=NOW + timedelta(seconds=recovery_context),
         ),
     )

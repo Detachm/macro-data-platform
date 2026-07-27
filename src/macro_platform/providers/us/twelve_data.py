@@ -320,7 +320,7 @@ class TwelveDataDailyBarsProvider:
         if not self._has_api_key:
             raise ProviderAuthenticationError("Twelve Data API key is not configured")
         fetched_at = self._now()
-        if query.as_of < fetched_at - _PIT_CLOCK_SKEW:
+        if query.as_of < fetched_at:
             raise UnsupportedCapabilityError(
                 "Twelve Data daily bars do not provide historical point-in-time snapshots"
             )
@@ -451,7 +451,13 @@ class TwelveDataDailyBarsProvider:
                             "end_date": end_date.isoformat(),
                             "outputsize": outputsize,
                             "order": "ASC",
-                            "apikey": self._api_key.get_secret_value() if self._api_key else "",
+                        },
+                        headers={
+                            "Authorization": (
+                                f"apikey {self._api_key.get_secret_value()}"
+                                if self._api_key
+                                else ""
+                            )
                         },
                         timeout=min(self._timeout_seconds, remaining_seconds),
                     )

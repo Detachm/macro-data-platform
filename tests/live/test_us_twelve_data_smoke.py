@@ -31,6 +31,7 @@ async def test_PRV_001_twelve_data_basic_spy_daily_bar_smoke() -> None:
         cursor_signing_secret=cursor_secret,
     )
     try:
+        deadline_at = now + timedelta(seconds=provider.request_timeout_seconds)
         page = await provider.fetch_bars(
             BarQuery(
                 instrument_ids=[spy.instrument_id],
@@ -38,13 +39,13 @@ async def test_PRV_001_twelve_data_basic_spy_daily_bar_smoke() -> None:
                 start=now - timedelta(days=10),
                 end=now,
                 adjustment=Adjustment.RAW,
-                as_of=now,
+                as_of=deadline_at,
                 limit=10,
             ),
             FetchContext(
                 request_id=uuid4(),
-                as_of=now,
-                deadline_at=now + timedelta(seconds=provider.request_timeout_seconds),
+                as_of=deadline_at,
+                deadline_at=deadline_at,
             ),
         )
     finally:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
@@ -112,19 +113,23 @@ def _success_payload(*, values: list[dict[str, str]] | None = None) -> dict[str,
 
 
 @pytest.mark.asyncio
-async def test_PRV_001_fetch_bars_maps_raw_daily_bar_and_redacts_api_key_from_provenance() -> None:
+async def test_PRV_001_fetch_bars_maps_raw_daily_bar_and_redacts_api_key_from_provenance(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url == httpx.URL(
             "https://api.twelvedata.com/time_series?"
             "symbol=SPY&interval=1day&start_date=2026-07-22&end_date=2026-07-22&"
-            "outputsize=5000&order=ASC&apikey=unit-test-api-key"
+            "outputsize=5000&order=ASC"
         )
+        assert request.headers["Authorization"] == "apikey unit-test-api-key"
         return httpx.Response(
             200,
             json=_success_payload(),
         )
 
     provider = _provider(transport=httpx.MockTransport(handler))
+    caplog.set_level(logging.INFO, logger="httpx")
     try:
         page = await provider.fetch_bars(
             _bar_query(),
@@ -148,6 +153,7 @@ async def test_PRV_001_fetch_bars_maps_raw_daily_bar_and_redacts_api_key_from_pr
     assert bar.source.source_symbol == "SPY"
     assert "apikey" not in str(bar.source.source_url)
     assert "unit-test-api-key" not in str(bar.source.source_url)
+    assert "unit-test-api-key" not in caplog.text
     assert bar.available_at == NOW
     assert bar.source.retrieved_at == NOW
 
@@ -357,20 +363,18 @@ async def test_PRV_007_retries_a_transport_timeout_once_before_success() -> None
 
 
 @pytest.mark.asyncio
-async def test_PIT_001_accepts_a_fresh_as_of_within_clock_skew_tolerance() -> None:
+async def test_PIT_001_rejects_an_as_of_before_the_live_first_seen_time() -> None:
     provider = _provider(
         transport=httpx.MockTransport(
             lambda request: httpx.Response(200, json=_success_payload(), request=request)
         )
     )
     query = _bar_query().model_copy(update={"as_of": NOW - timedelta(milliseconds=1)})
-    context = CONTEXT.model_copy(update={"as_of": query.as_of})
     try:
-        page = await provider.fetch_bars(query, context)
+        with pytest.raises(UnsupportedCapabilityError, match="point-in-time"):
+            await provider.fetch_bars(query, CONTEXT)
     finally:
         await provider.aclose()
-
-    assert len(page.items) == 1
 
 
 @pytest.mark.asyncio

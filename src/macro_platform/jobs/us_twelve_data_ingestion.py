@@ -87,9 +87,19 @@ class UsTwelveDataIngestHandler:
             supports_point_in_time=self._supports_point_in_time,
             historical_request=request.as_of < now - _PIT_CLOCK_SKEW,
         )
+        # Twelve Data does not provide a historical snapshot.  This is a live
+        # ingestion deadline, so use a deterministic upper bound for the
+        # provider contract while retaining each record's actual first-seen
+        # timestamp for durable PIT reads.  Deriving it from request.as_of
+        # keeps signed cursors valid across retry/recovery attempts.
+        live_as_of = (
+            request.as_of
+            + timedelta(seconds=self._provider.request_timeout_seconds)
+            + _PIT_CLOCK_SKEW
+        )
         context = FetchContext(
             request_id=uuid4(),
-            as_of=request.as_of,
+            as_of=live_as_of,
             deadline_at=now + timedelta(seconds=self._provider.request_timeout_seconds),
         )
         active_provider = self._provider
@@ -102,7 +112,7 @@ class UsTwelveDataIngestHandler:
                     start=request.start,
                     end=request.end,
                     adjustment=Adjustment.RAW,
-                    as_of=request.as_of,
+                    as_of=live_as_of,
                     cursor=cursor,
                     limit=_PAGE_SIZE,
                 ),
