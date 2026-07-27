@@ -226,9 +226,13 @@ class NewsEventTopicRow(Base):
 
 class ProviderRunRow(Base):
     __tablename__ = "provider_runs"
-    __table_args__ = (Index("ix_provider_runs_role_started", "provider_role", "started_at"),)
+    __table_args__ = (
+        Index("ix_provider_runs_role_started", "provider_role", "started_at"),
+        Index("uq_provider_runs_idempotency", "idempotency_key", unique=True),
+    )
 
     run_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     provider_role: Mapped[str] = mapped_column(String(64))
     dataset: Mapped[str] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(24))
@@ -239,6 +243,79 @@ class ProviderRunRow(Base):
     records_rejected: Mapped[int] = mapped_column(Integer, default=0)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     details: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    request_payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+
+
+class ReportInputSnapshotRow(Base):
+    __tablename__ = "report_input_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "report_date",
+            "snapshot_version",
+            "fingerprint_sha256",
+            name="uq_report_snapshot_identity",
+        ),
+        Index("ix_report_snapshots_report_date", "report_date", "created_at"),
+    )
+
+    snapshot_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    snapshot_version: Mapped[str] = mapped_column(String(32))
+    report_date: Mapped[date] = mapped_column(Date)
+    as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    cutoff_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    fingerprint_sha256: Mapped[str] = mapped_column(String(64))
+    fact_ids: Mapped[list[str]] = mapped_column(JSONB)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class DailyReportRow(Base):
+    __tablename__ = "daily_reports"
+    __table_args__ = (
+        UniqueConstraint("report_date", "report_version", name="uq_daily_report_date_version"),
+        Index("ix_daily_reports_date_created", "report_date", "created_at"),
+    )
+
+    report_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    report_date: Mapped[date] = mapped_column(Date)
+    report_version: Mapped[str] = mapped_column(String(64))
+    contract_version: Mapped[str] = mapped_column(String(32))
+    input_snapshot_id: Mapped[str] = mapped_column(
+        ForeignKey("report_input_snapshots.snapshot_id", ondelete="RESTRICT"), index=True
+    )
+    status: Mapped[str] = mapped_column(String(24))
+    publication_decision: Mapped[str] = mapped_column(String(24))
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class DeliveryAttemptRow(Base):
+    __tablename__ = "delivery_attempts"
+    __table_args__ = (
+        UniqueConstraint(
+            "report_id",
+            "delivery_target",
+            "idempotency_key",
+            name="uq_delivery_attempt_idempotency",
+        ),
+        Index("ix_delivery_attempts_report_status", "report_id", "status"),
+    )
+
+    delivery_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    report_id: Mapped[str] = mapped_column(
+        ForeignKey("daily_reports.report_id", ondelete="RESTRICT"), index=True
+    )
+    delivery_target: Mapped[str] = mapped_column(String(128))
+    idempotency_key: Mapped[str] = mapped_column(String(128))
+    attempt_no: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(24))
+    request_payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    response_payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 class JobWatermarkRow(Base):

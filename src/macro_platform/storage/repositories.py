@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from typing import Any, Protocol
+from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from macro_platform.contracts.common import WarningItem
 from macro_platform.contracts.macro import (
     MacroObservation,
     MacroObservationQuery,
@@ -15,23 +17,42 @@ from macro_platform.contracts.macro import (
     MacroSeriesQuery,
 )
 from macro_platform.contracts.market import (
+    Adjustment,
     BarQuery,
     Instrument,
     InstrumentQuery,
+    Interval,
     MarketBar,
     MarketObservation,
     MarketObservationQuery,
     MarketSnapshot,
     MarketSnapshotQuery,
 )
-from macro_platform.contracts.news import NewsEvent, NewsQuery
-from macro_platform.contracts.provider import Dataset
+from macro_platform.contracts.news import ContentMode, NewsEvent, NewsQuery
+from macro_platform.contracts.provider import Dataset, IngestJobRequest, IngestJobResult
+from macro_platform.normalization.common import utc_now
+from macro_platform.storage.database import Database
 from macro_platform.storage.models import (
+    DailyReportRow,
+    DeliveryAttemptRow,
     IngestAuditRow,
     IngestPageCommitRow,
+    InstrumentAliasRow,
+    InstrumentRow,
     JobWatermarkRow,
+    MacroObservationRow,
+    MacroReleaseRow,
+    MacroSeriesRow,
+    MarketBarRow,
     MarketObservationRow,
+    NewsEventEntityRow,
+    NewsEventRegionRow,
+    NewsEventRow,
+    NewsEventTopicRow,
+    ProviderRunRow,
+    ReportInputSnapshotRow,
 )
+from macro_platform.storage.reporting import DeliveryAttempt, ReportInputSnapshot, StoredDailyReport
 
 
 class DataRepository(Protocol):
@@ -86,8 +107,8 @@ class EmptyDataRepository:
         return []
 
 
-class IngestionCheckpointRepository:
-    """Database boundary for durable ingest audit and checkpoint records."""
+class NormalizedFactRepository:
+    """Transaction-scoped writes for normalized facts and their provenance payloads."""
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -95,6 +116,752 @@ class IngestionCheckpointRepository:
     @property
     def session(self) -> AsyncSession:
         return self._session
+
+    async def upsert_instrument(self, instrument: Instrument) -> None:
+        payload = instrument.model_dump(mode="json")
+        await self._session.execute(
+            insert(InstrumentRow)
+            .values(
+                instrument_id=instrument.instrument_id,
+                canonical_symbol=instrument.canonical_symbol,
+                region=instrument.region.value,
+                status=instrument.status.value,
+                valid_from=instrument.valid_from,
+                valid_to=instrument.valid_to,
+                payload=payload,
+            )
+            .on_conflict_do_update(
+                index_elements=(InstrumentRow.instrument_id,),
+                set_={
+                    "canonical_symbol": instrument.canonical_symbol,
+                    "region": instrument.region.value,
+                    "status": instrument.status.value,
+                    "valid_from": instrument.valid_from,
+                    "valid_to": instrument.valid_to,
+                    "payload": payload,
+                    "updated_at": func.now(),
+                },
+            )
+        )
+        source_symbol = instrument.source.source_symbol or instrument.local_symbol
+        await self._session.execute(
+            insert(InstrumentAliasRow)
+            .values(
+                instrument_id=instrument.instrument_id,
+                provider_id=instrument.source.provider_id,
+                source_symbol=source_symbol,
+                valid_from=instrument.valid_from,
+                valid_to=instrument.valid_to,
+            )
+            .on_conflict_do_update(
+                constraint="uq_instrument_alias_effective",
+                set_={
+                    "instrument_id": instrument.instrument_id,
+                    "valid_to": instrument.valid_to,
+                },
+            )
+        )
+
+    async def upsert_bar(self, bar: MarketBar) -> None:
+        payload = bar.model_dump(mode="json")
+        await self._session.execute(
+            insert(MarketBarRow)
+            .values(
+                bar_id=bar.bar_id,
+                instrument_id=bar.instrument_id,
+                canonical_symbol=bar.canonical_symbol,
+                region=bar.region.value,
+                interval=bar.interval.value,
+                bar_start=bar.bar_start,
+                bar_end=bar.bar_end,
+                trading_date=bar.trading_date,
+                open=bar.open,
+                high=bar.high,
+                low=bar.low,
+                close=bar.close,
+                volume=bar.volume,
+                available_at=bar.available_at,
+                adjustment=bar.adjustment.value,
+                provider_id=bar.source.provider_id,
+                provider_record_id=bar.source.provider_record_id,
+                payload=payload,
+            )
+            .on_conflict_do_update(
+                index_elements=(MarketBarRow.bar_id,),
+                set_={
+                    "available_at": bar.available_at,
+                    "provider_record_id": bar.source.provider_record_id,
+                    "payload": payload,
+                },
+            )
+        )
+
+    async def upsert_market_observation(self, observation: MarketObservation) -> None:
+        payload = observation.model_dump(mode="json")
+        await self._session.execute(
+            insert(MarketObservationRow)
+            .values(
+                observation_id=observation.observation_id,
+                region=observation.region.value,
+                metric_code=observation.metric_code,
+                scope_id=observation.scope_id,
+                observed_at=observation.observed_at,
+                available_at=observation.available_at,
+                provider_id=observation.source.provider_id,
+                provider_record_id=observation.source.provider_record_id,
+                payload=payload,
+            )
+            .on_conflict_do_update(
+                index_elements=(MarketObservationRow.observation_id,),
+                set_={
+                    "available_at": observation.available_at,
+                    "provider_record_id": observation.source.provider_record_id,
+                    "payload": payload,
+                },
+            )
+        )
+
+    async def upsert_macro_series(self, series: MacroSeries) -> None:
+        payload = series.model_dump(mode="json")
+        await self._session.execute(
+            insert(MacroSeriesRow)
+            .values(series_id=series.series_id, region=series.region.value, payload=payload)
+            .on_conflict_do_update(
+                index_elements=(MacroSeriesRow.series_id,),
+                set_={"region": series.region.value, "payload": payload},
+            )
+        )
+
+    async def upsert_macro_observation(self, observation: MacroObservation) -> None:
+        payload = observation.model_dump(mode="json")
+        await self._session.execute(
+            insert(MacroObservationRow)
+            .values(
+                observation_id=observation.observation_id,
+                series_id=observation.series_id,
+                region=observation.region.value,
+                period_end=observation.period_end,
+                available_at=observation.available_at,
+                vintage_id=observation.vintage_id,
+                revision_no=observation.revision_no,
+                provider_id=observation.source.provider_id,
+                payload=payload,
+            )
+            # Macro revisions carry a new vintage/observation identity. A raw
+            # replay with the same canonical ID must not replace a vintage.
+            .on_conflict_do_nothing()
+        )
+
+    async def upsert_macro_release(self, release: MacroRelease) -> None:
+        payload = release.model_dump(mode="json")
+        await self._session.execute(
+            insert(MacroReleaseRow)
+            .values(
+                release_id=release.release_id,
+                series_id=release.series_id,
+                region=release.region.value,
+                scheduled_at=release.scheduled_at,
+                available_at=release.available_at,
+                payload=payload,
+            )
+            .on_conflict_do_update(
+                index_elements=(MacroReleaseRow.release_id,),
+                set_={"available_at": release.available_at, "payload": payload},
+            )
+        )
+
+    async def upsert_news_event(self, event: NewsEvent) -> None:
+        payload = event.model_dump(mode="json")
+        inserted = await self._session.execute(
+            insert(NewsEventRow)
+            .values(
+                news_id=event.news_id,
+                cluster_id=event.cluster_id,
+                provider_id=event.source.provider_id,
+                provider_record_id=event.source.provider_record_id,
+                published_at=event.published_at,
+                available_at=event.available_at,
+                status=event.status,
+                payload=payload,
+            )
+            # A correction is a new NewsEvent linked by supersedes_news_id;
+            # never rewrite an already persisted event on replay.
+            .on_conflict_do_nothing(index_elements=(NewsEventRow.news_id,))
+            .returning(NewsEventRow.news_id)
+        )
+        if inserted.scalar_one_or_none() is None:
+            return
+        await self._session.execute(
+            delete(NewsEventRegionRow).where(NewsEventRegionRow.news_id == event.news_id)
+        )
+        await self._session.execute(
+            delete(NewsEventEntityRow).where(NewsEventEntityRow.news_id == event.news_id)
+        )
+        await self._session.execute(
+            delete(NewsEventTopicRow).where(NewsEventTopicRow.news_id == event.news_id)
+        )
+        self._session.add_all(
+            [
+                NewsEventRegionRow(news_id=event.news_id, region=region.value)
+                for region in event.regions
+            ]
+        )
+        self._session.add_all(
+            [
+                NewsEventEntityRow(
+                    news_id=event.news_id,
+                    entity_id=entity.entity_id,
+                    entity_type=entity.entity_type,
+                )
+                for entity in event.entities
+            ]
+        )
+        self._session.add_all(
+            [NewsEventTopicRow(news_id=event.news_id, topic=topic) for topic in event.topics]
+        )
+
+
+class PostgresDataRepository:
+    """Production read repository; all point-in-time filters execute in PostgreSQL."""
+
+    def __init__(self, database: Database) -> None:
+        self._database = database
+
+    async def list_instruments(self, query: InstrumentQuery) -> list[Instrument]:
+        statement = select(InstrumentRow.payload).where(
+            InstrumentRow.region.in_([region.value for region in query.regions])
+        )
+        if query.venues:
+            statement = statement.where(
+                InstrumentRow.payload["venue_mic"].as_string().in_(sorted(query.venues))
+            )
+        if query.asset_classes:
+            statement = statement.where(
+                InstrumentRow.payload["asset_class"]
+                .as_string()
+                .in_(sorted(asset_class.value for asset_class in query.asset_classes))
+            )
+        if query.active_on is not None:
+            statement = statement.where(
+                InstrumentRow.valid_from <= query.active_on,
+                or_(InstrumentRow.valid_to.is_(None), InstrumentRow.valid_to > query.active_on),
+            )
+        if query.modified_since is not None:
+            statement = statement.where(InstrumentRow.updated_at >= query.modified_since)
+        statement = statement.order_by(InstrumentRow.instrument_id).limit(query.limit)
+        async with self._database.session() as session:
+            payloads = (await session.scalars(statement)).all()
+        return [Instrument.model_validate(payload) for payload in payloads]
+
+    async def list_bars(self, query: BarQuery) -> list[MarketBar]:
+        statement = (
+            select(MarketBarRow.payload)
+            .where(
+                MarketBarRow.instrument_id.in_(query.instrument_ids),
+                MarketBarRow.interval == query.interval.value,
+                MarketBarRow.adjustment == query.adjustment.value,
+                MarketBarRow.bar_start >= query.start,
+                MarketBarRow.bar_start < query.end,
+                MarketBarRow.available_at <= query.as_of,
+            )
+            .order_by(MarketBarRow.instrument_id, MarketBarRow.bar_start, MarketBarRow.bar_id)
+            .limit(query.limit)
+        )
+        async with self._database.session() as session:
+            payloads = (await session.scalars(statement)).all()
+        return [MarketBar.model_validate(payload) for payload in payloads]
+
+    async def list_snapshots(self, query: MarketSnapshotQuery) -> list[MarketSnapshot]:
+        rank = func.row_number().over(
+            partition_by=MarketBarRow.instrument_id,
+            order_by=(MarketBarRow.bar_end.desc(), MarketBarRow.available_at.desc()),
+        )
+        latest_bars = (
+            select(
+                MarketBarRow.instrument_id.label("instrument_id"),
+                MarketBarRow.payload.label("payload"),
+                rank.label("rank"),
+            )
+            .where(
+                MarketBarRow.instrument_id.in_(query.instrument_ids),
+                MarketBarRow.interval == Interval.D1.value,
+                MarketBarRow.adjustment == Adjustment.RAW.value,
+                MarketBarRow.available_at <= query.as_of,
+            )
+            .subquery()
+        )
+        statement = (
+            select(latest_bars.c.payload)
+            .where(latest_bars.c.rank == 1)
+            .order_by(latest_bars.c.instrument_id)
+        )
+        async with self._database.session() as session:
+            payloads = (await session.scalars(statement)).all()
+        bars = [MarketBar.model_validate(payload) for payload in payloads]
+        return [
+            MarketSnapshot(
+                instrument_id=bar.instrument_id,
+                canonical_symbol=bar.canonical_symbol,
+                region=bar.region,
+                price_time=bar.bar_end,
+                last=bar.close,
+                currency=bar.currency,
+                available_at=bar.available_at,
+                source_records=[bar.source],
+            )
+            for bar in bars
+        ]
+
+    async def list_market_observations(
+        self, query: MarketObservationQuery
+    ) -> list[MarketObservation]:
+        conditions = [
+            MarketObservationRow.region.in_([region.value for region in query.regions]),
+            MarketObservationRow.metric_code.in_(query.metric_codes),
+            MarketObservationRow.observed_at >= query.start,
+            MarketObservationRow.observed_at < query.end,
+            MarketObservationRow.available_at <= query.as_of,
+        ]
+        if query.scope_ids:
+            conditions.append(MarketObservationRow.scope_id.in_(query.scope_ids))
+        statement = (
+            select(MarketObservationRow.payload)
+            .where(*conditions)
+            .order_by(
+                MarketObservationRow.observed_at,
+                MarketObservationRow.metric_code,
+                MarketObservationRow.observation_id,
+            )
+            .limit(query.limit)
+        )
+        async with self._database.session() as session:
+            payloads = (await session.scalars(statement)).all()
+        return [MarketObservation.model_validate(payload) for payload in payloads]
+
+    async def list_macro_series(self, query: MacroSeriesQuery) -> list[MacroSeries]:
+        statement = select(MacroSeriesRow.payload).where(
+            MacroSeriesRow.region.in_([region.value for region in query.regions])
+        )
+        if query.series_ids:
+            statement = statement.where(MacroSeriesRow.series_id.in_(query.series_ids))
+        statement = statement.order_by(MacroSeriesRow.series_id).limit(query.limit)
+        async with self._database.session() as session:
+            payloads = (await session.scalars(statement)).all()
+        return [MacroSeries.model_validate(payload) for payload in payloads]
+
+    async def list_macro_observations(self, query: MacroObservationQuery) -> list[MacroObservation]:
+        conditions = [
+            MacroObservationRow.series_id.in_(query.series_ids),
+            MacroObservationRow.period_end >= query.period_from,
+            MacroObservationRow.period_end <= query.period_to,
+            MacroObservationRow.available_at <= query.as_of,
+        ]
+        if query.revision_policy.value == "all_vintages":
+            statement = (
+                select(MacroObservationRow.payload)
+                .where(*conditions)
+                .order_by(
+                    MacroObservationRow.series_id,
+                    MacroObservationRow.period_end,
+                    MacroObservationRow.available_at,
+                    MacroObservationRow.revision_no,
+                )
+                .limit(query.limit)
+            )
+        else:
+            descending = query.revision_policy.value == "latest_as_of"
+            rank = func.row_number().over(
+                partition_by=(MacroObservationRow.series_id, MacroObservationRow.period_end),
+                order_by=(
+                    MacroObservationRow.available_at.desc()
+                    if descending
+                    else MacroObservationRow.available_at.asc(),
+                    MacroObservationRow.revision_no.desc()
+                    if descending
+                    else MacroObservationRow.revision_no.asc(),
+                    MacroObservationRow.observation_id.desc()
+                    if descending
+                    else MacroObservationRow.observation_id.asc(),
+                ),
+            )
+            ranked = (
+                select(
+                    MacroObservationRow.payload.label("payload"),
+                    MacroObservationRow.series_id.label("series_id"),
+                    MacroObservationRow.period_end.label("period_end"),
+                    rank.label("rank"),
+                )
+                .where(*conditions)
+                .subquery()
+            )
+            statement = (
+                select(ranked.c.payload)
+                .where(ranked.c.rank == 1)
+                .order_by(ranked.c.series_id, ranked.c.period_end)
+                .limit(query.limit)
+            )
+        async with self._database.session() as session:
+            payloads = (await session.scalars(statement)).all()
+        return [MacroObservation.model_validate(payload) for payload in payloads]
+
+    async def list_macro_releases(self, query: MacroReleaseQuery) -> list[MacroRelease]:
+        statement = (
+            select(MacroReleaseRow.payload)
+            .where(
+                MacroReleaseRow.region.in_([region.value for region in query.regions]),
+                MacroReleaseRow.scheduled_at >= query.scheduled_from,
+                MacroReleaseRow.scheduled_at < query.scheduled_to,
+                MacroReleaseRow.available_at <= query.as_of,
+            )
+            .order_by(MacroReleaseRow.scheduled_at, MacroReleaseRow.release_id)
+            .limit(query.limit)
+        )
+        async with self._database.session() as session:
+            payloads = (await session.scalars(statement)).all()
+        return [MacroRelease.model_validate(payload) for payload in payloads]
+
+    async def list_news(self, query: NewsQuery) -> list[NewsEvent]:
+        statement = (
+            select(NewsEventRow.payload)
+            .join(NewsEventRegionRow)
+            .where(
+                NewsEventRegionRow.region.in_([region.value for region in query.regions]),
+                NewsEventRow.published_at >= query.published_from,
+                NewsEventRow.published_at < query.published_to,
+                NewsEventRow.available_at <= query.as_of,
+            )
+        )
+        if query.entity_ids:
+            statement = statement.join(NewsEventEntityRow).where(
+                NewsEventEntityRow.entity_id.in_(query.entity_ids)
+            )
+        if query.topics:
+            statement = statement.join(NewsEventTopicRow).where(
+                NewsEventTopicRow.topic.in_(query.topics)
+            )
+        if query.languages:
+            statement = statement.where(
+                NewsEventRow.payload["language"].as_string().in_(sorted(query.languages))
+            )
+        if query.source_tiers:
+            statement = statement.where(
+                NewsEventRow.payload["source_tier"]
+                .as_string()
+                .in_(sorted(source_tier.value for source_tier in query.source_tiers))
+            )
+        statement = (
+            statement.distinct()
+            .order_by(NewsEventRow.published_at.desc(), NewsEventRow.news_id)
+            .limit(query.limit)
+        )
+        async with self._database.session() as session:
+            payloads = (await session.scalars(statement)).all()
+        events = [NewsEvent.model_validate(payload) for payload in payloads]
+        if not query.include_superseded:
+            superseded = {
+                event.supersedes_news_id for event in events if event.supersedes_news_id is not None
+            }
+            events = [event for event in events if event.news_id not in superseded]
+        return [self._limit_news_content(event, query) for event in events]
+
+    @staticmethod
+    def _limit_news_content(event: NewsEvent, query: NewsQuery) -> NewsEvent:
+        if query.content_mode is ContentMode.HEADLINE:
+            return event.model_copy(
+                update={"summary": None, "body": None, "content_mode": ContentMode.HEADLINE}
+            )
+        if query.content_mode is ContentMode.SNIPPET:
+            return event.model_copy(update={"body": None, "content_mode": ContentMode.SNIPPET})
+        return event
+
+
+class IngestionRunRepository:
+    """Durable ingestion-run idempotency separate from worker orchestration."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def reserve_run(
+        self, request: IngestJobRequest, *, idempotency_key: str
+    ) -> tuple[UUID, bool]:
+        request_payload = request.model_dump(mode="json")
+        run_id = uuid4()
+        inserted = await self._session.execute(
+            insert(ProviderRunRow)
+            .values(
+                run_id=run_id,
+                idempotency_key=idempotency_key,
+                provider_role=request.provider_role,
+                dataset=request.dataset.value,
+                status="running",
+                started_at=utc_now(),
+                request_payload=request_payload,
+            )
+            .on_conflict_do_nothing(index_elements=(ProviderRunRow.idempotency_key,))
+            .returning(ProviderRunRow.run_id)
+        )
+        reserved = inserted.scalar_one_or_none()
+        if reserved is not None:
+            return reserved, True
+        existing = await self._session.scalar(
+            select(ProviderRunRow).where(ProviderRunRow.idempotency_key == idempotency_key)
+        )
+        if existing is None:
+            raise RuntimeError("ingestion-run idempotency conflict did not return an existing run")
+        if existing.request_payload != request_payload:
+            raise ValueError("ingestion-run idempotency key was reused for a different request")
+        return existing.run_id, False
+
+    async def complete_run(self, result: IngestJobResult) -> None:
+        await self._session.execute(
+            update(ProviderRunRow)
+            .where(ProviderRunRow.run_id == result.run_id)
+            .values(
+                status=result.status,
+                finished_at=result.finished_at,
+                records_fetched=result.records_fetched,
+                records_accepted=result.records_accepted,
+                records_rejected=result.records_rejected,
+                error_code=result.error_code,
+                details={
+                    "records_inserted": result.records_inserted,
+                    "records_updated": result.records_updated,
+                    "next_cursor": result.next_cursor,
+                    "source_watermark": result.source_watermark,
+                    "retry_after_seconds": result.retry_after_seconds,
+                    "warnings": [warning.model_dump(mode="json") for warning in result.warnings],
+                },
+            )
+        )
+
+    async def load_run(self, run_id: UUID) -> ProviderRunRow | None:
+        return await self._session.get(ProviderRunRow, run_id)
+
+    async def load_completed_result(self, run_id: UUID) -> IngestJobResult | None:
+        row = await self.load_run(run_id)
+        if row is None or row.status not in {"succeeded", "partial"} or row.finished_at is None:
+            return None
+        details = row.details
+        return IngestJobResult(
+            run_id=row.run_id,
+            status=row.status,
+            provider_role=row.provider_role,
+            dataset=Dataset(row.dataset),
+            started_at=row.started_at,
+            finished_at=row.finished_at,
+            records_fetched=row.records_fetched,
+            records_accepted=row.records_accepted,
+            records_rejected=row.records_rejected,
+            records_inserted=details.get("records_inserted", 0),
+            records_updated=details.get("records_updated", 0),
+            next_cursor=details.get("next_cursor"),
+            source_watermark=details.get("source_watermark"),
+            error_code=row.error_code,
+            retry_after_seconds=details.get("retry_after_seconds"),
+            warnings=[WarningItem.model_validate(item) for item in details.get("warnings", [])],
+        )
+
+
+class ReportRepository:
+    """Immutable report/snapshot storage and idempotent delivery recovery seam."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def put_input_snapshot(self, snapshot: ReportInputSnapshot) -> bool:
+        inserted = await self._session.execute(
+            insert(ReportInputSnapshotRow)
+            .values(
+                snapshot_id=snapshot.snapshot_id,
+                snapshot_version=snapshot.snapshot_version,
+                report_date=snapshot.report_date,
+                as_of=snapshot.as_of,
+                cutoff_at=snapshot.cutoff_at,
+                fingerprint_sha256=snapshot.fingerprint_sha256,
+                fact_ids=snapshot.fact_ids,
+                payload=snapshot.payload,
+            )
+            .on_conflict_do_nothing()
+            .returning(ReportInputSnapshotRow.snapshot_id)
+        )
+        if inserted.scalar_one_or_none() is not None:
+            return True
+        existing = await self._session.get(ReportInputSnapshotRow, snapshot.snapshot_id)
+        if existing is None:
+            raise ValueError(
+                "report input snapshot identity is already owned by another snapshot ID"
+            )
+        if existing.payload != snapshot.payload:
+            raise ValueError("report input snapshot is immutable")
+        return False
+
+    async def put_report(self, report: StoredDailyReport) -> bool:
+        inserted = await self._session.execute(
+            insert(DailyReportRow)
+            .values(
+                report_id=report.report_id,
+                report_date=report.report_date,
+                report_version=report.report_version,
+                contract_version=report.contract_version,
+                input_snapshot_id=report.input_snapshot_id,
+                status=report.status,
+                publication_decision=report.publication_decision,
+                generated_at=report.generated_at,
+                payload=report.payload,
+            )
+            .on_conflict_do_nothing()
+            .returning(DailyReportRow.report_id)
+        )
+        if inserted.scalar_one_or_none() is not None:
+            return True
+        existing = await self._session.get(DailyReportRow, report.report_id)
+        if existing is None:
+            raise ValueError("report date/version is already owned by another report ID")
+        if existing.payload != report.payload:
+            raise ValueError("daily report is immutable")
+        return False
+
+    async def reserve_delivery_attempt(self, attempt: DeliveryAttempt) -> bool:
+        inserted = await self._session.execute(
+            insert(DeliveryAttemptRow)
+            .values(
+                delivery_id=attempt.delivery_id,
+                report_id=attempt.report_id,
+                delivery_target=attempt.delivery_target,
+                idempotency_key=attempt.idempotency_key,
+                attempt_no=attempt.attempt_no,
+                status=attempt.status,
+                request_payload=attempt.request_payload,
+                response_payload=attempt.response_payload,
+            )
+            .on_conflict_do_nothing(
+                constraint="uq_delivery_attempt_idempotency",
+            )
+            .returning(DeliveryAttemptRow.delivery_id)
+        )
+        if inserted.scalar_one_or_none() is not None:
+            return True
+        existing = await self.load_delivery_attempt_for_key(
+            report_id=attempt.report_id,
+            delivery_target=attempt.delivery_target,
+            idempotency_key=attempt.idempotency_key,
+        )
+        if existing is None:
+            raise RuntimeError("delivery idempotency conflict did not return an existing attempt")
+        if existing.request_payload != attempt.request_payload:
+            raise ValueError("delivery idempotency key was reused for a different request")
+        return False
+
+    async def update_delivery_attempt(
+        self,
+        *,
+        delivery_id: UUID,
+        status: str,
+        response_payload: dict[str, Any] | None,
+    ) -> None:
+        await self._session.execute(
+            update(DeliveryAttemptRow)
+            .where(DeliveryAttemptRow.delivery_id == delivery_id)
+            .values(
+                status=status,
+                response_payload=response_payload,
+            )
+        )
+
+    async def retry_delivery_attempt(self, delivery_id: UUID) -> bool:
+        """Atomically resume a failed/pending delivery without inserting a duplicate."""
+
+        resumed = await self._session.execute(
+            update(DeliveryAttemptRow)
+            .where(
+                DeliveryAttemptRow.delivery_id == delivery_id,
+                DeliveryAttemptRow.status.in_(("failed", "retry_wait")),
+            )
+            .values(
+                status="pending",
+                response_payload=None,
+                attempt_no=DeliveryAttemptRow.attempt_no + 1,
+            )
+            .returning(DeliveryAttemptRow.delivery_id)
+        )
+        return resumed.scalar_one_or_none() is not None
+
+    async def load_report(self, report_id: str) -> StoredDailyReport | None:
+        row = await self._session.get(DailyReportRow, report_id)
+        if row is None:
+            return None
+        return StoredDailyReport(
+            report_id=row.report_id,
+            report_date=row.report_date,
+            report_version=row.report_version,
+            contract_version=row.contract_version,
+            input_snapshot_id=row.input_snapshot_id,
+            status=row.status,
+            publication_decision=row.publication_decision,
+            generated_at=row.generated_at,
+            payload=row.payload,
+        )
+
+    async def load_input_snapshot(self, snapshot_id: str) -> ReportInputSnapshot | None:
+        row = await self._session.get(ReportInputSnapshotRow, snapshot_id)
+        if row is None:
+            return None
+        return ReportInputSnapshot(
+            snapshot_id=row.snapshot_id,
+            snapshot_version=row.snapshot_version,
+            report_date=row.report_date,
+            as_of=row.as_of,
+            cutoff_at=row.cutoff_at,
+            fingerprint_sha256=row.fingerprint_sha256,
+            fact_ids=row.fact_ids,
+            payload=row.payload,
+        )
+
+    async def load_delivery_attempt(self, delivery_id: UUID) -> DeliveryAttempt | None:
+        row = await self._session.get(DeliveryAttemptRow, delivery_id)
+        if row is None:
+            return None
+        return DeliveryAttempt(
+            delivery_id=row.delivery_id,
+            report_id=row.report_id,
+            delivery_target=row.delivery_target,
+            idempotency_key=row.idempotency_key,
+            attempt_no=row.attempt_no,
+            status=row.status,
+            request_payload=row.request_payload,
+            response_payload=row.response_payload,
+        )
+
+    async def load_delivery_attempt_for_key(
+        self,
+        *,
+        report_id: str,
+        delivery_target: str,
+        idempotency_key: str,
+    ) -> DeliveryAttempt | None:
+        row = await self._session.scalar(
+            select(DeliveryAttemptRow).where(
+                DeliveryAttemptRow.report_id == report_id,
+                DeliveryAttemptRow.delivery_target == delivery_target,
+                DeliveryAttemptRow.idempotency_key == idempotency_key,
+            )
+        )
+        if row is None:
+            return None
+        return DeliveryAttempt(
+            delivery_id=row.delivery_id,
+            report_id=row.report_id,
+            delivery_target=row.delivery_target,
+            idempotency_key=row.idempotency_key,
+            attempt_no=row.attempt_no,
+            status=row.status,
+            request_payload=row.request_payload,
+            response_payload=row.response_payload,
+        )
+
+
+class IngestionCheckpointRepository(NormalizedFactRepository):
+    """Database boundary for durable ingest audit and checkpoint records."""
 
     def add_audit(
         self, *, run_id: Any, provider_id: str, audit_kind: str, payload: dict[str, Any]
@@ -177,27 +944,3 @@ class IngestionCheckpointRepository:
             )
         )
         return (None, None) if checkpoint is None else (checkpoint.watermark, checkpoint.cursor)
-
-    async def upsert_market_observation(self, observation: MarketObservation) -> None:
-        await self._session.execute(
-            insert(MarketObservationRow)
-            .values(
-                observation_id=observation.observation_id,
-                region=observation.region.value,
-                metric_code=observation.metric_code,
-                scope_id=observation.scope_id,
-                observed_at=observation.observed_at,
-                available_at=observation.available_at,
-                provider_id=observation.source.provider_id,
-                provider_record_id=observation.source.provider_record_id,
-                payload=observation.model_dump(mode="json"),
-            )
-            .on_conflict_do_update(
-                index_elements=(MarketObservationRow.observation_id,),
-                set_={
-                    "available_at": observation.available_at,
-                    "provider_record_id": observation.source.provider_record_id,
-                    "payload": observation.model_dump(mode="json"),
-                },
-            )
-        )

@@ -37,12 +37,11 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture(scope="module")
 def migrated_database_url() -> Iterator[str]:
-    """Provision an empty database and exercise 0001 -> 0002 before tests use it."""
+    """Provision an empty database and exercise every migration to head."""
     supplied_url = os.environ.get("CONTRACT_TEST_DATABASE_URL")
     if supplied_url is not None:
         config = Config(str(Path(__file__).resolve().parents[2] / "alembic.ini"))
         config.attributes["database_url"] = supplied_url
-        command.upgrade(config, "0001")
         command.upgrade(config, "head")
         yield supplied_url
         return
@@ -53,7 +52,6 @@ def migrated_database_url() -> Iterator[str]:
             database_url = postgres.get_connection_url().replace("psycopg2", "asyncpg")
             config = Config(str(Path(__file__).resolve().parents[2] / "alembic.ini"))
             config.attributes["database_url"] = database_url
-            command.upgrade(config, "0001")
             command.upgrade(config, "head")
             yield database_url
     except DockerException as error:
@@ -114,10 +112,10 @@ def _ingest_request(region: Region) -> IngestJobRequest:
     )
 
 
-async def test_empty_database_migrates_from_0001_to_0002(database: Database) -> None:
+async def test_empty_database_migrates_to_0003(database: Database) -> None:
     async with database.session() as session:
         revision = await session.scalar(text("SELECT version_num FROM alembic_version"))
-    assert revision == "0002"
+    assert revision == "0003"
 
 
 @pytest.mark.parametrize("region", [Region.CN, Region.HK])

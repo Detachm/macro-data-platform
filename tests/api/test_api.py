@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 from macro_platform.api.app import create_app
 from macro_platform.config import Settings
+from macro_platform.storage.repositories import EmptyDataRepository, PostgresDataRepository
 
 TOKEN = "test-service-token"
 
@@ -24,6 +26,19 @@ def test_api_019_liveness_and_request_id() -> None:
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
     assert response.headers["X-Request-ID"]
+
+
+def test_rep_027_production_app_defaults_to_postgres_repository() -> None:
+    settings = Settings(app_env="production", service_token=SecretStr(TOKEN))
+    application = create_app(settings=settings)
+    with TestClient(application):
+        assert isinstance(application.state.repository, PostgresDataRepository)
+
+
+def test_rep_027_production_app_rejects_empty_repository_override() -> None:
+    settings = Settings(app_env="production", service_token=SecretStr(TOKEN))
+    with pytest.raises(ValueError, match="PostgreSQL"):
+        create_app(settings=settings, repository=EmptyDataRepository())
 
 
 def test_api_008_protected_route_requires_bearer_token() -> None:
