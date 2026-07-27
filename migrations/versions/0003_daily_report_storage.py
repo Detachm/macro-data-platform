@@ -85,6 +85,18 @@ def upgrade() -> None:
         )
         op.create_index(f"ix_{table_name}_ingestion_run_id", table_name, ["ingestion_run_id"])
 
+    # Historical facts predate durable provider-run links. Keep the original
+    # source payload intact and leave their ingestion_run_id NULL rather than
+    # inventing a run association. New writes always set this field.
+    op.add_column(
+        "macro_releases", sa.Column("source_checksum_sha256", sa.String(64), nullable=True)
+    )
+    op.execute(
+        "UPDATE macro_releases "
+        "SET source_checksum_sha256 = payload #>> '{source,checksum_sha256}' "
+        "WHERE source_checksum_sha256 IS NULL"
+    )
+
     op.create_table(
         "macro_release_revisions",
         sa.Column("revision_id", sa.String(96), primary_key=True),
@@ -237,6 +249,7 @@ def downgrade() -> None:
     op.drop_table("daily_reports")
     op.drop_table("report_input_snapshots")
     op.drop_table("macro_release_revisions")
+    op.drop_column("macro_releases", "source_checksum_sha256")
     for table_name in (
         "ingest_page_commits",
         "news_events",

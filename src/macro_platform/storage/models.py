@@ -36,6 +36,9 @@ class InstrumentRow(Base):
     status: Mapped[str] = mapped_column(String(24), index=True)
     valid_from: Mapped[date] = mapped_column(Date)
     valid_to: Mapped[date | None] = mapped_column(Date, nullable=True)
+    ingestion_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("provider_runs.run_id", ondelete="RESTRICT"), nullable=True, index=True
+    )
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -184,6 +187,7 @@ class MacroReleaseRow(Base):
     region: Mapped[str] = mapped_column(String(8))
     scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    source_checksum_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ingestion_run_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("provider_runs.run_id", ondelete="RESTRICT"), nullable=True, index=True
     )

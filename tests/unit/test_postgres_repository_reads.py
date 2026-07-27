@@ -5,10 +5,12 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import date, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.dialects import postgresql
 
 from macro_platform.contracts.common import AssetClass, AvailabilityBasis, Region
 from macro_platform.contracts.macro import (
@@ -36,12 +38,13 @@ from macro_platform.contracts.market import (
 )
 from macro_platform.contracts.news import ContentMode, EntityRef, NewsQuery, SourceTier
 from macro_platform.contracts.provider import Dataset
-from macro_platform.storage.models import ProviderRunRow
+from macro_platform.storage.models import ProviderRunRow, ReportInputSnapshotRow
 from macro_platform.storage.reporting import ReportInputSnapshot, StoredDailyReport
 from macro_platform.storage.repositories import (
     IngestionRunRepository,
     NormalizedFactRepository,
     PostgresDataRepository,
+    ReportRepository,
 )
 from tests.helpers import NOW, news_event, source_ref
 
@@ -90,13 +93,57 @@ class _WriteResult:
 
 
 class _WriteSession:
-    def __init__(self, values: list[str | None]) -> None:
+    def __init__(
+        self, values: list[str | None], *, scalars: list[object | None] | None = None
+    ) -> None:
         self._values = deque(values)
+        self._scalars = deque([] if scalars is None else scalars)
         self.statement_count = 0
 
     async def execute(self, statement: object) -> _WriteResult:
         self.statement_count += 1
         return _WriteResult(self._values.popleft())
+
+    async def scalar(self, statement: object) -> object | None:
+        return self._scalars.popleft()
+
+
+class _CompilingWriteSession:
+    """Record PostgreSQL statements without requiring a running database."""
+
+    def __init__(self, values: list[str | None]) -> None:
+        self._values = deque(values)
+        self.statements: list[object] = []
+
+    async def execute(self, statement: object) -> _WriteResult:
+        statement.compile(dialect=postgresql.dialect())  # type: ignore[union-attr]
+        self.statements.append(statement)
+        return _WriteResult(self._values.popleft())
+
+
+class _ReportWriteSession:
+    def __init__(self, snapshot: ReportInputSnapshot, report_id: str) -> None:
+        self._snapshot = snapshot
+        self._report_id = report_id
+        self.statement_count = 0
+
+    async def get(self, model: object, identity: object) -> object | None:
+        if model is ReportInputSnapshotRow and identity == self._snapshot.snapshot_id:
+            return SimpleNamespace(
+                snapshot_id=self._snapshot.snapshot_id,
+                snapshot_version=self._snapshot.snapshot_version,
+                report_date=self._snapshot.report_date,
+                as_of=self._snapshot.as_of,
+                cutoff_at=self._snapshot.cutoff_at,
+                fingerprint_sha256=self._snapshot.fingerprint_sha256,
+                fact_ids=self._snapshot.fact_ids,
+                payload=self._snapshot.payload,
+            )
+        return None
+
+    async def execute(self, statement: object) -> _WriteResult:
+        self.statement_count += 1
+        return _WriteResult(self._report_id)
 
 
 def _instrument() -> Instrument:
@@ -318,6 +365,29 @@ async def test_sto_027_postgres_read_repository_rehydrates_all_public_contracts(
     assert len(database.session_value.statements) == 11
 
 
+async def test_sto_027_news_distinct_query_is_valid_for_postgresql_ordering() -> None:
+    event = news_event()
+    database = _ReadDatabase([[event.model_dump(mode="json")]])
+    repository = PostgresDataRepository(database)  # type: ignore[arg-type]
+
+    assert await repository.list_news(
+        NewsQuery(
+            regions={Region.CN},
+            published_from=NOW - timedelta(hours=1),
+            published_to=NOW + timedelta(hours=1),
+            as_of=NOW + timedelta(hours=1),
+        )
+    ) == [event]
+
+    compiled = str(
+        database.session_value.statements[0].compile(dialect=postgresql.dialect())  # type: ignore[union-attr]
+    )
+    assert (
+        "SELECT DISTINCT news_events.payload, news_events.published_at, news_events.news_id"
+        in compiled
+    )
+
+
 async def test_sto_027_completed_ingestion_run_rehydrates_after_restart() -> None:
     run_id = uuid4()
     row = ProviderRunRow(
@@ -444,6 +514,50 @@ def test_rep_027_snapshot_storage_requires_the_frozen_input_contract() -> None:
         )
 
 
+async def test_rep_027_incomplete_report_without_source_references_skips_child_insert() -> None:
+    snapshot_payload = {
+        "snapshot_id": "snapshot-empty-sources",
+        "snapshot_version": "1.0",
+        "as_of": NOW.isoformat().replace("+00:00", "Z"),
+        "cutoff_at": NOW.isoformat().replace("+00:00", "Z"),
+        "fingerprint_sha256": "a" * 64,
+        "fact_ids": [],
+    }
+    snapshot = ReportInputSnapshot(
+        snapshot_id="snapshot-empty-sources",
+        snapshot_version="1.0",
+        report_date=NOW.date(),
+        as_of=NOW,
+        cutoff_at=NOW,
+        fingerprint_sha256="a" * 64,
+        fact_ids=[],
+        payload=snapshot_payload,
+    )
+    report = StoredDailyReport(
+        report_id="report-empty-sources",
+        report_date=NOW.date(),
+        report_version="v1",
+        contract_version="1.0",
+        input_snapshot_id=snapshot.snapshot_id,
+        status="incomplete",
+        publication_decision="not_published",
+        generated_at=NOW,
+        payload={
+            "report_id": "report-empty-sources",
+            "report_date": NOW.date().isoformat(),
+            "contract_version": "1.0",
+            "status": "incomplete",
+            "publication": {"decision": "not_published"},
+            "input_snapshot": snapshot_payload,
+            "sections": {"source_references": {"items": []}},
+        },
+    )
+    session = _ReportWriteSession(snapshot, report.report_id)
+
+    assert await ReportRepository(session).put_report(report)  # type: ignore[arg-type]
+    assert session.statement_count == 1
+
+
 async def test_sto_027_macro_release_keeps_pit_versions_without_in_place_update() -> None:
     release = MacroRelease(
         release_id="macro-release-storage-write-1",
@@ -458,7 +572,9 @@ async def test_sto_027_macro_release_keeps_pit_versions_without_in_place_update(
         status="scheduled",
         source=source_ref(),
     )
-    session = _WriteSession([release.release_id, None, None])
+    session = _WriteSession(
+        [release.release_id, None, None], scalars=[release.source.checksum_sha256]
+    )
     repository = NormalizedFactRepository(session)  # type: ignore[arg-type]
 
     assert repository.session is session
@@ -476,3 +592,78 @@ async def test_sto_027_macro_release_keeps_pit_versions_without_in_place_update(
     )
 
     assert session.statement_count == 3
+
+
+async def test_sto_027_macro_release_replay_with_same_checksum_skips_revision_insert() -> None:
+    release = MacroRelease(
+        release_id="macro-release-storage-replay-1",
+        series_id="macro:CN:TEST:STORAGE_REPLAY",
+        region=Region.CN,
+        release_name="Storage replay release",
+        scheduled_at=NOW + timedelta(days=1),
+        available_at=NOW,
+        period_start=date(2026, 7, 1),
+        period_end=date(2026, 7, 31),
+        unit="index",
+        status="scheduled",
+        source=source_ref(),
+    )
+    session = _WriteSession([release.release_id, None], scalars=[release.source.checksum_sha256])
+
+    await NormalizedFactRepository(session).upsert_macro_release(release)  # type: ignore[arg-type]
+    await NormalizedFactRepository(session).upsert_macro_release(release)  # type: ignore[arg-type]
+
+    assert session.statement_count == 2
+
+
+async def test_sto_027_fact_upserts_compile_with_audit_run_updates() -> None:
+    instrument = _instrument()
+    run_id = uuid4()
+    session = _CompilingWriteSession([None, None, None, None, None])
+    repository = NormalizedFactRepository(session, ingestion_run_id=run_id)  # type: ignore[arg-type]
+
+    await repository.upsert_instrument(instrument)
+    await repository.upsert_bar(_bar(instrument))
+    await repository.upsert_market_observation(
+        MarketObservation(
+            observation_id="market-observation-storage-write-1",
+            region=Region.CN,
+            scope_type=ScopeType.MARKET,
+            scope_id="CN",
+            metric_code="market.turnover",
+            value=Decimal("100"),
+            unit="CNY",
+            period_start=NOW - timedelta(hours=1),
+            period_end=NOW,
+            observed_at=NOW,
+            available_at=NOW,
+            availability_basis=AvailabilityBasis.FIRST_SEEN,
+            source=source_ref(),
+        )
+    )
+    await repository.upsert_macro_series(
+        MacroSeries(
+            series_id="macro:CN:TEST:STORAGE_WRITE",
+            region=Region.CN,
+            authority="Storage test authority",
+            code="STORAGE_WRITE",
+            name="Storage write series",
+            frequency=Frequency.MONTHLY,
+            unit="index",
+            transformation="level",
+            seasonal_adjustment="not_adjusted",
+            source=source_ref(),
+        )
+    )
+
+    compiled = [
+        str(statement.compile(dialect=postgresql.dialect()))  # type: ignore[union-attr]
+        for statement in session.statements
+    ]
+    updates = [
+        statement
+        for statement in compiled
+        if "ON CONFLICT" in statement and "instrument_aliases" not in statement
+    ]
+    assert len(updates) == 4
+    assert all("ingestion_run_id = " in statement for statement in updates)

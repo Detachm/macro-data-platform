@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Protocol, runtime_checkable
 from uuid import UUID
 
@@ -49,6 +50,10 @@ class DurableRunAwareIngestJobHandler(IngestJobHandler, Protocol):
     def set_durable_run_id(self, run_id: UUID) -> None: ...
 
 
+class IngestionRunInProgressError(RuntimeError):
+    """An equivalent durable run is still owned by another worker."""
+
+
 class JobRunner:
     """Execution seam for retries, locks, checkpoints, and metrics."""
 
@@ -58,9 +63,15 @@ class JobRunner:
         *,
         source_policy: SourcePolicy,
         database: Database | None = None,
+        running_run_wait_seconds: float = 30.0,
+        running_run_poll_seconds: float = 0.1,
     ) -> None:
+        if running_run_wait_seconds <= 0 or running_run_poll_seconds <= 0:
+            raise ValueError("running-run wait and poll durations must be positive")
         self._handler = handler
         self._database = database
+        self._running_run_wait_seconds = running_run_wait_seconds
+        self._running_run_poll_seconds = running_run_poll_seconds
         self._source_policy = source_policy
 
     async def execute(self, request: IngestJobRequest) -> IngestJobResult:
@@ -111,7 +122,38 @@ class JobRunner:
             if created:
                 return run_id, None
             completed = await repository.load_completed_result(run_id)
-        return run_id, completed
+        if completed is not None:
+            return None, completed
+        return None, await self._wait_for_running_run(run_id)
+
+    async def _wait_for_running_run(self, run_id: UUID) -> IngestJobResult:
+        """Wait for the current owner instead of executing the same run twice."""
+
+        if self._database is None:
+            raise ValueError("checkpointed production ingestion requires a database")
+        deadline = asyncio.get_running_loop().time() + self._running_run_wait_seconds
+        while True:
+            async with UnitOfWork(self._database).transaction() as session:
+                repository = IngestionRunRepository(session)
+                completed = await repository.load_completed_result(run_id)
+                if completed is not None:
+                    return completed
+                run = await repository.load_run(run_id)
+            if run is None:
+                raise IngestionRunInProgressError(
+                    "durable ingestion run disappeared before recovery"
+                )
+            if run.status != "running":
+                raise IngestionRunInProgressError(
+                    f"durable ingestion run finished without a replayable result: {run.status}"
+                )
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise IngestionRunInProgressError(
+                    f"durable ingestion run {run_id} is still running; "
+                    "retry after its owner finishes"
+                )
+            await asyncio.sleep(min(self._running_run_poll_seconds, remaining))
 
     def _require_ingestion_policy(
         self, request: IngestJobRequest

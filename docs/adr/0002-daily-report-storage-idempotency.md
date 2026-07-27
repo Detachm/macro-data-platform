@@ -28,6 +28,7 @@
 - `delivery_attempts` 以 `(report_id, delivery_target, idempotency_key)` 去重。失败重试更新同一 attempt，不覆盖报告。
 - 正式 production app 默认注入 PostgreSQL read repository；fixture/empty repository 只在明确传入或非 production 环境使用。
 - 所有事实、snapshot、report 和 delivery repository 都在调用方提供的 SQLAlchemy transaction 内工作；provider 不直接写数据库。
+- `0003` 前已经存在的事实不回填 `ingestion_run_id`：历史写入没有可信的 run ID，伪造关联会破坏审计。迁移保留其完整 `SourceRef` JSONB 审计字段并将 run ID 明确留为 `NULL`；`0003` 后的新写入必须携带真实 run ID。
 
 ## 后果
 
@@ -45,5 +46,6 @@
 - `DB-004`、`DB-007`：ingestion/page checkpoint 与 normalized fact 在同一事务中幂等提交。
 - `REP-027-001`：相同 snapshot、report version 和 delivery key 重放不新增记录。
 - `REP-027-002`：新 session 可读取已提交 checkpoint 与不可变 report。
+- `REP-027-003`：同一运行中的 idempotency key 只等待既有 worker 的完成结果，不会再次调用 provider；旧 delivery attempt 不能覆盖已递增的 retry attempt。
 - 检查命令：`ruff format --check .`、`ruff check .`、`mypy --strict src`、`pytest -m "not live" -q`。
 - 验收人：@Nouzee 交叉评审 migration/repository；@Detachm 最终批准。

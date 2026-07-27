@@ -56,6 +56,8 @@ from macro_platform.storage.models import (
     DailyReportSourceRefRow,
     DeliveryAttemptRow,
     IngestPageCommitRow,
+    InstrumentRow,
+    MacroReleaseRevisionRow,
     MarketBarRow,
     MarketObservationRow,
     ProviderRunRow,
@@ -75,9 +77,10 @@ from tests.helpers import CHECKSUM, NOW, news_event
 pytestmark = pytest.mark.integration
 
 _previous_schema_run_id: UUID | None = None
+_previous_schema_instrument_id: str | None = None
 
 
-async def _seed_0002_provider_run(database_url: str, run_id: UUID) -> None:
+async def _seed_0002_records(database_url: str, run_id: UUID, instrument_id: str) -> None:
     database = Database(database_url)
     try:
         async with database.session() as session, session.begin():
@@ -97,6 +100,31 @@ async def _seed_0002_provider_run(database_url: str, run_id: UUID) -> None:
                     "details": "{}",
                 },
             )
+            await session.execute(
+                text(
+                    "INSERT INTO instruments "
+                    "(instrument_id, canonical_symbol, region, status, valid_from, payload) "
+                    "VALUES (:instrument_id, :canonical_symbol, :region, :status, :valid_from, "
+                    "CAST(:payload AS jsonb))"
+                ),
+                {
+                    "instrument_id": instrument_id,
+                    "canonical_symbol": f"XSHG:{instrument_id}",
+                    "region": Region.CN.value,
+                    "status": "active",
+                    "valid_from": date(2020, 1, 1),
+                    "payload": json.dumps(
+                        {
+                            "source": {
+                                "provider_id": "migration.0002.provider",
+                                "provider_record_id": "legacy-instrument-record",
+                                "checksum_sha256": "a" * 64,
+                                "retrieved_at": NOW.isoformat(),
+                            }
+                        }
+                    ),
+                },
+            )
     finally:
         await database.dispose()
 
@@ -107,12 +135,17 @@ def postgresql_url() -> Iterator[str]:
 
     supplied_url = os.environ.get("CONTRACT_TEST_DATABASE_URL")
     config = Config(str(Path(__file__).resolve().parents[2] / "alembic.ini"))
-    global _previous_schema_run_id
+    global _previous_schema_instrument_id, _previous_schema_run_id
     _previous_schema_run_id = uuid4()
+    _previous_schema_instrument_id = f"legacy-instrument-{uuid4().hex}"
     if supplied_url is not None:
         config.attributes["database_url"] = supplied_url
         command.upgrade(config, "0002")
-        asyncio.run(_seed_0002_provider_run(supplied_url, _previous_schema_run_id))
+        asyncio.run(
+            _seed_0002_records(
+                supplied_url, _previous_schema_run_id, _previous_schema_instrument_id
+            )
+        )
         command.upgrade(config, "head")
         yield supplied_url
         return
@@ -123,7 +156,11 @@ def postgresql_url() -> Iterator[str]:
             database_url = postgres.get_connection_url().replace("psycopg2", "asyncpg")
             config.attributes["database_url"] = database_url
             command.upgrade(config, "0002")
-            asyncio.run(_seed_0002_provider_run(database_url, _previous_schema_run_id))
+            asyncio.run(
+                _seed_0002_records(
+                    database_url, _previous_schema_run_id, _previous_schema_instrument_id
+                )
+            )
             command.upgrade(config, "head")
             yield database_url
     except DockerException as error:
@@ -257,6 +294,40 @@ class _ProductionCheckpointedHandler:
         )
 
 
+class _BlockingProductionCheckpointedHandler(_ProductionCheckpointedHandler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def run_checkpointed(
+        self,
+        request: IngestJobRequest,
+        checkpoints: IngestionCheckpointService,
+        database: Database,
+    ) -> IngestJobResult:
+        assert self.run_id is not None
+        assert self.retention_policy is not None
+        assert isinstance(checkpoints, IngestionCheckpointService)
+        assert isinstance(database, Database)
+        self.calls += 1
+        self.started.set()
+        await self.release.wait()
+        return IngestJobResult(
+            run_id=self.run_id,
+            status="succeeded",
+            provider_role=request.provider_role,
+            dataset=request.dataset,
+            started_at=NOW,
+            finished_at=NOW + timedelta(seconds=1),
+            records_fetched=1,
+            records_accepted=1,
+            records_rejected=0,
+            records_inserted=1,
+            records_updated=0,
+        )
+
+
 def _production_policy() -> ProductionSourcePolicy:
     return ProductionSourcePolicy(
         SourcePolicyManifest(
@@ -298,6 +369,7 @@ async def test_rep_027_migration_upgrades_0002_to_current_schema(database: Datab
             ).all()
         )
         preserved_run = await session.get(ProviderRunRow, _previous_schema_run_id)
+        preserved_instrument = await session.get(InstrumentRow, _previous_schema_instrument_id)
     assert revision == "0003"
     assert tables == {
         "report_input_snapshots",
@@ -309,6 +381,11 @@ async def test_rep_027_migration_upgrades_0002_to_current_schema(database: Datab
     assert preserved_run is not None
     assert preserved_run.idempotency_key is None
     assert preserved_run.request_payload == {}
+    assert preserved_instrument is not None
+    assert preserved_instrument.ingestion_run_id is None
+    assert (
+        preserved_instrument.payload["source"]["provider_record_id"] == "legacy-instrument-record"
+    )
 
 
 async def test_rep_027_001_report_and_delivery_replays_are_idempotent(
@@ -324,10 +401,17 @@ async def test_rep_027_001_report_and_delivery_replays_are_idempotent(
         assert await repository.reserve_delivery_attempt(delivery)
         await repository.update_delivery_attempt(
             delivery_id=delivery.delivery_id,
+            expected_attempt_no=1,
             status="failed",
             response_payload={"error": "timeout after write"},
         )
         assert await repository.retry_delivery_attempt(delivery.delivery_id)
+        assert not await repository.update_delivery_attempt(
+            delivery_id=delivery.delivery_id,
+            expected_attempt_no=1,
+            status="succeeded",
+            response_payload={"message_id": "stale-worker"},
+        )
 
     async with UnitOfWork(database).transaction() as session:
         repository = ReportRepository(session)
@@ -374,6 +458,41 @@ async def test_rep_027_001_report_and_delivery_replays_are_idempotent(
         )
     assert (snapshot_count, report_count, delivery_count) == (1, 1, 1)
     assert source_ref_count == len(report.source_references())
+
+
+async def test_rep_027_incomplete_report_with_no_source_references_is_persisted(
+    database: Database,
+) -> None:
+    token = uuid4().hex
+    snapshot, complete_report, _ = _report_commands(token)
+    incomplete_payload = json.loads(json.dumps(complete_report.payload))
+    incomplete_payload["status"] = "incomplete"
+    incomplete_payload["publication"]["decision"] = "not_published"
+    incomplete_payload["sections"]["source_references"]["items"] = []
+    incomplete_report = StoredDailyReport(
+        report_id=complete_report.report_id,
+        report_date=complete_report.report_date,
+        report_version=complete_report.report_version,
+        contract_version=complete_report.contract_version,
+        input_snapshot_id=complete_report.input_snapshot_id,
+        status="incomplete",
+        publication_decision="not_published",
+        generated_at=complete_report.generated_at,
+        payload=incomplete_payload,
+    )
+
+    async with UnitOfWork(database).transaction() as session:
+        repository = ReportRepository(session)
+        assert await repository.put_input_snapshot(snapshot)
+        assert await repository.put_report(incomplete_report)
+
+    async with database.session() as session:
+        source_ref_count = await session.scalar(
+            select(func.count())
+            .select_from(DailyReportSourceRefRow)
+            .where(DailyReportSourceRefRow.report_id == incomplete_report.report_id)
+        )
+    assert source_ref_count == 0
 
 
 async def test_rep_027_002_ingestion_run_and_report_recover_after_restart(
@@ -449,6 +568,36 @@ async def test_rep_027_production_runner_replays_completed_ingestion_without_pro
 
     first = await runner.execute(_ingest_request())
     second = await runner.execute(_ingest_request())
+
+    assert first == second
+    assert handler.calls == 1
+
+
+async def test_rep_027_production_runner_waits_for_an_active_idempotent_run(
+    database: Database,
+) -> None:
+    handler = _BlockingProductionCheckpointedHandler()
+    runner = JobRunner(
+        handler,
+        database=database,
+        source_policy=_production_policy(),
+        running_run_wait_seconds=1,
+        running_run_poll_seconds=0.01,
+    )
+    request = _ingest_request()
+    first_task = asyncio.create_task(runner.execute(request))
+    await asyncio.wait_for(handler.started.wait(), timeout=1)
+    second_task = asyncio.create_task(runner.execute(request))
+
+    try:
+        await asyncio.sleep(0.05)
+        assert handler.calls == 1
+        handler.release.set()
+        first = await first_task
+        second = await second_task
+    finally:
+        handler.release.set()
+        await asyncio.gather(first_task, second_task, return_exceptions=True)
 
     assert first == second
     assert handler.calls == 1
@@ -764,3 +913,65 @@ async def test_postgres_repository_persists_facts_pit_revisions_and_raw_source_f
     assert source_lookup == bar.bar_id
     assert revision_payload == "100"
     assert fact_run_id == run_id
+
+
+async def test_sto_027_macro_release_replay_is_idempotent_and_ties_are_deterministic(
+    database: Database,
+) -> None:
+    token = uuid4().hex
+    series = MacroSeries(
+        series_id=f"macro:CN:REPLAY:{token}",
+        region=Region.CN,
+        authority="Storage replay authority",
+        code=f"REPLAY-{token}",
+        name="Storage replay series",
+        frequency=Frequency.MONTHLY,
+        unit="index",
+        transformation="level",
+        seasonal_adjustment="not_adjusted",
+        source=_source(f"series-replay-{token}"),
+    )
+    base = MacroRelease(
+        release_id=f"release-replay-{token}",
+        series_id=series.series_id,
+        region=Region.CN,
+        release_name="Storage replay release",
+        scheduled_at=NOW + timedelta(days=1),
+        available_at=NOW,
+        period_start=date(2026, 7, 1),
+        period_end=date(2026, 7, 31),
+        unit="index",
+        status="scheduled",
+        source=_source(f"release-replay-{token}"),
+    )
+    revision = base.model_copy(
+        update={
+            "released_at": NOW,
+            "actual": Decimal("101"),
+            "status": "released",
+            "source": _source(f"release-replay-revision-{token}", checksum="b" * 64),
+        }
+    )
+
+    async with UnitOfWork(database).transaction() as session:
+        repository = NormalizedFactRepository(session)
+        await repository.upsert_macro_series(series)
+        await repository.upsert_macro_release(base)
+        await repository.upsert_macro_release(base)
+        await repository.upsert_macro_release(revision)
+
+    async with database.session() as session:
+        revision_count = await session.scalar(
+            select(func.count())
+            .select_from(MacroReleaseRevisionRow)
+            .where(MacroReleaseRevisionRow.release_id == base.release_id)
+        )
+    assert revision_count == 1
+    assert await PostgresDataRepository(database).list_macro_releases(
+        MacroReleaseQuery(
+            regions={Region.CN},
+            scheduled_from=NOW,
+            scheduled_to=NOW + timedelta(days=2),
+            as_of=NOW,
+        )
+    ) == [revision]

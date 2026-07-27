@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 
-from sqlalchemy import delete, func, or_, select, union_all, update
+from sqlalchemy import delete, func, literal, or_, select, union_all, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -142,6 +142,7 @@ class NormalizedFactRepository:
                     "status": instrument.status.value,
                     "valid_from": instrument.valid_from,
                     "valid_to": instrument.valid_to,
+                    "ingestion_run_id": self._ingestion_run_id,
                     "payload": payload,
                     "updated_at": func.now(),
                 },
@@ -196,6 +197,7 @@ class NormalizedFactRepository:
                 set_={
                     "available_at": bar.available_at,
                     "provider_record_id": bar.source.provider_record_id,
+                    "ingestion_run_id": self._ingestion_run_id,
                     "payload": payload,
                 },
             )
@@ -222,6 +224,7 @@ class NormalizedFactRepository:
                 set_={
                     "available_at": observation.available_at,
                     "provider_record_id": observation.source.provider_record_id,
+                    "ingestion_run_id": self._ingestion_run_id,
                     "payload": payload,
                 },
             )
@@ -239,7 +242,11 @@ class NormalizedFactRepository:
             )
             .on_conflict_do_update(
                 index_elements=(MacroSeriesRow.series_id,),
-                set_={"region": series.region.value, "payload": payload},
+                set_={
+                    "region": series.region.value,
+                    "ingestion_run_id": self._ingestion_run_id,
+                    "payload": payload,
+                },
             )
         )
 
@@ -274,6 +281,7 @@ class NormalizedFactRepository:
                 region=release.region.value,
                 scheduled_at=release.scheduled_at,
                 available_at=release.available_at,
+                source_checksum_sha256=release.source.checksum_sha256,
                 ingestion_run_id=self._ingestion_run_id,
                 payload=payload,
             )
@@ -281,6 +289,13 @@ class NormalizedFactRepository:
             .returning(MacroReleaseRow.release_id)
         )
         if inserted.scalar_one_or_none() is not None:
+            return
+        existing_checksum = await self._session.scalar(
+            select(MacroReleaseRow.source_checksum_sha256).where(
+                MacroReleaseRow.release_id == release.release_id
+            )
+        )
+        if existing_checksum == release.source.checksum_sha256:
             return
         await self._session.execute(
             insert(MacroReleaseRevisionRow)
@@ -542,6 +557,8 @@ class PostgresDataRepository:
             MacroReleaseRow.release_id.label("release_id"),
             MacroReleaseRow.scheduled_at.label("scheduled_at"),
             MacroReleaseRow.available_at.label("available_at"),
+            literal(0).label("revision_rank"),
+            func.coalesce(MacroReleaseRow.source_checksum_sha256, "").label("source_checksum"),
             MacroReleaseRow.payload.label("payload"),
         ).where(*base_conditions, MacroReleaseRow.available_at <= query.as_of)
         revision_versions = (
@@ -549,6 +566,8 @@ class PostgresDataRepository:
                 MacroReleaseRow.release_id.label("release_id"),
                 MacroReleaseRow.scheduled_at.label("scheduled_at"),
                 MacroReleaseRevisionRow.available_at.label("available_at"),
+                literal(1).label("revision_rank"),
+                MacroReleaseRevisionRow.source_checksum_sha256.label("source_checksum"),
                 MacroReleaseRevisionRow.payload.label("payload"),
             )
             .join(MacroReleaseRow, MacroReleaseRow.release_id == MacroReleaseRevisionRow.release_id)
@@ -557,7 +576,11 @@ class PostgresDataRepository:
         versions = union_all(base_versions, revision_versions).subquery()
         rank = func.row_number().over(
             partition_by=versions.c.release_id,
-            order_by=versions.c.available_at.desc(),
+            order_by=(
+                versions.c.available_at.desc(),
+                versions.c.revision_rank.desc(),
+                versions.c.source_checksum.desc(),
+            ),
         )
         ranked = select(
             versions.c.payload.label("payload"),
@@ -577,7 +600,7 @@ class PostgresDataRepository:
 
     async def list_news(self, query: NewsQuery) -> list[NewsEvent]:
         statement = (
-            select(NewsEventRow.payload)
+            select(NewsEventRow.payload, NewsEventRow.published_at, NewsEventRow.news_id)
             .join(NewsEventRegionRow)
             .where(
                 NewsEventRegionRow.region.in_([region.value for region in query.regions]),
@@ -775,21 +798,23 @@ class ReportRepository:
             .returning(DailyReportRow.report_id)
         )
         if inserted.scalar_one_or_none() is not None:
-            await self._session.execute(
-                insert(DailyReportSourceRefRow).values(
-                    [
-                        {
-                            "report_id": report.report_id,
-                            "source_ref_id": source.source_ref_id,
-                            "provider_id": source.provider_id,
-                            "provider_record_id": source.provider_record_id,
-                            "checksum_sha256": source.checksum_sha256,
-                            "retrieved_at": source.retrieved_at,
-                        }
-                        for source in report.source_references()
-                    ]
+            source_references = report.source_references()
+            if source_references:
+                await self._session.execute(
+                    insert(DailyReportSourceRefRow).values(
+                        [
+                            {
+                                "report_id": report.report_id,
+                                "source_ref_id": source.source_ref_id,
+                                "provider_id": source.provider_id,
+                                "provider_record_id": source.provider_record_id,
+                                "checksum_sha256": source.checksum_sha256,
+                                "retrieved_at": source.retrieved_at,
+                            }
+                            for source in source_references
+                        ]
+                    )
                 )
-            )
             return True
         existing = await self._session.get(DailyReportRow, report.report_id)
         if existing is None:
@@ -833,17 +858,28 @@ class ReportRepository:
         self,
         *,
         delivery_id: UUID,
+        expected_attempt_no: int,
         status: str,
         response_payload: dict[str, Any] | None,
-    ) -> None:
-        await self._session.execute(
+    ) -> bool:
+        if expected_attempt_no < 1:
+            raise ValueError("expected delivery attempt number must be positive")
+        if status not in {"failed", "retry_wait", "succeeded"}:
+            raise ValueError("delivery attempt can only complete a pending attempt")
+        updated = await self._session.execute(
             update(DeliveryAttemptRow)
-            .where(DeliveryAttemptRow.delivery_id == delivery_id)
+            .where(
+                DeliveryAttemptRow.delivery_id == delivery_id,
+                DeliveryAttemptRow.attempt_no == expected_attempt_no,
+                DeliveryAttemptRow.status == "pending",
+            )
             .values(
                 status=status,
                 response_payload=response_payload,
             )
+            .returning(DeliveryAttemptRow.delivery_id)
         )
+        return updated.scalar_one_or_none() is not None
 
     async def retry_delivery_attempt(self, delivery_id: UUID) -> bool:
         """Atomically resume a failed/pending delivery without inserting a duplicate."""
