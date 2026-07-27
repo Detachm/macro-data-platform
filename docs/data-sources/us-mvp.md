@@ -15,7 +15,7 @@
   - `us.news.primary`
 - 数据集：instruments / bars / market_observations / macro_series / macro_observations / macro_releases / news
 - 关联 Issue：[#2](https://github.com/Detachm/macro-data-platform/issues/2)
-- 首次批准日期：待 @Detachm 批准
+- 首次批准日期：Twelve Data Basic 的 `SPY`、`QQQ`、`DIA` 日线于 2026-07-27 获 @Detachm 批准；其余来源仍待批准。
 - 复核日期：首次批准后 30 天，之后每季度复核一次；商业合同或官方条款变化时立即复核。
 
 本文件是 Issue #2 要求的 US 两日 MVP 聚合矩阵。具体来源仍按工程规范分拆为 source-level 登记文件：
@@ -26,6 +26,7 @@
 | SEC EDGAR / SEC RSS | [us-sec-edgar.md](us-sec-edgar.md) |
 | Polygon/Massive | [us-polygon-massive-market-data.md](us-polygon-massive-market-data.md) |
 | Alpha Vantage | [us-alpha-vantage.md](us-alpha-vantage.md) |
+| Twelve Data Basic | [us-twelve-data.md](us-twelve-data.md) |
 | Federal Reserve H.10/H.15/DDP | [us-federal-reserve-h10-h15.md](us-federal-reserve-h10-h15.md) |
 | U.S. Treasury interest rates | [us-treasury-interest-rates.md](us-treasury-interest-rates.md) |
 | BLS Public Data API | [us-bls-api.md](us-bls-api.md) |
@@ -38,12 +39,14 @@
 
 ## 结论摘要
 
-两日 MVP 的目标是证明 US 数据源抽象、字段映射、授权边界和 fixture-backed provider 纵向切片，不承诺生产 live 接入。
+两日 MVP 的目标是证明 US 数据源抽象、字段映射、授权边界和 fixture-backed provider 纵向切片，
+原则上不承诺生产 live 接入。唯一的后续例外是 ADR 0003 批准的 Twelve Data Basic 三个
+US market proxy 日线范围；其 live adapter 仍由 #34 单独实现。
 
 | 数据类 | 两日 MVP 状态 | Primary | Fallback / gap | 结论 |
 |---|---|---|---|---|
 | instruments | `fixture-only`，可用官方公开源设计 live adapter | Nasdaq Trader Symbol Directory + SEC company tickers/CIK enrichment | Polygon/Massive reference tickers if licensed | Nasdaq/SEC 可支持合成 fixture；交易所目录权利需复核后才能宣称 live-ready。 |
-| daily bars | `fixture-only` | Polygon/Massive stock aggregates，需商业授权 | Alpha Vantage，仅原型/低频 fallback | 交易所市场数据受许可约束；无合同前不存 live 行情、不发 LLM。 |
+| daily bars | `live-approved`，仅内部 scope | Twelve Data Basic：`SPY`、`QQQ`、`DIA` 的 raw `1day` OHLCV | 无生产 fallback；Polygon/Massive、Alpha Vantage 仍未获批 | 仅允许内部 ingestion 与 canonical facts 存储；禁止外部 LLM、引用和再分发。详见 ADR 0003。 |
 | rates / FX / cross-asset observations | `live-candidate` for official public releases; MVP 仍用 fixture | Federal Reserve H.15/H.10 Data Download/current releases；Treasury official feeds where available | FRED 只作发现/人工核对，不作为持久化 ingest 源 | 官方利率/汇率可做首批 market observations；在逐 series owner rights review 前，平台对 FRED 采用 no-ingest/no-LLM 保守策略。 |
 | macro observations / releases | `live-candidate` for direct agency APIs; MVP 可 fixture | BLS Public Data API、BEA API、官方 release calendar | FRED 只作非持久化发现 | BLS/BEA 是 CPI、employment、GDP、PCE 等主源；available_at 不得早于 API/平台首次可见时间。 |
 | SEC filing metadata | `live-candidate` | SEC EDGAR `data.sec.gov` submissions + index files | Commercial SEC vendors only for enhanced search | SEC JSON APIs 无 API key，但必须遵守 fair access；只采 metadata，不采完整正文作为新闻正文。 |
@@ -113,22 +116,24 @@
 - alias 唯一键：`provider_id + source_symbol + valid_from`。
 - checksum 只基于业务字段 canonical JSON，不含 retrieved_at。
 
+<a id="daily-bars"></a>
+
 ### 2. Daily bars：US equity / index daily OHLCV
 
 | 项 | 设计 |
 |---|---|
 | Provider role | `us.market.primary` |
-| Primary live candidate | Polygon/Massive stock aggregates。 |
-| Fallback live candidate | Alpha Vantage `TIME_SERIES_DAILY` / `TIME_SERIES_DAILY_ADJUSTED`，仅用于低频 POC。 |
-| 官方文档 | Polygon/Massive Stocks Aggregates custom bars；Alpha Vantage API documentation and Terms。 |
-| Base URL / endpoint | Polygon/Massive：`GET /v2/aggs/ticker/{stocksTicker}/range/{multiplier}/{timespan}/{from}/{to}`；Alpha Vantage：`GET /query?function=TIME_SERIES_DAILY&symbol=...&apikey=...`。 |
-| 认证 | 两者均需 API key；key 只能来自本地 `.env` / Secret Manager，不进 Git。 |
-| 分页 | Polygon/Massive 返回 `next_url` 时按 provider cursor 翻页；Alpha Vantage daily 一般按单 symbol 全量/compact 输出，无平台 cursor。 |
-| 时区 | Polygon/Massive aggregates 文档声明按 Eastern Time；统一转 UTC，`trading_date` 保留美东本地交易日。 |
+| Primary live provider | Twelve Data Basic `GET https://api.twelvedata.com/time_series?symbol=<SPY|QQQ|DIA>&interval=1day`，只接入三个市场代理。 |
+| Fallback live candidate | 无生产 fallback；Polygon/Massive、Alpha Vantage 继续保持未批准/fixture-only。 |
+| 官方文档 | Twelve Data time-series API、个人/内部使用说明和套餐限制；历史候选的 Polygon/Massive、Alpha Vantage 文档仍仅作调研证据。 |
+| Base URL / endpoint | Twelve Data：`GET https://api.twelvedata.com/time_series?symbol=<symbol>&interval=1day&start_date=<date>&end_date=<date>&apikey=<secret>`。 |
+| 认证 | Twelve Data 需 API key；key 只能来自运行时 Secret Manager，不进 Git、日志或 fixture。 |
+| 分页 | Twelve Data 日线以单 symbol、日期窗口请求，无 cursor；worker 限制窗口/条数并拒绝重复或倒序窗口。 |
+| 时区 | Twelve Data `1day` 以交易所本地交易日给出；统一转 UTC，`trading_date` 保留 `America/New_York` 本地交易日。 |
 | 更新 | EOD worker 在 `us_close` session 后运行；不得在 API 请求中拉行情。 |
-| 历史深度 | 取决于商业 plan；两日内未采购，不承诺。 |
+| 历史深度 | 取决于 Basic 套餐和当前额度；仅保证 #34 所需的三个 symbol 与两日报告回放范围。 |
 | `available_at` basis | 有 provider dissemination timestamp 时用 `provider_disseminated`；否则 `first_seen`。 |
-| MVP 状态 | `fixture-only`。无合同前不存 live market data，不把行情发外部 LLM。 |
+| MVP 状态 | #26 已批准内部 live ingestion 与 canonical facts 存储；#34 才实现 live adapter。禁止外部 LLM、citation、embedding、再分发，以及 scope 外 symbol。 |
 
 公共合同映射：
 
@@ -313,6 +318,7 @@ Daily news 公共合同映射：
 | Nasdaq Trader symbol directory | false until reviewed | true for fixture/design | false | false | false | Exchange reference data rights未完成复核；live 标 `fixture-only`。 |
 | Polygon/Massive market data | false until business agreement | false until business agreement | false | false | false | Market data terms/licensor agreements required；无合同不 live。 |
 | Alpha Vantage market/FX/news | false until commercial approval | false until commercial approval | false | false | false | Terms distinguish personal/non-commercial vs commercial use；MVP 仅 fixture/design。 |
+| Twelve Data Basic `SPY` / `QQQ` / `DIA` daily bars | true for internal canonical facts only | true for personal/internal analysis only | false | false | false | @Detachm 于 2026-07-27 批准的受限范围；Individual/Basic 不构成外部模型、第三方展示或再分发授权。 |
 | Federal Reserve H.15/H.10 direct releases/DDP | true for numeric facts | true | true for numeric facts with source citation | true for numeric facts | true with attribution/no endorsement | Official public statistical releases；DDP retirement path需复核。 |
 | Treasury official feeds / Fiscal Data | true for numeric facts | true | true for numeric facts with source citation | true for numeric facts | true with attribution/no endorsement | Official public Treasury data；endpoint availability复核。 |
 | BLS Public Data API | true for public observations | true | true for numeric facts with source citation | true for numeric facts | true with attribution/no endorsement | Official public statistics；API key/limits apply。 |
@@ -446,6 +452,7 @@ No live smoke should run by default in PR CI. Use `pytest -m live` only with exp
 | BEA | `GetDatasetList` and one NIPA row/window. | Requires UserID; stay well below 100/min. |
 | FRB H.15/H.10 | Download latest/current release or package metadata only. | Public; no aggressive polling. |
 | Polygon/Massive | One prior-day bar for a configured ticker. | Only after business license; skip otherwise. |
+| Twelve Data Basic | One prior-day `1day` bar for one of `SPY`、`QQQ`、`DIA`。 | Only with runtime key, explicit `live` marker and Basic quota budget; no external LLM/citation path. |
 | News provider | One short headline/snippet query. | Only after contract; body remains off. |
 
 ## 运行指标
@@ -487,6 +494,9 @@ Quality thresholds for US MVP fixture providers:
 - Alpha Vantage API docs: https://www.alphavantage.co/documentation/
 - Alpha Vantage Terms: https://www.alphavantage.co/terms_of_service/
 - Alpha Vantage support / limits: https://www.alphavantage.co/support/
+- Twelve Data API docs: https://twelvedata.com/docs
+- Twelve Data personal/internal use policy: https://support.twelvedata.com/en/articles/5332349-commercial-and-personal-usage
+- Twelve Data individual pricing: https://twelvedata.com/pricing
 - Federal Reserve H.15: https://www.federalreserve.gov/releases/h15/
 - Federal Reserve H.10: https://www.federalreserve.gov/releases/h10/
 - Federal Reserve Data Download Program: https://www.federalreserve.gov/datadownload/

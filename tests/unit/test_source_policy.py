@@ -137,6 +137,63 @@ def test_gov_026_not_production_enabled_is_denied_for_llm_and_citation() -> None
         assert decision.reason == "source is not production enabled"
 
 
+def test_gov_026_twelve_data_basic_bars_allows_internal_retention_and_rejects_external_use() -> (
+    None
+):
+    policy = load_production_source_policy()
+
+    ingestion = policy.decision(
+        provider_id="us.twelve-data.v1",
+        dataset=Dataset.BARS,
+        region=Region.US,
+        purpose=PolicyPurpose.INGESTION,
+    )
+    retention = policy.decision(
+        provider_id="us.twelve-data.v1",
+        dataset=Dataset.BARS,
+        region=Region.US,
+        purpose=PolicyPurpose.RETENTION,
+    )
+    external_llm = policy.decision(
+        provider_id="us.twelve-data.v1",
+        dataset=Dataset.BARS,
+        region=Region.US,
+        purpose=PolicyPurpose.EXTERNAL_LLM,
+    )
+    citation = policy.decision(
+        provider_id="us.twelve-data.v1",
+        dataset=Dataset.BARS,
+        region=Region.US,
+        purpose=PolicyPurpose.CITATION,
+    )
+    allowed_symbol = policy.decision(
+        provider_id="us.twelve-data.v1",
+        dataset=Dataset.BARS,
+        region=Region.US,
+        purpose=PolicyPurpose.INGESTION,
+        source_symbol="SPY",
+    )
+    denied_symbol = policy.decision(
+        provider_id="us.twelve-data.v1",
+        dataset=Dataset.BARS,
+        region=Region.US,
+        purpose=PolicyPurpose.INGESTION,
+        source_symbol="IWM",
+    )
+
+    assert ingestion.allowed
+    assert ingestion.allowed_symbols == frozenset({"DIA", "QQQ", "SPY"})
+    assert retention.allowed
+    assert retention.retention_rule is RetentionRule.CANONICAL_FACTS
+    assert not external_llm.allowed
+    assert external_llm.reason == "external LLM is not allowed"
+    assert not citation.allowed
+    assert citation.reason == "citation is not allowed"
+    assert allowed_symbol.allowed
+    assert not denied_symbol.allowed
+    assert denied_symbol.reason == "source symbol is not allowed"
+
+
 def test_gov_026_packaged_policy_is_cross_region_and_traceable() -> None:
     policy = load_production_source_policy()
     entries = policy.manifest.entries

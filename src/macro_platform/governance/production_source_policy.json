@@ -383,6 +383,32 @@
       ]
     },
     {
+      "policy_id": "us.twelve-data.basic.daily-bars",
+      "provider_id": "us.twelve-data.v1",
+      "dataset": "bars",
+      "regions": [
+        "US"
+      ],
+      "owner": "@kazming666",
+      "credential_requirement": "api_key_required",
+      "ingestion_allowed": true,
+      "external_llm_allowed": false,
+      "citation_allowed": false,
+      "retention_rule": "canonical_facts",
+      "approval_status": "approved",
+      "production_enabled": true,
+      "allowed_symbols": [
+        "DIA",
+        "QQQ",
+        "SPY"
+      ],
+      "evidence": [
+        "docs/data-sources/us-mvp.md#daily-bars",
+        "docs/data-sources/us-twelve-data.md",
+        "docs/adr/0003-us-twelve-data-basic-internal-daily-bars.md"
+      ]
+    },
+    {
       "policy_id": "us.federal-reserve.h10-h15",
       "provider_id": "us.federal-reserve.h10-h15.v1",
       "dataset": "market_observations",
