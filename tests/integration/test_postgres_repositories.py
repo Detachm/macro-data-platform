@@ -42,14 +42,13 @@ from macro_platform.contracts.news import ContentMode, NewsQuery
 from macro_platform.contracts.provider import Dataset, IngestJobRequest, IngestJobResult
 from macro_platform.governance.source_policy import (
     ApprovalStatus,
-    IngestionRetentionPolicy,
     ProductionSourcePolicy,
     RetentionRule,
     SourcePolicyEntry,
     SourcePolicyManifest,
 )
 from macro_platform.jobs.ingestion_checkpoint import CommittedPage, IngestionCheckpointService
-from macro_platform.jobs.runner import JobRunner
+from macro_platform.jobs.runner import IngestionExecutionContext, JobRunner
 from macro_platform.storage.database import Database
 from macro_platform.storage.models import (
     DailyReportRow,
@@ -256,14 +255,6 @@ class _ProductionCheckpointedHandler:
 
     def __init__(self) -> None:
         self.calls = 0
-        self.retention_policy: IngestionRetentionPolicy | None = None
-        self.run_id: UUID | None = None
-
-    def set_retention_policy(self, policy: IngestionRetentionPolicy) -> None:
-        self.retention_policy = policy
-
-    def set_durable_run_id(self, run_id: UUID) -> None:
-        self.run_id = run_id
 
     async def run(self, request: IngestJobRequest) -> IngestJobResult:
         raise AssertionError("checkpointed handler must use the durable runner path")
@@ -273,14 +264,14 @@ class _ProductionCheckpointedHandler:
         request: IngestJobRequest,
         checkpoints: IngestionCheckpointService,
         database: Database,
+        execution: IngestionExecutionContext,
     ) -> IngestJobResult:
-        assert self.run_id is not None
-        assert self.retention_policy is not None
+        assert execution.retention_policy is not None
         assert isinstance(checkpoints, IngestionCheckpointService)
         assert isinstance(database, Database)
         self.calls += 1
         return IngestJobResult(
-            run_id=self.run_id,
+            run_id=execution.run_id,
             status="succeeded",
             provider_role=request.provider_role,
             dataset=request.dataset,
@@ -298,23 +289,28 @@ class _BlockingProductionCheckpointedHandler(_ProductionCheckpointedHandler):
     def __init__(self) -> None:
         super().__init__()
         self.started = asyncio.Event()
+        self.all_started = asyncio.Event()
         self.release = asyncio.Event()
+        self.executions: list[IngestionExecutionContext] = []
 
     async def run_checkpointed(
         self,
         request: IngestJobRequest,
         checkpoints: IngestionCheckpointService,
         database: Database,
+        execution: IngestionExecutionContext,
     ) -> IngestJobResult:
-        assert self.run_id is not None
-        assert self.retention_policy is not None
+        assert execution.retention_policy is not None
         assert isinstance(checkpoints, IngestionCheckpointService)
         assert isinstance(database, Database)
         self.calls += 1
+        self.executions.append(execution)
         self.started.set()
+        if self.calls == 2:
+            self.all_started.set()
         await self.release.wait()
         return IngestJobResult(
-            run_id=self.run_id,
+            run_id=execution.run_id,
             status="succeeded",
             provider_role=request.provider_role,
             dataset=request.dataset,
@@ -326,6 +322,23 @@ class _BlockingProductionCheckpointedHandler(_ProductionCheckpointedHandler):
             records_inserted=1,
             records_updated=0,
         )
+
+
+class _WrongRunProductionCheckpointedHandler(_ProductionCheckpointedHandler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.execution: IngestionExecutionContext | None = None
+
+    async def run_checkpointed(
+        self,
+        request: IngestJobRequest,
+        checkpoints: IngestionCheckpointService,
+        database: Database,
+        execution: IngestionExecutionContext,
+    ) -> IngestJobResult:
+        self.execution = execution
+        result = await super().run_checkpointed(request, checkpoints, database, execution)
+        return result.model_copy(update={"run_id": uuid4()})
 
 
 def _production_policy() -> ProductionSourcePolicy:
@@ -475,6 +488,17 @@ async def test_rep_027_incomplete_report_with_no_source_references_is_persisted(
     incomplete_payload["status"] = "incomplete"
     incomplete_payload["publication"]["decision"] = "not_published"
     incomplete_payload["sections"]["source_references"]["items"] = []
+
+    def remove_source_reference_ids(value: object) -> None:
+        if isinstance(value, dict):
+            value.pop("source_ref_ids", None)
+            for child in value.values():
+                remove_source_reference_ids(child)
+        elif isinstance(value, list):
+            for child in value:
+                remove_source_reference_ids(child)
+
+    remove_source_reference_ids(incomplete_payload["sections"])
     incomplete_report = StoredDailyReport(
         report_id=complete_report.report_id,
         report_date=complete_report.report_date,
@@ -499,6 +523,33 @@ async def test_rep_027_incomplete_report_with_no_source_references_is_persisted(
             .where(DailyReportSourceRefRow.report_id == incomplete_report.report_id)
         )
     assert source_ref_count == 0
+
+
+async def test_rep_027_rejects_report_references_outside_its_snapshot_and_source_index(
+    database: Database,
+) -> None:
+    token = uuid4().hex
+    snapshot, report, _ = _report_commands(token)
+
+    unknown_source_payload = json.loads(json.dumps(report.payload))
+    unknown_source_payload["sections"]["upcoming_calendar"]["items"][0]["source_ref_ids"] = [
+        "source.unknown"
+    ]
+    with pytest.raises(ValueError, match="source_ref_ids"):
+        StoredDailyReport.model_validate(
+            {**report.model_dump(mode="python"), "payload": unknown_source_payload}
+        )
+
+    unknown_fact_payload = json.loads(json.dumps(report.payload))
+    unknown_fact_payload["sections"]["key_movements"]["items"][0]["fact_ids"] = ["fact.unknown"]
+    unknown_fact_report = StoredDailyReport.model_validate(
+        {**report.model_dump(mode="python"), "payload": unknown_fact_payload}
+    )
+    async with UnitOfWork(database).transaction() as session:
+        repository = ReportRepository(session)
+        assert await repository.put_input_snapshot(snapshot)
+        with pytest.raises(ValueError, match="fact_ids"):
+            await repository.put_report(unknown_fact_report)
 
 
 async def test_rep_027_002_ingestion_run_and_report_recover_after_restart(
@@ -624,6 +675,57 @@ async def test_rep_027_production_runner_waits_for_an_active_idempotent_run(
 
     assert first == second
     assert handler.calls == 1
+
+
+async def test_rep_027_production_runner_isolates_concurrent_execution_contexts(
+    database: Database,
+) -> None:
+    handler = _BlockingProductionCheckpointedHandler()
+    runner = JobRunner(
+        handler,
+        database=database,
+        source_policy=_production_policy(),
+        running_run_wait_seconds=1,
+        running_run_poll_seconds=0.01,
+    )
+    first_request = _ingest_request().model_copy(
+        update={"provider_role": "cn.contract_fixture.concurrent_first"}
+    )
+    second_request = first_request.model_copy(update={"cursor": "page-2"})
+    first_task = asyncio.create_task(runner.execute(first_request))
+    await asyncio.wait_for(handler.started.wait(), timeout=1)
+    second_task = asyncio.create_task(runner.execute(second_request))
+
+    try:
+        await asyncio.wait_for(handler.all_started.wait(), timeout=1)
+        assert handler.calls == 2
+        handler.release.set()
+        first, second = await asyncio.gather(first_task, second_task)
+    finally:
+        handler.release.set()
+        await asyncio.gather(first_task, second_task, return_exceptions=True)
+
+    assert first.run_id != second.run_id
+    assert {execution.run_id for execution in handler.executions} == {first.run_id, second.run_id}
+
+
+async def test_rep_027_marks_durable_run_failed_when_result_validation_fails(
+    database: Database,
+) -> None:
+    handler = _WrongRunProductionCheckpointedHandler()
+    runner = JobRunner(handler, database=database, source_policy=_production_policy())
+    request = _ingest_request().model_copy(
+        update={"provider_role": f"cn.contract.invalid.{uuid4().hex[:8]}"}
+    )
+
+    with pytest.raises(ValueError, match="different run ID"):
+        await runner.execute(request)
+
+    assert handler.execution is not None
+    async with database.session() as session:
+        run = await session.get(ProviderRunRow, handler.execution.run_id)
+    assert run is not None
+    assert run.status == "failed"
 
 
 async def test_db_004_concurrent_page_replay_commits_one_fact_and_checkpoint(
