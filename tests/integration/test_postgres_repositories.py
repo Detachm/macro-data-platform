@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from collections.abc import AsyncIterator, Iterator
@@ -47,19 +48,22 @@ from macro_platform.governance.source_policy import (
     SourcePolicyEntry,
     SourcePolicyManifest,
 )
-from macro_platform.jobs.ingestion_checkpoint import IngestionCheckpointService
+from macro_platform.jobs.ingestion_checkpoint import CommittedPage, IngestionCheckpointService
 from macro_platform.jobs.runner import JobRunner
 from macro_platform.storage.database import Database
 from macro_platform.storage.models import (
     DailyReportRow,
     DailyReportSourceRefRow,
     DeliveryAttemptRow,
+    IngestPageCommitRow,
     MarketBarRow,
+    MarketObservationRow,
     ProviderRunRow,
     ReportInputSnapshotRow,
 )
 from macro_platform.storage.reporting import DeliveryAttempt, ReportInputSnapshot, StoredDailyReport
 from macro_platform.storage.repositories import (
+    IngestionCheckpointRepository,
     IngestionRunRepository,
     NormalizedFactRepository,
     PostgresDataRepository,
@@ -70,6 +74,32 @@ from tests.helpers import CHECKSUM, NOW, news_event
 
 pytestmark = pytest.mark.integration
 
+_previous_schema_run_id: UUID | None = None
+
+
+async def _seed_0002_provider_run(database_url: str, run_id: UUID) -> None:
+    database = Database(database_url)
+    try:
+        async with database.session() as session, session.begin():
+            await session.execute(
+                text(
+                    "INSERT INTO provider_runs "
+                    "(run_id, provider_role, dataset, status, started_at, details) "
+                    "VALUES (:run_id, :provider_role, :dataset, :status, :started_at, "
+                    "CAST(:details AS jsonb))"
+                ),
+                {
+                    "run_id": run_id,
+                    "provider_role": "migration.0002.preservation",
+                    "dataset": Dataset.MARKET_OBSERVATIONS.value,
+                    "status": "succeeded",
+                    "started_at": NOW,
+                    "details": "{}",
+                },
+            )
+    finally:
+        await database.dispose()
+
 
 @pytest.fixture(scope="module")
 def postgresql_url() -> Iterator[str]:
@@ -77,9 +107,12 @@ def postgresql_url() -> Iterator[str]:
 
     supplied_url = os.environ.get("CONTRACT_TEST_DATABASE_URL")
     config = Config(str(Path(__file__).resolve().parents[2] / "alembic.ini"))
+    global _previous_schema_run_id
+    _previous_schema_run_id = uuid4()
     if supplied_url is not None:
         config.attributes["database_url"] = supplied_url
         command.upgrade(config, "0002")
+        asyncio.run(_seed_0002_provider_run(supplied_url, _previous_schema_run_id))
         command.upgrade(config, "head")
         yield supplied_url
         return
@@ -90,6 +123,7 @@ def postgresql_url() -> Iterator[str]:
             database_url = postgres.get_connection_url().replace("psycopg2", "asyncpg")
             config.attributes["database_url"] = database_url
             command.upgrade(config, "0002")
+            asyncio.run(_seed_0002_provider_run(database_url, _previous_schema_run_id))
             command.upgrade(config, "head")
             yield database_url
     except DockerException as error:
@@ -263,6 +297,7 @@ async def test_rep_027_migration_upgrades_0002_to_current_schema(database: Datab
                 )
             ).all()
         )
+        preserved_run = await session.get(ProviderRunRow, _previous_schema_run_id)
     assert revision == "0003"
     assert tables == {
         "report_input_snapshots",
@@ -271,6 +306,9 @@ async def test_rep_027_migration_upgrades_0002_to_current_schema(database: Datab
         "delivery_attempts",
         "macro_release_revisions",
     }
+    assert preserved_run is not None
+    assert preserved_run.idempotency_key is None
+    assert preserved_run.request_payload == {}
 
 
 async def test_rep_027_001_report_and_delivery_replays_are_idempotent(
@@ -414,6 +452,62 @@ async def test_rep_027_production_runner_replays_completed_ingestion_without_pro
 
     assert first == second
     assert handler.calls == 1
+
+
+async def test_db_004_concurrent_page_replay_commits_one_fact_and_checkpoint(
+    database: Database,
+) -> None:
+    token = uuid4().hex
+    observation = MarketObservation(
+        observation_id=f"concurrent-observation-{token}",
+        region=Region.CN,
+        scope_type=ScopeType.MARKET,
+        scope_id="CN",
+        metric_code="market.turnover",
+        value=Decimal("1"),
+        unit="CNY",
+        period_start=NOW - timedelta(hours=1),
+        period_end=NOW,
+        observed_at=NOW,
+        available_at=NOW,
+        availability_basis=AvailabilityBasis.FIRST_SEEN,
+        source=_source(f"concurrent-observation-{token}"),
+    )
+    page = CommittedPage(
+        provider_role=f"cn.contract_fixture.concurrent.{token}",
+        dataset=Dataset.MARKET_OBSERVATIONS,
+        region=Region.CN.value,
+        page_fingerprint="c" * 64,
+        source_watermark="2026-07-23T08:00:00Z",
+        next_cursor=None,
+        accepted_record_ids=[observation.source.provider_record_id],
+    )
+    checkpoints = IngestionCheckpointService()
+
+    async def commit_once() -> bool:
+        async with UnitOfWork(database).transaction() as session:
+            repository = IngestionCheckpointRepository(session)
+
+            async def write_records(_: object) -> None:
+                await repository.upsert_market_observation(observation)
+
+            return await checkpoints.commit_page(repository, page, write_records)
+
+    assert sorted(await asyncio.gather(commit_once(), commit_once())) == [False, True]
+    async with database.session() as session:
+        fact_count = await session.scalar(
+            select(func.count())
+            .select_from(MarketObservationRow)
+            .where(MarketObservationRow.observation_id == observation.observation_id)
+        )
+        checkpoint = await session.scalar(
+            select(IngestPageCommitRow).where(
+                IngestPageCommitRow.provider_role == page.provider_role,
+                IngestPageCommitRow.page_fingerprint == page.page_fingerprint,
+            )
+        )
+    assert fact_count == 1
+    assert checkpoint is not None
 
 
 async def test_postgres_repository_persists_facts_pit_revisions_and_raw_source_fields(
