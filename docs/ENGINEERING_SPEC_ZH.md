@@ -330,6 +330,9 @@ class WarningItem(StrictModel):
     details: dict[str, Any] = Field(default_factory=dict)
 ```
 
+`UsageRights` 是 v1 兼容元数据；内部个人使用运行时不以这些字段阻断采集、保存、
+EditorContext、LLM、embedding 或报告引用。
+
 ### 4.2 Instrument
 
 ```python
@@ -585,7 +588,7 @@ class NewsEvent(StrictModel):
     quality_flags: list[str] = Field(default_factory=list)
 ```
 
-规定：厂商标签只能进入 `vendor_annotations`；跨来源相似新闻共享 `cluster_id`，但各自保留 news ID、来源和时间；未获正文权限时 body 必须为 null。
+规定：厂商标签只能进入 `vendor_annotations`；跨来源相似新闻共享 `cluster_id`，但各自保留 news ID、来源和时间；body 是否为空仅由实际可用内容决定。
 
 ---
 
@@ -1103,7 +1106,7 @@ class EditorContext(StrictModel):
     data_fingerprint_sha256: str
 ```
 
-相同请求、相同 as_of、相同数据库快照必须得到相同 `data_fingerprint_sha256`。`external_llm_allowed=false` 的 body/summary 必须在服务层剔除；`fail_on_incomplete=true` 且必需数据 unavailable 时返回 503。
+相同请求、相同 as_of、相同数据库快照必须得到相同 `data_fingerprint_sha256`。内部个人使用不按旧 rights 标记剔除数据；`fail_on_incomplete=true` 且必需数据 unavailable 时返回 503。
 
 ---
 
@@ -1263,18 +1266,11 @@ earnings, corporate_action, credit_risk, market_structure
 - 未打标必须为 null，禁止补 neutral。
 - 历史分析前必须确认标签是当时生成还是后来重算。
 
-### 10.5 发送给 LLM 的字段
+### 10.5 内部 LLM 输入
 
-只有以下字段进入默认 allowlist：
-
-```text
-news_id, cluster_id, title, permitted summary, language,
-source_name, source_tier, canonical_url, published_at,
-available_at, regions, entities, topics, vendor_annotations,
-usage_rights, quality_flags
-```
-
-body 默认不发送。`external_llm_allowed=false` 时，根据授权剔除正文或摘要；不得通过嵌套 source/raw 字段绕过。
+内部个人工作流可以使用 EditorContext 中的全部规范化字段。新闻是否包含正文只由请求的
+`content_mode` 和仓库实际数据决定，不按旧 rights 标记二次过滤。API key、Authorization、
+Cookie、账号、密码和其他凭据始终禁止进入输入。
 
 ---
 
@@ -1308,7 +1304,7 @@ schema_changed.json
 duplicate_page.json
 ```
 
-fixture 使用合成或脱敏数据，不包含 token、Cookie、个人信息和无权保存的正文。
+fixture 使用合成或脱敏数据，不包含 token、Cookie 或个人信息。
 
 ### 11.2 测试命令
 
@@ -1418,7 +1414,7 @@ uv run pytest tests/live -m live -q
 | `PRV-020` | 返回未知额外字段 | extra=forbid，契约测试失败 |
 | `PRV-021` | malformed JSON / unexpected non-JSON provider payload | `ProviderSchemaError`，不能当空数据 |
 
-### 12.5 新闻去重、修订和授权
+### 12.5 新闻去重与修订
 
 | ID | 输入 | 期望输出 |
 |---|---|---|
@@ -1438,7 +1434,7 @@ uv run pytest tests/live -m live -q
 | `NEWS-014` | 两供应商相反情绪 | 分别保留，不生成平台统一标签 |
 | `NEWS-015` | “未下调”“不构成违约” | 规范化后仍保留否定词 |
 | `NEWS-016` | source ID 缺失、有稳定 URL/hash | 使用明确 identity_basis，不随机 ID |
-| `NEWS-017` | external_llm_allowed=false | EditorContext 不返回受限 body/summary |
+| `NEWS-017` | legacy external_llm_allowed=false | EditorContext 保留原始 summary/body |
 | `NEWS-018` | 500 对人工 golden 新闻 | 聚类 precision/recall 达第 14 节阈值 |
 
 ### 12.6 Point-in-time：发布阻断项
@@ -1519,7 +1515,7 @@ input_record_ids
 | `API-019` | `/health/live` | 只检查进程，200 |
 | `API-020` | DB down 时 `/health/ready` | 503 |
 | `API-021` | OpenAPI snapshot | 无未经批准破坏性变化 |
-| `API-022` | 无正文权限 token | 不通过嵌套字段泄漏正文 |
+| `API-022` | 含凭据字段的输入 | 不通过嵌套字段泄漏凭据 |
 | `API-023` | 固定 EditorContext 请求 | 四类数据、coverage、PIT 均正确 |
 | `API-024` | SQL/控制字符参数 | 参数化安全，无 DB 异常/注入 |
 
@@ -1539,7 +1535,7 @@ input_record_ids
 | `DEG-010` | 一条 poison record | 隔离并告警，其余按策略处理 |
 | `DEG-011` | worker 中途终止 | 重启从 checkpoint 恢复，无重复 |
 | `DEG-012` | 必填字段 schema drift | 阻断该 adapter，不批量写 null |
-| `DEG-013` | debug 日志下鉴权失败 | token/cookie/受限正文全部脱敏 |
+| `DEG-013` | debug 日志下鉴权失败 | token/cookie/账号全部脱敏 |
 | `DEG-014` | 系统时钟偏移超阈值 | readiness degraded 并告警 |
 | `DEG-015` | provider 恢复 | 自动补缺口，watermark 连续 |
 | `DEG-016` | 两来源数值冲突 | 保留双方和 conflict，不无规则覆盖 |
@@ -1563,7 +1559,7 @@ input_record_ids
 | `LIVE-005` | 宏观序列 | 日期单调、单位和 revision 可解析 |
 | `LIVE-006` | 两合法来源对账 | 同口径误差超阈值时生成 reconciliation |
 | `LIVE-007` | schema snapshot 对比 | 删除/改名/类型变化阻断 adapter |
-| `LIVE-008` | 运行日志扫描 | 无 token、Cookie、受限正文 |
+| `LIVE-008` | 运行日志扫描 | 无 token、Cookie、账号或密码 |
 
 在线测试不得断言“当前价格等于固定值”或“新闻数量一定大于零”，只能断言契约、不变量、范围和合理性。
 
@@ -1669,19 +1665,16 @@ schema_drift_status, last_success_at
 接入方式：
 账号负责人：
 允许服务器运行：
-允许历史存储：
-允许保存正文：
-保留期限：
-允许衍生分析：
-允许 embedding：
-允许发送外部 LLM：
-允许对外展示/再分发：
+历史存储说明：
+正文范围：
+保留期限说明：
+内部使用备注：
 要求署名：
 速率与并发限制：
 授权到期日：
 ```
 
-权限不明确时按不允许处理。商业新闻正文默认不可外发，直到获得书面确认。
+这些登记项用于来源研究和未来部署评估，不参与当前内部个人运行时准入。
 
 ### 15.2 Secret
 
@@ -1926,7 +1919,7 @@ PR 建议 ≤ 400 行逻辑代码；fixture、锁文件和生成文件可排除�
 错误与降级行为：
 公共 contract 是否变化：
 数据库是否变化：
-授权/保存/LLM 传输是否变化：
+内部数据使用边界是否变化：
 新增测试及测试 ID：
 本地测试结果：
 在线验证方式：
@@ -1983,7 +1976,7 @@ PR 建议 ≤ 400 行逻辑代码；fixture、锁文件和生成文件可排除�
 - 引入缓存、队列或新存储。
 - 改变重试、checkpoint 和 backfill 策略。
 - API 版本变化。
-- 保存正文、embedding 或发送外部 LLM。
+- 改变内部数据使用边界或凭据隔离规则。
 
 模板：
 
@@ -2129,5 +2122,5 @@ PR 建议 ≤ 400 行逻辑代码；fixture、锁文件和生成文件可排除�
 6. 所有历史结果满足 `available_at <= as_of`。
 7. 错误、空结果、partial 和 stale 必须可区分。
 8. 上游异常不能通过返回空数组吞掉。
-9. 未获授权的正文、密钥和 Cookie 不进入 Git、日志或 LLM。
+9. 密钥、账号、密码和 Cookie 不进入 Git、日志或 LLM。
 10. 没有测试、交叉评审和 CI 的代码不得进入 main。

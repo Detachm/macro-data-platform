@@ -142,6 +142,7 @@ class StoredDailyReport(StrictModel):
         visit(sections)
         return reference_ids
 
+
 class ReportGenerationAttempt(StrictModel):
     """Auditable state and model trace for one generation attempt."""
 
@@ -158,6 +159,7 @@ class ReportGenerationAttempt(StrictModel):
     source_ref_ids: list[str] = Field(default_factory=list)
     error_code: str | None = None
     response_payload: dict[str, Any] | None = None
+
 
 class DeliveryAttempt(StrictModel):
     """One idempotent delivery record; retries update this record, not the report."""

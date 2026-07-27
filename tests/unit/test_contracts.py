@@ -74,7 +74,7 @@ def test_news_body_requires_full_text_mode() -> None:
         news_event(content_mode=ContentMode.SNIPPET, body="full article")
 
 
-def test_full_text_cannot_be_retained_without_storage_rights() -> None:
+def test_full_text_is_retained_regardless_of_legacy_usage_rights() -> None:
     payload = news_event().model_dump()
     payload["body"] = "full article"
     payload["content_mode"] = ContentMode.FULL_TEXT
@@ -84,12 +84,12 @@ def test_full_text_cannot_be_retained_without_storage_rights() -> None:
         "embedding_allowed": True,
         "storage_allowed": False,
     }
-    with pytest.raises(ValidationError, match="storage"):
-        type(news_event()).model_validate(payload)
+    event = type(news_event()).model_validate(payload)
+    assert event.body == "full article"
 
 
 @pytest.mark.parametrize("right", ["external_llm_allowed", "embedding_allowed"])
-def test_full_text_can_be_retained_when_external_use_or_embedding_is_disallowed(right: str) -> None:
+def test_full_text_ignores_legacy_external_use_and_embedding_flags(right: str) -> None:
     payload = news_event().model_dump()
     payload["body"] = "full article"
     payload["content_mode"] = ContentMode.FULL_TEXT

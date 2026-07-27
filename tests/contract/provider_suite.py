@@ -546,7 +546,7 @@ async def assert_title_only_news_contract(
     assert item.quality_flags[0] == "synthetic"
 
 
-async def assert_restricted_news_editor_context_contract(
+async def assert_legacy_rights_do_not_filter_editor_context_contract(
     provider_cls: type[RegionalFixtureProvider],
     context: FetchContext,
 ) -> None:
@@ -575,8 +575,8 @@ async def assert_restricted_news_editor_context_contract(
 
     assert len(editor_context.news_events) == 1
     event = editor_context.news_events[0]
-    assert event.content_mode is ContentMode.HEADLINE
-    assert event.summary is None
+    assert event.content_mode is ContentMode.SNIPPET
+    assert event.summary is not None
     assert event.body is None
 
 

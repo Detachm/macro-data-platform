@@ -16,11 +16,6 @@ from macro_platform.api.exception_handlers import (
 )
 from macro_platform.api.routes import editor, health, instruments, macro, market, meta, news
 from macro_platform.config import Settings, get_settings
-from macro_platform.governance.source_policy import (
-    NonProductionSourcePolicy,
-    SourcePolicy,
-    load_production_source_policy,
-)
 from macro_platform.providers.base import ProviderError
 from macro_platform.providers.registry import ProviderRegistry
 from macro_platform.services.editor_context_service import DataUnavailableError
@@ -37,7 +32,6 @@ def create_app(
     settings: Settings | None = None,
     repository: DataRepository | None = None,
     provider_registry: ProviderRegistry | None = None,
-    source_policy: SourcePolicy | None = None,
 ) -> FastAPI:
     resolved_settings = settings or get_settings()
     resolved_database = Database(resolved_settings.database_url)
@@ -52,20 +46,12 @@ def create_app(
     ):
         raise ValueError("production app requires a PostgreSQL data repository")
     resolved_registry = provider_registry or ProviderRegistry()
-    resolved_source_policy = source_policy or (
-        load_production_source_policy()
-        if resolved_settings.app_env == "production"
-        else NonProductionSourcePolicy()
-    )
-    if resolved_settings.app_env == "production" and not resolved_source_policy.production_enforced:
-        raise ValueError("production source policy must be enforced")
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.database = resolved_database
         app.state.repository = resolved_repository
         app.state.provider_registry = resolved_registry
-        app.state.source_policy = resolved_source_policy
         yield
         await resolved_registry.close()
         await resolved_database.dispose()

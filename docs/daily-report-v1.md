@@ -99,7 +99,7 @@ freshness 是相对于本次快照 cutoff 的数据年龄，而不是抓取完�
 | `macro.*.latest_key_observations` | CN/HK/US | 宏观背景补充 | 否 |
 | `market.us.core_indices.previous_close` | US | 美国 highlights、摘要、关键变动 | 是 |
 
-必需输入必须在 cutoff 前存在、通过公共 contract、满足 freshness 和 rights 规则。可选输入缺失时可以发布 `degraded` 报告，但必须在 `data_quality_notice` 中披露。`calendar.macro_releases_7d` 可以是合法的空列表，但抓取失败或无法证明覆盖窗口时是 `unavailable`。
+必需输入必须在 cutoff 前存在、通过公共 contract 并满足 freshness 规则。可选输入缺失时可以发布 `degraded` 报告，但必须在 `data_quality_notice` 中披露。`calendar.macro_releases_7d` 可以是合法的空列表，但抓取失败或无法证明覆盖窗口时是 `unavailable`。
 
 ## 4. 输出结构
 
@@ -133,12 +133,12 @@ freshness 是相对于本次快照 cutoff 的数据年龄，而不是抓取完�
 | `us_highlights` | US 核心指数 | 核心指数不可用为 `unavailable`；新闻或补充指标缺失为 `degraded` | 1,000 |
 | `key_movements` | 通过校验的数值、方向、单位和来源 | 无可验证变动则空 `items` 并标记原因；不得猜测方向 | 1,200 |
 | `upcoming_calendar` | `calendar.macro_releases_7d` | 合法空列表仍为 `complete`；日历数据集不可用为 `unavailable` | 1,600 |
-| `data_quality_notice` | 快照质量、freshness 和 rights 结果 | 始终输出；完整报告也必须明确“无问题” | 600 |
+| `data_quality_notice` | 快照质量和 freshness 结果 | 始终输出；完整报告也必须明确“无问题” | 600 |
 | `source_references` | 本报告实际使用的来源记录 | 每个引用必须能回到公共 `SourceRef` 和输入 snapshot | 4,000 |
 
 ### 4.1 来源引用规则
 
-`sections.source_references.items[]` 使用已有 `SourceRef` 的语义，至少包括 `source_ref_id`、`provider_id`、`provider_record_id`、`source_name`、`source_url`（若来源没有 URL 则为 `null`）、`retrieved_at` 和 `checksum_sha256`。报告可以记录 `external_llm_allowed` 这类 rights 结果，但不得输出 token、Cookie、账号、原始受限正文或供应商凭据。
+`sections.source_references.items[]` 使用已有 `SourceRef` 的语义，至少包括 `source_ref_id`、`provider_id`、`provider_record_id`、`source_name`、`source_url`（若来源没有 URL 则为 `null`）、`retrieved_at` 和 `checksum_sha256`。报告可以保留 legacy rights 元数据，但不得输出 token、Cookie、账号、密码或供应商凭据。
 
 每个报告事实的 `fact_id` 必须出现在本次 `input_snapshot.fact_ids` 中；snapshot 不得以未声明的聚合 ID 代替实际事实。`source_ref_ids` 必须是 `sections.source_references.items[]` 中存在的 ID；没有来源 ID 的数字、日期、方向或引用不能发布。
 
@@ -146,9 +146,9 @@ freshness 是相对于本次快照 cutoff 的数据年龄，而不是抓取完�
 
 ### 5.1 状态定义
 
-- `complete`：所有必需输入可用、未过期、通过权限和契约校验，所有 section 满足要求；可以 `published`。
+- `complete`：所有必需输入可用、未过期、通过契约校验，所有 section 满足要求；可以 `published`。
 - `degraded`：必需输入满足要求，但可选输入缺失、过期、节假日无行情或存在已披露修订；可以发布，但必须列出原因。
-- `incomplete`：任何必需输入为 `missing`、`stale`、`late`、`unavailable`、无权限或 schema/质量校验失败；`publication.decision` 必须是 `not_published`。
+- `incomplete`：任何必需输入为 `missing`、`stale`、`late`、`unavailable` 或 schema/质量校验失败；`publication.decision` 必须是 `not_published`。
 - `unavailable`：没有任何可安全使用的事实。section 可以使用此状态，但不得伪造空白成功结果。
 
 ### 5.2 不完整、过期和迟到
@@ -173,11 +173,11 @@ freshness 是相对于本次快照 cutoff 的数据年龄，而不是抓取完�
 
 - 只消费 `publication.decision=published` 的报告正文；`not_published` 只发送明确的阻断提示或不发送。
 - 卡片文字必须来自已通过校验的 section，不能在交付层重新查询 provider 或补写事实。
-- 卡片不得包含未授权正文、凭据、内部数据库连接信息或未经 `source_references` 证明的数字。
+- 卡片不得包含凭据、内部数据库连接信息或未经 `source_references` 证明的数字。
 
 ## 7. 明确不属于本任务
 
-- provider adapter、实时数据源接入、数据授权批准：由 #26、#28 等任务负责。
+- provider adapter、实时数据源接入：由 #26、#28 等任务负责。
 - raw/audit 持久化和报告版本存储：由 #27 负责。
 - LLM client、prompt、结构化生成：由 #30 负责。
 - 事实校验、fallback 和最终发布阻断：由 #31 负责。

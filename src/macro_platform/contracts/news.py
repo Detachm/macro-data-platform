@@ -83,11 +83,9 @@ class NewsEvent(StrictModel):
     quality_flags: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def validate_content_rights(self) -> NewsEvent:
+    def validate_content(self) -> NewsEvent:
         if self.body is not None and self.content_mode is not ContentMode.FULL_TEXT:
             raise ValueError("body requires content_mode=full_text")
-        if self.body is not None and not self.usage_rights.storage_allowed:
-            raise ValueError("body cannot be retained when storage is not allowed")
         if self.available_at < self.published_at:
             raise ValueError("available_at cannot precede published_at")
         return self

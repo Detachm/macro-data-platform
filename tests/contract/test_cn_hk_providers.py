@@ -31,10 +31,10 @@ from tests.contract.provider_suite import (
     assert_fixture_pagination_contract,
     assert_full_text_storage_rights_contract,
     assert_half_open_boundary_contract,
+    assert_legacy_rights_do_not_filter_editor_context_contract,
     assert_news_identity_contract,
     assert_news_normalization_contract,
     assert_registry_role_contract,
-    assert_restricted_news_editor_context_contract,
     assert_source_checksum_excludes_retrieved_at_contract,
     assert_success_fixture_contract,
     assert_title_fallback_news_identity_contract,
@@ -198,11 +198,11 @@ async def test_news_003_title_fallback_is_shared_by_cn_and_hk(
 
 @pytest.mark.parametrize("provider_cls", [CnSyntheticProvider, HkSyntheticProvider])
 @pytest.mark.asyncio
-async def test_news_017_editor_context_omits_restricted_summary_and_body(
+async def test_news_017_editor_context_ignores_legacy_rights_flags(
     context: FetchContext,
     provider_cls: type[RegionalFixtureProvider],
 ) -> None:
-    await assert_restricted_news_editor_context_contract(provider_cls, context)
+    await assert_legacy_rights_do_not_filter_editor_context_contract(provider_cls, context)
 
 
 @pytest.mark.parametrize(

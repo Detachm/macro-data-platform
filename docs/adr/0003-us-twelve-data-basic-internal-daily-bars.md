@@ -1,6 +1,6 @@
 # ADR 0003：Twelve Data Basic 的 US 内部日线范围
 
-- 状态：accepted
+- 状态：partially superseded by ADR 0005
 - 日期：2026-07-27
 - 决策人：@Detachm
 - 关联 Issue / PR：[Issue #26](https://github.com/Detachm/macro-data-platform/issues/26)、[Issue #34](https://github.com/Detachm/macro-data-platform/issues/34)
@@ -22,23 +22,22 @@ ADR 0001 将 US 日线行情保留为 fixture-only：Polygon/Massive 需要商�
 
 ## 决策
 
-- `us.twelve-data.v1 / bars / US` 是目前唯一 `approved + production_enabled` 的生产数据策略条目。
-- 允许范围只包括 `SPY`、`QQQ`、`DIA` 的日线原始 OHLCV；`allowed_symbols` 由 policy 决定，#34 adapter 必须只请求、输出并持久化这三个 provider symbol。
+- `us.twelve-data.v1 / bars / US` 曾是来源策略的唯一生产条目；ADR 0005 已删除该运行时策略。
+- `SPY`、`QQQ`、`DIA` 的日线原始 OHLCV 仍是首批 adapter 的推荐范围，但不再由 runtime policy 限制。
 - 使用 API key 的方式必须是运行时 Secret Manager；key、账号和套餐标识不得进入仓库、fixture 或日志。
-- 允许内部 ingestion 和 `canonical_facts` 保存。`available_at` 没有可靠 provider dissemination proof 时使用平台 `first_seen`。
-- 禁止外部 LLM、embedding、报告引用及再分发。生产 `EditorContext` 的政策校验必须因此拒绝该来源进入任何需要外部 LLM 或 citation 的消费路径。
-- 对其他 Twelve Data dataset、其他 US symbol、intraday、调整行情或任何放宽外部使用边界，都需要新的负责人审批与 policy/ADR 变更。
+- 内部 ingestion 和 `canonical_facts` 保存遵循通用存储规则；`available_at` 没有可靠 provider dissemination proof 时使用平台 `first_seen`。
+- 外部 LLM、embedding、报告引用和再分发标记仅保留为历史元数据，不再阻断内部个人工作流。
+- 其他 Twelve Data dataset、其他 US symbol、intraday 或调整行情仍需要相应 adapter 实现与测试。
 
 ## 后果
 
-- #34 可以实现一个受 policy symbol scope 约束的 live daily-bars adapter，并保留 fixture adapter 仅用于确定性测试。
-- 该批准不等价于对外报告数据授权。若 #25 的最终报告会向第三方展示 US market 数据，必须先获得适用的 display/redistribution 授权，再修改 `citation_allowed` / `external_llm_allowed`。
-- 错误配置为额外 symbol、外部 LLM 或 citation 时，生产策略会拒绝相应消费；adapter 仍必须在请求前执行 symbol scope。
-- 当套餐、额度或条款变化时，先停用 policy role 和 runtime key，再复核历史 canonical facts 的保留/删除要求。
+- #34 可以实现 live daily-bars adapter，并保留 fixture adapter 仅用于确定性测试。
+- 本 ADR 不再定义报告或 LLM 的 runtime 准入；未来若改变部署形态，以 ADR 0005 的集中式策略原则重新设计。
+- adapter 可自行约束请求 symbol，避免超出已实现和已测试的范围。
+- 当套餐、额度或条款变化时，按 provider 的技术错误、配额和凭据流程处理。
 
 ## 验证
 
-- `GOV-026`：打包策略对 `us.twelve-data.v1 / bars / US` 允许 ingestion 与 `canonical_facts`，返回精确 symbol scope，并拒绝 external LLM 与 citation。
-- #34：live adapter 对 `SPY`、`QQQ`、`DIA` 运行共享 provider contract、错误映射、PIT、checksum 和 two-date report-input 验收；adapter 必须验证任何 scope 外 symbol 都不请求 provider。
+- #34：live adapter 对 `SPY`、`QQQ`、`DIA` 运行共享 provider contract、错误映射、PIT、checksum 和 two-date report-input 验收。
 - 检查命令：`.venv/bin/ruff format --check .`、`.venv/bin/ruff check .`、`.venv/bin/mypy --strict src`、`.venv/bin/pytest -m "not live" -q`。
 - 验收人：@Detachm。
