@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
+from uuid import uuid4
 
 import pytest
 
@@ -164,6 +165,25 @@ def test_rpt_029_mismatched_fact_set_blocks_even_when_inputs_are_available() -> 
     ]
 
 
+def test_rpt_029_duplicate_declared_fact_id_blocks_even_when_payload_is_nonempty() -> None:
+    snapshot = _snapshot({}).model_copy(
+        update={
+            "fact_ids": ["fact-scheduler-quality", "fact-scheduler-quality"],
+            "payload": {
+                **_snapshot({}).payload,
+                "fact_ids": ["fact-scheduler-quality", "fact-scheduler-quality"],
+            },
+        }
+    )
+
+    result = ReportInputQualityGate().evaluate(snapshot)
+
+    assert result.status == "blocked"
+    assert [(issue.input_id, issue.code) for issue in result.issues] == [
+        ("report.facts", "REQUIRED_FACTS_UNAVAILABLE")
+    ]
+
+
 @dataclass
 class _Task:
     task_id: str
@@ -182,7 +202,7 @@ class _Task:
             task_id=self.task_id,
             provider_role="test.provider.primary",
             status="succeeded",
-            run_id=f"run-{self.task_id}",
+            run_id=uuid4(),
         )
 
 

@@ -16,11 +16,14 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from typing import Literal, Protocol
+from uuid import UUID
 
 import structlog
 from sqlalchemy import text
 
 from macro_platform.config import get_settings
+from macro_platform.contracts.common import Region
+from macro_platform.contracts.provider import Dataset
 from macro_platform.observability import configure_logging
 from macro_platform.observability.metrics import SCHEDULED_REPORT_RUNS, SCHEDULED_TASK_RUNS
 from macro_platform.storage.database import Database
@@ -34,11 +37,11 @@ class ScheduledTaskResult:
     task_id: str
     provider_role: str
     status: ScheduledTaskStatus
-    dataset: str | None = None
-    region: str | None = None
+    dataset: Dataset | None = None
+    region: Region | None = None
     record_count: int = 0
     attempt_no: int = 1
-    run_id: str | None = None
+    run_id: UUID | None = None
     error_code: str | None = None
 
 
@@ -146,7 +149,7 @@ class ScheduledIngestionWorker:
 
             task_results = tuple([await self._run_task(task, report_date) for task in self._tasks])
             status = _worker_status(task_results, self._tasks)
-            run_ids = sorted({task.run_id for task in task_results if task.run_id is not None})
+            run_ids = sorted(str(task.run_id) for task in task_results if task.run_id is not None)
             result = ScheduledWorkerResult(report_date, status, task_results)
             SCHEDULED_REPORT_RUNS.labels(status=status).inc()
             await self._logger.ainfo(
@@ -243,10 +246,10 @@ class ScheduledIngestionWorker:
                 report_date=report_date.isoformat(),
                 task_id=result.task_id,
                 provider_role=result.provider_role,
-                dataset=result.dataset,
-                region=result.region,
+                dataset=result.dataset.value if result.dataset is not None else None,
+                region=result.region.value if result.region is not None else None,
                 attempt_no=result.attempt_no,
-                run_id=result.run_id,
+                run_id=str(result.run_id) if result.run_id is not None else None,
                 terminal=result.status,
                 duration_ms=_duration_ms(started),
                 record_count=result.record_count,
