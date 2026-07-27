@@ -1,0 +1,166 @@
+{
+  "contract_name": "DailyReport",
+  "contract_version": "1.0",
+  "report_id": "daily-report-2026-07-24-v1",
+  "report_date": "2026-07-24",
+  "timezone": "Asia/Shanghai",
+  "schedule": {
+    "publish_time_local": "08:30:00",
+    "late_data_cutoff_local": "08:15:00",
+    "run_policy": "every_calendar_day",
+    "holiday_policy": "publish_with_notice",
+    "calendar_id": "cn_hk_report_calendar_v1",
+    "calendar_lookahead_days": 7,
+    "freshness": {
+      "market_close_max_age_hours": 36,
+      "official_news_max_age_hours": 24,
+      "macro_observation_max_age_days": 45
+    }
+  },
+  "calendar": {
+    "day_type": "business_day",
+    "holiday_notice": null
+  },
+  "generated_at": "2026-07-24T00:20:04Z",
+  "input_snapshot": {
+    "snapshot_id": "snapshot-daily-macro-2026-07-24-v1",
+    "snapshot_version": "1.0",
+    "as_of": "2026-07-24T00:15:00Z",
+    "cutoff_at": "2026-07-24T00:15:00Z",
+    "fingerprint_sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+    "fact_ids": [
+      "fact.market.cn.core_indices.previous_close",
+      "fact.market.us.core_indices.previous_close"
+    ]
+  },
+  "status": "incomplete",
+  "publication": {
+    "decision": "not_published",
+    "reason_code": "REQUIRED_INPUT_UNAVAILABLE",
+    "scheduled_publish_at": "2026-07-24T00:30:00Z",
+    "published_at": null
+  },
+  "data_quality": {
+    "status": "incomplete",
+    "missing_required_inputs": [
+      {
+        "input_id": "market.hk.core_indices.previous_close",
+        "reason_code": "REQUIRED_INPUT_UNAVAILABLE",
+        "reason": "no validated core-index close before cutoff"
+      },
+      {
+        "input_id": "news.cn.official_headlines_24h",
+        "reason_code": "REQUIRED_INPUT_UNAVAILABLE",
+        "reason": "official headlines arrived after cutoff"
+      }
+    ],
+    "stale_inputs": [],
+    "late_inputs": [
+      {
+        "input_id": "news.cn.official_headlines_24h",
+        "reason_code": "LATE_DATA",
+        "reason": "available_at is after 2026-07-24T00:15:00Z"
+      }
+    ],
+    "revised_inputs": [],
+    "unavailable_inputs": [
+      {
+        "input_id": "market.hk.core_indices.previous_close",
+        "reason_code": "REQUIRED_INPUT_UNAVAILABLE",
+        "reason": "no validated core-index close before cutoff"
+      }
+    ]
+  },
+  "sections": {
+    "executive_summary": {
+      "section_id": "executive_summary",
+      "status": "incomplete",
+      "character_count": 18,
+      "max_characters": 800,
+      "text": "日报未发布：港股核心收盘数据不可用。",
+      "fact_ids": ["fact.market.cn.core_indices.previous_close"],
+      "source_ref_ids": ["src-cn-market-1"]
+    },
+    "cn_highlights": {
+      "section_id": "cn_highlights",
+      "status": "degraded",
+      "character_count": 24,
+      "max_characters": 1000,
+      "text": "中国市场数据可用，但官方头条在截止时间前未到达。",
+      "fact_ids": ["fact.market.cn.core_indices.previous_close"],
+      "source_ref_ids": ["src-cn-market-1"]
+    },
+    "hk_highlights": {
+      "section_id": "hk_highlights",
+      "status": "unavailable",
+      "character_count": 12,
+      "max_characters": 1000,
+      "text": "港股核心收盘数据不可用。",
+      "fact_ids": [],
+      "source_ref_ids": []
+    },
+    "us_highlights": {
+      "section_id": "us_highlights",
+      "status": "complete",
+      "character_count": 14,
+      "max_characters": 1000,
+      "text": "美股数据已通过截止时间校验。",
+      "fact_ids": ["fact.market.us.core_indices.previous_close"],
+      "source_ref_ids": ["src-us-market-1"]
+    },
+    "key_movements": {
+      "section_id": "key_movements",
+      "status": "incomplete",
+      "character_count": 0,
+      "max_characters": 1200,
+      "items": [],
+      "reason_code": "REQUIRED_INPUT_UNAVAILABLE"
+    },
+    "upcoming_calendar": {
+      "section_id": "upcoming_calendar",
+      "status": "complete",
+      "character_count": 0,
+      "max_characters": 1600,
+      "lookahead_days": 7,
+      "items": []
+    },
+    "data_quality_notice": {
+      "section_id": "data_quality_notice",
+      "status": "complete",
+      "character_count": 25,
+      "max_characters": 600,
+      "text": "港股核心数据不可用；中国官方头条迟到，日报未发布。",
+      "issue_codes": ["REQUIRED_INPUT_UNAVAILABLE", "LATE_DATA"],
+      "fact_ids": [],
+      "source_ref_ids": []
+    },
+    "source_references": {
+      "section_id": "source_references",
+      "status": "complete",
+      "character_count": 0,
+      "max_characters": 4000,
+      "items": [
+        {
+          "source_ref_id": "src-cn-market-1",
+          "provider_id": "cn.market.fixture",
+          "provider_record_id": "cn-market:2026-07-23",
+          "source_name": "CN market daily fixture",
+          "source_url": "https://example.invalid/sources/cn-market-2026-07-23",
+          "retrieved_at": "2026-07-24T00:05:00Z",
+          "checksum_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+          "external_llm_allowed": true
+        },
+        {
+          "source_ref_id": "src-us-market-1",
+          "provider_id": "us.market.fixture",
+          "provider_record_id": "us-market:2026-07-23",
+          "source_name": "US market daily fixture",
+          "source_url": "https://example.invalid/sources/us-market-2026-07-23",
+          "retrieved_at": "2026-07-24T00:06:00Z",
+          "checksum_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+          "external_llm_allowed": true
+        }
+      ]
+    }
+  }
+}
