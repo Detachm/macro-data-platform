@@ -22,7 +22,7 @@ from macro_platform.governance.source_policy import (
 )
 from macro_platform.jobs import runner as runner_module
 from macro_platform.jobs.ingestion_checkpoint import IngestionCheckpointService
-from macro_platform.jobs.runner import JobRunner
+from macro_platform.jobs.runner import IngestionExecutionContext, JobRunner
 from macro_platform.storage.database import Database
 from macro_platform.storage.repositories import IngestionRunLease
 
@@ -66,11 +66,12 @@ class _CheckpointedHandler:
         request: IngestJobRequest,
         checkpoints: IngestionCheckpointService,
         database: Database,
+        execution: IngestionExecutionContext,
     ) -> IngestJobResult:
         assert isinstance(checkpoints, IngestionCheckpointService)
         assert isinstance(database, Database)
         self.was_checkpointed = True
-        return _result(request)
+        return _result(request).model_copy(update={"run_id": execution.run_id})
 
 
 class _PolicyAwareHandler:
@@ -97,12 +98,8 @@ class _WaitingCheckpointedHandler(_RetentionAwareHandler):
     def __init__(self) -> None:
         super().__init__()
         self.calls = 0
-        self.run_id = None
         self.started = asyncio.Event()
         self.release = asyncio.Event()
-
-    def set_durable_run_id(self, run_id: object) -> None:
-        self.run_id = run_id
 
     async def run(self, request: IngestJobRequest) -> IngestJobResult:
         raise AssertionError("checkpointed handler must not use the non-durable path")
@@ -112,14 +109,15 @@ class _WaitingCheckpointedHandler(_RetentionAwareHandler):
         request: IngestJobRequest,
         checkpoints: IngestionCheckpointService,
         database: Database,
+        execution: IngestionExecutionContext,
     ) -> IngestJobResult:
-        assert self.run_id is not None
+        assert execution.retention_policy is not None
         assert isinstance(checkpoints, IngestionCheckpointService)
         self.calls += 1
         self.started.set()
         await self.release.wait()
         result = _result(request)
-        return result.model_copy(update={"run_id": self.run_id})
+        return result.model_copy(update={"run_id": execution.run_id})
 
 
 class _FakeUnitOfWork:
@@ -205,7 +203,14 @@ def _approved_policy(*, retention_rule: RetentionRule) -> ProductionSourcePolicy
     )
 
 
-async def test_job_runner_invokes_checkpointed_ingestion_path() -> None:
+async def test_job_runner_invokes_checkpointed_ingestion_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _WaitingRunRepository.run_id = uuid4()
+    _WaitingRunRepository.completed = None
+    _WaitingRunRepository.reservations = 0
+    monkeypatch.setattr(runner_module, "UnitOfWork", _FakeUnitOfWork)
+    monkeypatch.setattr(runner_module, "IngestionRunRepository", _WaitingRunRepository)
     database = Database("postgresql+asyncpg://macro:macro@127.0.0.1:5432/macro_data")
     handler = _CheckpointedHandler()
     try:
