@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 from macro_platform.contracts.common import WarningItem
 from macro_platform.contracts.market import MarketObservation, MarketObservationQuery
@@ -12,8 +12,9 @@ from macro_platform.contracts.provider import (
     IngestJobResult,
     ProviderPage,
 )
-from macro_platform.governance.source_policy import IngestionRetentionPolicy, RetentionRule
+from macro_platform.governance.source_policy import RetentionRule
 from macro_platform.jobs.ingestion_checkpoint import CommittedPage, IngestionCheckpointService
+from macro_platform.jobs.runner import IngestionExecutionContext
 from macro_platform.normalization.common import canonical_json_checksum
 from macro_platform.providers._regional_fixture import RegionalFixtureProvider
 from macro_platform.providers.base import ProviderCursorError
@@ -35,8 +36,6 @@ class CnHkFixtureIngestHandler:
             else supports_point_in_time
         )
         self._recovery_provider = provider
-        self._retention_policy: IngestionRetentionPolicy | None = None
-        self._durable_run_id: UUID | None = None
 
     def with_recovery_provider(self, provider: RegionalFixtureProvider) -> CnHkFixtureIngestHandler:
         self._recovery_provider = provider
@@ -46,12 +45,6 @@ class CnHkFixtureIngestHandler:
     def provider_id(self) -> str:
         return self._provider.provider_id
 
-    def set_retention_policy(self, policy: IngestionRetentionPolicy) -> None:
-        self._retention_policy = policy
-
-    def set_durable_run_id(self, run_id: UUID) -> None:
-        self._durable_run_id = run_id
-
     async def run(self, request: IngestJobRequest) -> IngestJobResult:
         raise RuntimeError("CN/HK ingestion must be run through JobRunner with a database")
 
@@ -60,15 +53,13 @@ class CnHkFixtureIngestHandler:
         request: IngestJobRequest,
         checkpoints: IngestionCheckpointService,
         database: Database,
+        execution: IngestionExecutionContext,
     ) -> IngestJobResult:
         if request.dataset is not Dataset.MARKET_OBSERVATIONS:
             raise ValueError("CN/HK fixture ingestion currently supports market_observations only")
         if request.regions != self._provider.region_set():
             raise ValueError("ingest request regions do not match provider")
-        if self._durable_run_id is None:
-            raise RuntimeError("CN/HK ingestion requires a durable run ID from JobRunner")
-        run_id = self._durable_run_id
-        self._durable_run_id = None
+        run_id = execution.run_id
         await checkpoints.reject_unsupported_historical_pit(
             database,
             run_id=run_id,
@@ -156,8 +147,8 @@ class CnHkFixtureIngestHandler:
         )
         retention_rule = (
             RetentionRule.CANONICAL_FACTS
-            if self._retention_policy is None
-            else self._retention_policy.rule_for(self._provider.region)
+            if execution.retention_policy is None
+            else execution.retention_policy.rule_for(self._provider.region)
         )
         async with UnitOfWork(database).transaction() as session:
             repository = IngestionCheckpointRepository(session, ingestion_run_id=run_id)
