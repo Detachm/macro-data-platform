@@ -17,6 +17,7 @@ from macro_platform.services.llm import (
 )
 from macro_platform.services.report_generator import (
     DailyReportInputPreset,
+    ReportGenerationError,
     ReportGenerationService,
     ReportPromptBuilder,
 )
@@ -44,6 +45,7 @@ def _snapshot() -> ReportInputSnapshot:
         **input_snapshot,
         "editor_context": {"facts": ["approved fact payload"]},
         "source_ref_ids": source_ref_ids,
+        "source_references": report["sections"]["source_references"]["items"],
     }
     return ReportInputSnapshot(
         snapshot_id=input_snapshot["snapshot_id"],
@@ -111,12 +113,22 @@ def test_rpt_030_daily_report_contract_accepts_canonical_fixture() -> None:
 
 
 def test_rpt_030_input_preset_is_point_in_time_and_versioned() -> None:
-    request = DailyReportInputPreset().request(regions={Region.CN, Region.HK}, as_of=NOW)
+    request = DailyReportInputPreset().request(as_of=NOW)
 
     assert request.preset_id == "daily_macro_v1"
     assert DailyReportInputPreset.version == "1.0.0"
     assert request.require_point_in_time is True
-    assert request.regions == {Region.CN, Region.HK}
+    assert request.regions == {Region.CN, Region.HK, Region.US}
+    assert request.market.instrument_ids == ["ins_cn_csi300", "ins_hk_hsi", "ins_us_spx"]
+
+
+def test_rpt_030_prompt_builder_rejects_sources_denied_for_external_llm() -> None:
+    snapshot = _snapshot()
+    denied = snapshot.model_copy(deep=True)
+    denied.payload["source_references"][0]["external_llm_allowed"] = False
+
+    with pytest.raises(ReportGenerationError, match="denied for external LLM"):
+        ReportPromptBuilder().build(denied, model="test-model", parameters={})
 
 
 def test_rpt_030_prompt_builder_rejects_restricted_snapshot_payload() -> None:
@@ -220,3 +232,28 @@ async def test_rpt_030_existing_report_version_is_not_overwritten() -> None:
     assert result.report is None
     assert result.attempt.lifecycle_status == "failed"
     assert result.attempt.error_code == "REPORT_ALREADY_EXISTS"
+
+
+@pytest.mark.asyncio
+async def test_rpt_030_rejects_unknown_nested_fact_ids_before_persistence() -> None:
+    snapshot = _snapshot()
+    output = _success_payload()
+    output["sections"]["key_movements"]["items"][0]["fact_ids"] = ["unknown-fact"]
+    store = _FakeReportStore(snapshot)
+
+    result = await ReportGenerationService(
+        _FakeLlm([LlmResponse(structured_output=output)]),
+        clock=lambda: NOW,
+        max_attempts=1,
+    ).generate(
+        store,
+        snapshot_id=snapshot.snapshot_id,
+        report_id="daily-report-2026-07-23-invalid-fact",
+        report_version="invalid-fact-v1",
+        model="test-model",
+        parameters={},
+    )
+
+    assert result.report is None
+    assert result.attempt.lifecycle_status == "failed"
+    assert result.attempt.error_code == "MALFORMED_STRUCTURED_OUTPUT"

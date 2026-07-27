@@ -12,7 +12,7 @@ from pydantic import ValidationError
 
 from macro_platform.contracts.common import Region
 from macro_platform.contracts.editor import EditorContextRequest
-from macro_platform.contracts.report import DailyReport
+from macro_platform.contracts.report import DailyReport, ReportSourceReference
 from macro_platform.services.llm import (
     LlmClient,
     LlmRequest,
@@ -31,6 +31,7 @@ REPORT_INPUT_PRESET_ID = "daily_macro_v1"
 REPORT_INPUT_PRESET_VERSION = "1.0.0"
 _REPORT_TIMEZONE = ZoneInfo("Asia/Shanghai")
 _REPORT_PUBLISH_TIME = time(8, 30)
+_REPORT_REGIONS = {Region.CN, Region.HK, Region.US}
 _FORBIDDEN_PROMPT_KEYS = frozenset(
     {
         "api_key",
@@ -61,16 +62,31 @@ class DailyReportInputPreset:
     preset_id = REPORT_INPUT_PRESET_ID
     version = REPORT_INPUT_PRESET_VERSION
 
-    def request(
-        self,
-        *,
-        regions: set[Region],
-        as_of: datetime,
-    ) -> EditorContextRequest:
+    def request(self, *, as_of: datetime) -> EditorContextRequest:
         return EditorContextRequest(
             as_of=as_of,
-            regions=regions,
+            regions=set(_REPORT_REGIONS),
             preset_id=self.preset_id,
+            market={
+                "instrument_ids": ["ins_cn_csi300", "ins_hk_hsi", "ins_us_spx"],
+                "lookback_sessions": 5,
+                "metric_codes": ["flow.northbound.net_buy", "breadth.advancers"],
+            },
+            macro={
+                "series_ids": ["macro:CN:NBS:CPI_YOY", "macro:US:BLS:CPI_ALL_ITEMS"],
+                "lookback_days": 120,
+                "upcoming_days": 7,
+                "revision_policy": "latest_as_of",
+            },
+            news={
+                "lookback_hours": 24,
+                "topics": ["monetary_policy", "economic_data"],
+                "source_tiers": ["official", "licensed_media"],
+                "languages": ["zh-CN", "en-US"],
+                "max_items": 100,
+                "max_per_cluster": 1,
+                "content_mode": "snippet",
+            },
             require_point_in_time=True,
             fail_on_incomplete=False,
         )
@@ -106,11 +122,8 @@ class ReportPromptBuilder:
         _assert_prompt_safe(prompt_payload)
         _assert_prompt_safe(dict(parameters), path="parameters")
 
-        source_ref_ids = snapshot.payload.get("source_ref_ids", [])
-        if not isinstance(source_ref_ids, list) or not all(
-            isinstance(source_ref_id, str) for source_ref_id in source_ref_ids
-        ):
-            raise ReportGenerationError("input snapshot source_ref_ids must be strings")
+        source_references = _external_llm_source_references(snapshot)
+        source_ref_ids = [source.source_ref_id for source in source_references]
         return LlmRequest(
             model=model,
             prompt_version=self.prompt_version,
@@ -213,20 +226,31 @@ class ReportGenerationService:
             except (LlmStructuredOutputError, ValidationError, ValueError, TypeError):
                 error_code = "MALFORMED_STRUCTURED_OUTPUT"
             else:
-                report = StoredDailyReport(
-                    report_id=report_id,
-                    report_date=snapshot.report_date,
-                    report_version=report_version,
-                    contract_version="1.0",
-                    input_snapshot_id=snapshot.snapshot_id,
-                    status=payload["status"],
-                    publication_decision=payload["publication"]["decision"],
-                    generated_at=payload["generated_at"],
-                    payload=payload,
-                    lifecycle_status="generated",
-                    generation_id=attempt.generation_id,
-                )
-                if not await store.put_report(report):
+                try:
+                    report = StoredDailyReport(
+                        report_id=report_id,
+                        report_date=snapshot.report_date,
+                        report_version=report_version,
+                        contract_version="1.0",
+                        input_snapshot_id=snapshot.snapshot_id,
+                        status=payload["status"],
+                        publication_decision=payload["publication"]["decision"],
+                        generated_at=payload["generated_at"],
+                        payload=payload,
+                        lifecycle_status="generated",
+                        generation_id=attempt.generation_id,
+                    )
+                    inserted = await store.put_report(report)
+                except (ValidationError, ValueError, TypeError):
+                    attempt = attempt.model_copy(
+                        update={
+                            "lifecycle_status": "failed",
+                            "error_code": "REPORT_VALIDATION_FAILED",
+                        }
+                    )
+                    await store.update_generation_attempt(attempt)
+                    return ReportGenerationResult(report=None, attempt=attempt)
+                if not inserted:
                     attempt = attempt.model_copy(
                         update={
                             "lifecycle_status": "failed",
@@ -301,6 +325,21 @@ class ReportGenerationService:
                 },
             }
         )
+        sections = output.get("sections")
+        if isinstance(sections, dict):
+            sections["source_references"] = {
+                "section_id": "source_references",
+                "status": "complete",
+                "character_count": 0,
+                "max_characters": 4000,
+                "text": None,
+                "fact_ids": [],
+                "source_ref_ids": [],
+                "items": [
+                    source.model_dump(mode="json")
+                    for source in _external_llm_source_references(snapshot)
+                ],
+            }
         return output
 
 
@@ -321,6 +360,31 @@ def _assert_prompt_safe(value: Any, *, path: str = "input_payload") -> None:
     elif isinstance(value, list):
         for index, child in enumerate(value):
             _assert_prompt_safe(child, path=f"{path}[{index}]")
+
+
+def _external_llm_source_references(
+    snapshot: ReportInputSnapshot,
+) -> list[ReportSourceReference]:
+    raw_references = snapshot.payload.get("source_references")
+    if not isinstance(raw_references, list):
+        raise ReportGenerationError("input snapshot source_references must be a list")
+    references = [ReportSourceReference.model_validate(item) for item in raw_references]
+    source_ref_ids = snapshot.payload.get("source_ref_ids")
+    if not isinstance(source_ref_ids, list) or not all(
+        isinstance(source_ref_id, str) for source_ref_id in source_ref_ids
+    ):
+        raise ReportGenerationError("input snapshot source_ref_ids must be strings")
+    if source_ref_ids != [source.source_ref_id for source in references]:
+        raise ReportGenerationError(
+            "input snapshot source_ref_ids must exactly match source_references"
+        )
+    if len(set(source_ref_ids)) != len(source_ref_ids):
+        raise ReportGenerationError("input snapshot source_ref_ids must be unique")
+    if denied := [source.source_ref_id for source in references if not source.external_llm_allowed]:
+        raise ReportGenerationError(
+            "input snapshot contains sources denied for external LLM: " + ", ".join(denied)
+        )
+    return references
 
 
 def _scheduled_publish_at(snapshot: ReportInputSnapshot) -> datetime:

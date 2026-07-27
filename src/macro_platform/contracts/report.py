@@ -153,9 +153,7 @@ class DailyReport(StrictModel):
             raise ValueError("incomplete reports cannot be published")
 
         fact_ids = set(self.input_snapshot.fact_ids)
-        referenced_fact_ids = {
-            fact_id for section in self.sections.values() for fact_id in section.fact_ids
-        }
+        referenced_fact_ids = _nested_reference_ids(self.sections, "fact_ids")
         if unknown_facts := referenced_fact_ids - fact_ids:
             raise ValueError(f"report references unknown input facts: {sorted(unknown_facts)}")
 
@@ -166,11 +164,33 @@ class DailyReport(StrictModel):
         source_ids = {source.source_ref_id for source in source_references}
         if len(source_ids) != len(source_references):
             raise ValueError("source references must be unique")
-        referenced_source_ids = {
-            source_ref_id
-            for section in self.sections.values()
-            for source_ref_id in section.source_ref_ids
-        }
+        referenced_source_ids = _nested_reference_ids(self.sections, "source_ref_ids")
         if unknown_sources := referenced_source_ids - source_ids:
             raise ValueError(f"report references unknown sources: {sorted(unknown_sources)}")
         return self
+
+
+def _nested_reference_ids(value: Any, field_name: str) -> set[str]:
+    """Collect top-level and item-level provenance references from report sections."""
+
+    reference_ids: set[str] = set()
+
+    def visit(item: Any) -> None:
+        if isinstance(item, ReportSection):
+            visit(item.model_dump(mode="python"))
+        elif isinstance(item, dict):
+            references = item.get(field_name)
+            if references is not None:
+                if not isinstance(references, list) or not all(
+                    isinstance(reference, str) for reference in references
+                ):
+                    raise ValueError(f"report {field_name} must be a list of strings")
+                reference_ids.update(references)
+            for child in item.values():
+                visit(child)
+        elif isinstance(item, list):
+            for child in item:
+                visit(child)
+
+    visit(value)
+    return reference_ids
