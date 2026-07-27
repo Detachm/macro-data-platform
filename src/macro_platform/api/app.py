@@ -43,6 +43,8 @@ def create_app(
         if resolved_settings.app_env == "production"
         else NonProductionSourcePolicy()
     )
+    if resolved_settings.app_env == "production" and not resolved_source_policy.production_enforced:
+        raise ValueError("production source policy must be enforced")
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:

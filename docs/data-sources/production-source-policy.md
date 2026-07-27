@@ -22,7 +22,7 @@ Issue: [#26](https://github.com/Detachm/macro-data-platform/issues/26)
 
 每个 `provider_id + dataset + region` 条目必须有：
 
-- `owner`、`credential_requirement`：只描述是否需要凭据或合同，禁止记录 token、Cookie、账号或 URL query secret。
+- `owner`、`credential_requirement`：后者是受限枚举，只记录凭据/合同类别，禁止记录 token、Cookie、账号、URL query secret 或任何实际凭据值。
 - `ingestion_allowed`、`external_llm_allowed`、`citation_allowed`、`retention_rule`：分别服务于 worker、LLM 和报告生成校验。
 - `approval_status`：只能是 `approved`、`pending` 或 `denied`。
 - `production_enabled`：只有它、`approval_status=approved` 和 `ingestion_allowed=true` 同时成立时，生产 ingestion/EditorContext 才会放行。
@@ -34,7 +34,8 @@ Issue: [#26](https://github.com/Detachm/macro-data-platform/issues/26)
 
 - `ProductionSourcePolicy.decision(...)` / `require(...)` 是 worker 和报告校验使用的稳定接口。
 - `JobRunner(..., source_policy=...)` 是必填依赖；生产策略会在调用 handler 前同时检查 ingestion 与 retention，未获准的来源不能进入写入路径。
-- 生产 `EditorContext` 对 market、macro、news 所有记录检查 `editor_context` 决定；新闻的外部 LLM 路径还检查 `external_llm` 决定。
+- 生产 `EditorContext` 对 market、macro、news 所有记录同时检查 `editor_context`、`external_llm` 和 `citation` 决定；无来源的 snapshot 默认拒绝。
+- 生产 ingestion 会把每个 region 的 `retention_rule` 传给记录写入 handler；`metadata_only` handler 不得写入 canonical facts。
 - 开发与 fixture 测试使用不执行生产准入的 policy，避免将 fixture 合同误认为生产授权。
 
 ## 新来源变更流程

@@ -12,6 +12,7 @@ from macro_platform.contracts.provider import (
     IngestJobResult,
     ProviderPage,
 )
+from macro_platform.governance.source_policy import IngestionRetentionPolicy, RetentionRule
 from macro_platform.jobs.ingestion_checkpoint import CommittedPage, IngestionCheckpointService
 from macro_platform.normalization.common import canonical_json_checksum
 from macro_platform.providers._regional_fixture import RegionalFixtureProvider
@@ -34,6 +35,7 @@ class CnHkFixtureIngestHandler:
             else supports_point_in_time
         )
         self._recovery_provider = provider
+        self._retention_policy: IngestionRetentionPolicy | None = None
 
     def with_recovery_provider(self, provider: RegionalFixtureProvider) -> CnHkFixtureIngestHandler:
         self._recovery_provider = provider
@@ -42,6 +44,9 @@ class CnHkFixtureIngestHandler:
     @property
     def provider_id(self) -> str:
         return self._provider.provider_id
+
+    def set_retention_policy(self, policy: IngestionRetentionPolicy) -> None:
+        self._retention_policy = policy
 
     async def run(self, request: IngestJobRequest) -> IngestJobResult:
         raise RuntimeError("CN/HK ingestion must be run through JobRunner with a database")
@@ -142,10 +147,17 @@ class CnHkFixtureIngestHandler:
             next_cursor=page.next_cursor,
             accepted_record_ids=[item.source.provider_record_id for item in page.items],
         )
+        retention_rule = (
+            RetentionRule.CANONICAL_FACTS
+            if self._retention_policy is None
+            else self._retention_policy.rule_for(self._provider.region)
+        )
         async with UnitOfWork(database).transaction() as session:
             repository = IngestionCheckpointRepository(session)
 
             async def write_records(_: object) -> None:
+                if retention_rule is not RetentionRule.CANONICAL_FACTS:
+                    return
                 for item in page.items:
                     await repository.upsert_market_observation(item)
 
@@ -161,7 +173,11 @@ class CnHkFixtureIngestHandler:
             records_fetched=len(page.items),
             records_accepted=len(page.items),
             records_rejected=0,
-            records_inserted=len(page.items) if committed else 0,
+            records_inserted=(
+                len(page.items)
+                if committed and retention_rule is RetentionRule.CANONICAL_FACTS
+                else 0
+            ),
             records_updated=0,
             next_cursor=page.next_cursor,
             source_watermark=page.source_watermark,

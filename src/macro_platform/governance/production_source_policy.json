@@ -10,7 +10,7 @@
         "CN"
       ],
       "owner": "@Nouzee",
-      "credential_requirement": "no credential; automated collection approval missing",
+      "credential_requirement": "automation_approval_required",
       "ingestion_allowed": false,
       "external_llm_allowed": false,
       "citation_allowed": false,
@@ -29,7 +29,7 @@
         "CN"
       ],
       "owner": "@Nouzee",
-      "credential_requirement": "licensed CIIS/SSE InfoNet/SSIC access required",
+      "credential_requirement": "licensed_access_required",
       "ingestion_allowed": false,
       "external_llm_allowed": false,
       "citation_allowed": false,
@@ -67,7 +67,7 @@
         "CN"
       ],
       "owner": "@Nouzee",
-      "credential_requirement": "no registered external API contract",
+      "credential_requirement": "provider_contract_required",
       "ingestion_allowed": false,
       "external_llm_allowed": false,
       "citation_allowed": false,
@@ -86,7 +86,7 @@
         "CN"
       ],
       "owner": "@Nouzee",
-      "credential_requirement": "no registered external API contract",
+      "credential_requirement": "provider_contract_required",
       "ingestion_allowed": false,
       "external_llm_allowed": false,
       "citation_allowed": false,
@@ -105,7 +105,7 @@
         "CN"
       ],
       "owner": "@Nouzee",
-      "credential_requirement": "no credential; no automated body or bulk-collection approval",
+      "credential_requirement": "automation_approval_required",
       "ingestion_allowed": false,
       "external_llm_allowed": false,
       "citation_allowed": false,
@@ -124,7 +124,7 @@
         "HK"
       ],
       "owner": "@Nouzee",
-      "credential_requirement": "HKEX market-data rights review required",
+      "credential_requirement": "rights_review_required",
       "ingestion_allowed": false,
       "external_llm_allowed": false,
       "citation_allowed": false,
@@ -143,7 +143,7 @@
         "HK"
       ],
       "owner": "@Nouzee",
-      "credential_requirement": "HKEX Historical Data subscription required",
+      "credential_requirement": "subscription_required",
       "ingestion_allowed": false,
       "external_llm_allowed": false,
       "citation_allowed": false,
@@ -276,7 +276,7 @@
         "HK"
       ],
       "owner": "@Nouzee",
-      "credential_requirement": "HKEX IIS contract or automation approval required",
+      "credential_requirement": "contract_or_automation_approval_required",
       "ingestion_allowed": false,
       "external_llm_allowed": false,
       "citation_allowed": false,
@@ -295,7 +295,7 @@
         "US"
       ],
       "owner": "@kazming666",
-      "credential_requirement": "exchange reference-data rights review required",
+      "credential_requirement": "rights_review_required",
       "ingestion_allowed": false,
       "external_llm_allowed": false,
       "citation_allowed": false,
@@ -314,7 +314,7 @@
         "US"
       ],
       "owner": "@kazming666",
-      "credential_requirement": "commercial market-data agreement required",
+      "credential_requirement": "commercial_agreement_required",
       "ingestion_allowed": false,
       "external_llm_allowed": false,
       "citation_allowed": false,
@@ -322,7 +322,7 @@
       "approval_status": "denied",
       "production_enabled": false,
       "evidence": [
-        "docs/data-sources/us-polygon-massive.md"
+        "docs/data-sources/us-polygon-massive-market-data.md"
       ]
     },
     {
@@ -333,7 +333,7 @@
         "US"
       ],
       "owner": "@kazming666",
-      "credential_requirement": "commercial approval and API key required",
+      "credential_requirement": "commercial_agreement_and_api_key_required",
       "ingestion_allowed": false,
       "external_llm_allowed": false,
       "citation_allowed": false,
@@ -352,7 +352,7 @@
         "US"
       ],
       "owner": "@kazming666",
-      "credential_requirement": "commercial approval and API key required",
+      "credential_requirement": "commercial_agreement_and_api_key_required",
       "ingestion_allowed": false,
       "external_llm_allowed": false,
       "citation_allowed": false,
@@ -371,7 +371,7 @@
         "US"
       ],
       "owner": "@kazming666",
-      "credential_requirement": "commercial approval and API key required",
+      "credential_requirement": "commercial_agreement_and_api_key_required",
       "ingestion_allowed": false,
       "external_llm_allowed": false,
       "citation_allowed": false,
@@ -428,7 +428,7 @@
         "US"
       ],
       "owner": "@kazming666",
-      "credential_requirement": "registration key optional; rate limits apply",
+      "credential_requirement": "api_key_optional",
       "ingestion_allowed": true,
       "external_llm_allowed": true,
       "citation_allowed": true,
@@ -447,7 +447,7 @@
         "US"
       ],
       "owner": "@kazming666",
-      "credential_requirement": "registration key optional; rate limits apply",
+      "credential_requirement": "api_key_optional",
       "ingestion_allowed": true,
       "external_llm_allowed": true,
       "citation_allowed": true,
@@ -466,7 +466,7 @@
         "US"
       ],
       "owner": "@kazming666",
-      "credential_requirement": "registration key optional; rate limits apply",
+      "credential_requirement": "api_key_optional",
       "ingestion_allowed": true,
       "external_llm_allowed": true,
       "citation_allowed": true,
@@ -485,7 +485,7 @@
         "US"
       ],
       "owner": "@kazming666",
-      "credential_requirement": "BEA UserID required",
+      "credential_requirement": "user_id_required",
       "ingestion_allowed": true,
       "external_llm_allowed": true,
       "citation_allowed": true,
@@ -504,7 +504,7 @@
         "US"
       ],
       "owner": "@kazming666",
-      "credential_requirement": "BEA UserID required",
+      "credential_requirement": "user_id_required",
       "ingestion_allowed": true,
       "external_llm_allowed": true,
       "citation_allowed": true,
@@ -523,7 +523,7 @@
         "US"
       ],
       "owner": "@kazming666",
-      "credential_requirement": "BEA UserID required",
+      "credential_requirement": "user_id_required",
       "ingestion_allowed": true,
       "external_llm_allowed": true,
       "citation_allowed": true,
@@ -542,7 +542,7 @@
         "US"
       ],
       "owner": "@kazming666",
-      "credential_requirement": "identifying User-Agent and fair-access controls required",
+      "credential_requirement": "identifying_user_agent_required",
       "ingestion_allowed": true,
       "external_llm_allowed": true,
       "citation_allowed": true,
@@ -561,7 +561,7 @@
         "US"
       ],
       "owner": "@kazming666",
-      "credential_requirement": "identifying User-Agent and fair-access controls required",
+      "credential_requirement": "identifying_user_agent_required",
       "ingestion_allowed": true,
       "external_llm_allowed": true,
       "citation_allowed": true,
@@ -580,7 +580,7 @@
         "US"
       ],
       "owner": "@kazming666",
-      "credential_requirement": "API key and per-series rights review required",
+      "credential_requirement": "api_key_and_rights_review_required",
       "ingestion_allowed": false,
       "external_llm_allowed": false,
       "citation_allowed": false,
@@ -599,7 +599,7 @@
         "US"
       ],
       "owner": "@kazming666",
-      "credential_requirement": "API key and per-series rights review required",
+      "credential_requirement": "api_key_and_rights_review_required",
       "ingestion_allowed": false,
       "external_llm_allowed": false,
       "citation_allowed": false,
@@ -618,7 +618,7 @@
         "US"
       ],
       "owner": "@kazming666",
-      "credential_requirement": "publisher rights review required",
+      "credential_requirement": "rights_review_required",
       "ingestion_allowed": false,
       "external_llm_allowed": false,
       "citation_allowed": false,
@@ -637,7 +637,7 @@
         "US"
       ],
       "owner": "@kazming666",
-      "credential_requirement": "licensed-media contract and API key required",
+      "credential_requirement": "licensed_media_contract_and_api_key_required",
       "ingestion_allowed": false,
       "external_llm_allowed": false,
       "citation_allowed": false,

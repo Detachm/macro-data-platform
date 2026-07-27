@@ -195,6 +195,29 @@ async def test_gov_026_editor_context_rejects_unresolved_sources_from_every_data
     assert context.news_events == []
 
 
+async def test_gov_026_editor_context_rejects_snapshots_without_source_records() -> None:
+    repository = _RecordsRepository()
+    repository.snapshot = repository.snapshot.model_copy(update={"source_records": []})
+    policy = _production_policy()
+    service = EditorContextService(
+        MarketService(repository),
+        MacroService(repository),
+        NewsService(repository, source_policy=policy),
+        source_policy=policy,
+    )
+
+    context = await service.build(
+        EditorContextRequest(
+            regions={Region.US},
+            as_of=NOW,
+            market={"instrument_ids": ["ins_unresolved"], "metric_codes": ["market.turnover"]},
+            macro={"series_ids": ["macro:US:TEST:UNRESOLVED"]},
+        )
+    )
+
+    assert context.market_snapshots == []
+
+
 def _external_llm_denied_policy() -> ProductionSourcePolicy:
     provider_id = "llm-denied.provider.v1"
     datasets = (
@@ -232,6 +255,70 @@ def _external_llm_denied_policy() -> ProductionSourcePolicy:
 async def test_gov_026_editor_context_excludes_sources_denied_for_external_llm() -> None:
     policy = _external_llm_denied_policy()
     repository = _RecordsRepository("llm-denied.provider.v1")
+    service = EditorContextService(
+        MarketService(repository),
+        MacroService(repository),
+        NewsService(repository, source_policy=policy),
+        source_policy=policy,
+    )
+
+    context = await service.build(
+        EditorContextRequest(
+            regions={Region.US},
+            as_of=NOW,
+            market={
+                "instrument_ids": ["ins_unresolved"],
+                "metric_codes": ["market.turnover"],
+            },
+            macro={"series_ids": ["macro:US:TEST:UNRESOLVED"]},
+        )
+    )
+
+    assert context.market_snapshots == []
+    assert context.market_bars == []
+    assert context.market_observations == []
+    assert context.macro_observations == []
+    assert context.macro_releases == []
+    assert context.news_events == []
+
+
+def _citation_denied_policy() -> ProductionSourcePolicy:
+    provider_id = "citation-denied.provider.v1"
+    datasets = (
+        Dataset.BARS,
+        Dataset.MARKET_OBSERVATIONS,
+        Dataset.MACRO_OBSERVATIONS,
+        Dataset.MACRO_RELEASES,
+        Dataset.NEWS,
+    )
+    return ProductionSourcePolicy(
+        SourcePolicyManifest(
+            policy_version="test",
+            entries=[
+                SourcePolicyEntry(
+                    policy_id=f"citation-denied-{dataset.value}",
+                    provider_id=provider_id,
+                    dataset=dataset,
+                    regions={Region.US},
+                    owner="@kazming666",
+                    credential_requirement="none",
+                    ingestion_allowed=True,
+                    external_llm_allowed=True,
+                    citation_allowed=False,
+                    retention_rule=RetentionRule.CANONICAL_FACTS,
+                    approval_status=ApprovalStatus.APPROVED,
+                    production_enabled=True,
+                    evidence=["docs/data-sources/us-mvp.md"],
+                )
+                for dataset in datasets
+            ],
+        )
+    )
+
+
+async def test_gov_026_editor_context_excludes_sources_denied_for_citation() -> None:
+    policy = _citation_denied_policy()
+    repository = _RecordsRepository("citation-denied.provider.v1")
     service = EditorContextService(
         MarketService(repository),
         MacroService(repository),

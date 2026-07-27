@@ -202,7 +202,8 @@ class EditorContextService:
         return [
             record
             for record in records
-            if all(
+            if record.source_records
+            and all(
                 self._source_is_allowed_for_llm_context(
                     source.provider_id,
                     Dataset.BARS,
@@ -253,7 +254,11 @@ class EditorContextService:
                 region=region,
                 purpose=purpose,
             ).allowed
-            for purpose in {PolicyPurpose.EDITOR_CONTEXT, PolicyPurpose.EXTERNAL_LLM}
+            for purpose in {
+                PolicyPurpose.EDITOR_CONTEXT,
+                PolicyPurpose.EXTERNAL_LLM,
+                PolicyPurpose.CITATION,
+            }
         )
 
     @staticmethod

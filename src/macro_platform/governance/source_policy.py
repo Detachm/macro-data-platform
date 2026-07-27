@@ -22,6 +22,26 @@ class RetentionRule(StrEnum):
     CANONICAL_FACTS = "canonical_facts"
 
 
+class CredentialRequirement(StrEnum):
+    """Allowed credential/access shapes; this policy never carries credential values."""
+
+    NONE = "none"
+    API_KEY_OPTIONAL = "api_key_optional"
+    API_KEY_REQUIRED = "api_key_required"
+    USER_ID_REQUIRED = "user_id_required"
+    IDENTIFYING_USER_AGENT_REQUIRED = "identifying_user_agent_required"
+    RIGHTS_REVIEW_REQUIRED = "rights_review_required"
+    COMMERCIAL_AGREEMENT_REQUIRED = "commercial_agreement_required"
+    COMMERCIAL_AGREEMENT_AND_API_KEY_REQUIRED = "commercial_agreement_and_api_key_required"
+    SUBSCRIPTION_REQUIRED = "subscription_required"
+    LICENSED_ACCESS_REQUIRED = "licensed_access_required"
+    LICENSED_MEDIA_CONTRACT_AND_API_KEY_REQUIRED = "licensed_media_contract_and_api_key_required"
+    AUTOMATION_APPROVAL_REQUIRED = "automation_approval_required"
+    PROVIDER_CONTRACT_REQUIRED = "provider_contract_required"
+    CONTRACT_OR_AUTOMATION_APPROVAL_REQUIRED = "contract_or_automation_approval_required"
+    API_KEY_AND_RIGHTS_REVIEW_REQUIRED = "api_key_and_rights_review_required"
+
+
 class PolicyPurpose(StrEnum):
     INGESTION = "ingestion"
     EDITOR_CONTEXT = "editor_context"
@@ -38,7 +58,7 @@ class SourcePolicyEntry(StrictModel):
     dataset: Dataset
     regions: set[Region] = Field(min_length=1)
     owner: str = Field(min_length=2, max_length=128)
-    credential_requirement: str = Field(min_length=2, max_length=256)
+    credential_requirement: CredentialRequirement
     ingestion_allowed: bool
     external_llm_allowed: bool
     citation_allowed: bool
@@ -84,6 +104,18 @@ class PolicyDecision(StrictModel):
     policy_id: str | None = None
     retention_rule: RetentionRule | None = None
     reason: str
+
+
+class IngestionRetentionPolicy(StrictModel):
+    """Retention limits handed from the production gate to the record-writing handler."""
+
+    rules_by_region: dict[Region, RetentionRule] = Field(min_length=1)
+
+    def rule_for(self, region: Region) -> RetentionRule:
+        try:
+            return self.rules_by_region[region]
+        except KeyError as error:
+            raise ValueError(f"missing retention rule for {region.value}") from error
 
 
 class SourcePolicy(Protocol):

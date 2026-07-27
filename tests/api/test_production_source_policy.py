@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
@@ -10,6 +11,7 @@ from macro_platform.contracts.news import NewsEvent, NewsQuery
 from macro_platform.contracts.provider import Dataset
 from macro_platform.governance.source_policy import (
     ApprovalStatus,
+    NonProductionSourcePolicy,
     ProductionSourcePolicy,
     RetentionRule,
     SourcePolicyEntry,
@@ -83,3 +85,11 @@ def test_gov_026_production_editor_context_excludes_pending_and_missing_sources(
 
     assert response.status_code == 200
     assert [event["news_id"] for event in response.json()["data"]["news_events"]] == ["approved"]
+
+
+def test_gov_026_production_app_rejects_a_non_production_source_policy() -> None:
+    with pytest.raises(ValueError, match="production source policy must be enforced"):
+        create_app(
+            settings=Settings(app_env="production", service_token=SecretStr(TOKEN)),
+            source_policy=NonProductionSourcePolicy(),
+        )
