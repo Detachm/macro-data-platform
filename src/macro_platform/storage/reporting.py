@@ -79,7 +79,20 @@ class StoredDailyReport(StrictModel):
             raise ValueError("report payload publication decision must match storage identity")
         if self.payload.get("input_snapshot", {}).get("snapshot_id") != self.input_snapshot_id:
             raise ValueError("report payload snapshot_id must match storage identity")
-        self.source_references()
+        source_references = self.source_references()
+        source_reference_ids = {source.source_ref_id for source in source_references}
+        if len(source_reference_ids) != len(source_references):
+            raise ValueError(
+                "report payload source_references must use unique source_ref_id values"
+            )
+        unknown_source_reference_ids = (
+            self._section_reference_ids("source_ref_ids") - source_reference_ids
+        )
+        if unknown_source_reference_ids:
+            raise ValueError(
+                "report payload source_ref_ids must resolve to source_references: "
+                f"{sorted(unknown_source_reference_ids)}"
+            )
         return self
 
     def source_references(self) -> list[DailyReportSourceRef]:
@@ -88,6 +101,41 @@ class StoredDailyReport(StrictModel):
         if not isinstance(items, list):
             raise ValueError("report payload source_references.items is required")
         return [DailyReportSourceRef.model_validate(item) for item in items]
+
+    def validate_fact_references(self, available_fact_ids: list[str]) -> None:
+        """Ensure every section fact comes from the immutable input snapshot."""
+
+        unknown_fact_ids = self._section_reference_ids("fact_ids") - set(available_fact_ids)
+        if unknown_fact_ids:
+            raise ValueError(
+                "report payload fact_ids must resolve to input snapshot facts: "
+                f"{sorted(unknown_fact_ids)}"
+            )
+
+    def _section_reference_ids(self, field_name: str) -> set[str]:
+        sections = self.payload.get("sections")
+        if not isinstance(sections, dict):
+            raise ValueError("report payload sections is required")
+
+        reference_ids: set[str] = set()
+
+        def visit(value: Any) -> None:
+            if isinstance(value, dict):
+                references = value.get(field_name)
+                if references is not None:
+                    if not isinstance(references, list) or not all(
+                        isinstance(reference, str) for reference in references
+                    ):
+                        raise ValueError(f"report payload {field_name} must be a list of strings")
+                    reference_ids.update(references)
+                for child in value.values():
+                    visit(child)
+            elif isinstance(value, list):
+                for child in value:
+                    visit(child)
+
+        visit(sections)
+        return reference_ids
 
 
 class DeliveryAttempt(StrictModel):
