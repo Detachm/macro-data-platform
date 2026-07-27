@@ -26,8 +26,8 @@ Provider roles: `cn.instruments.primary`, `cn.bars.primary`, `cn.macro.primary`,
 | CN | news/announcements | headline/url fixture-only；禁止保存受限正文 | SSE/SZSE/CNINFO 公告检索页 | CSRC/NBS 官方新闻页，仅政策新闻 | 无 token；无正文/批量抓取授权 |
 | HK | instruments | fixture-only；HKEX 公共证券列表可人工 fixture，付费 master file 未采购 | HKEX Securities Lists | HKEX Securities Master File | 无 Data Marketplace/Historical Data 订阅 |
 | HK | daily bars | fixture-only；真实 live 日线为 gap，必须采购历史数据产品 | HKEX Main Board/GEM Daily Quotations | HKEX Data Marketplace | 无 HKEX Historical Data 账号 |
-| HK | macro/releases | 技术 adapter live-ready；生产准入 pending（#26 source policy） | DATA.GOV.HK/C&SD API、HKMA Open API | HKMA Economic & Financial Data page | 无需申请、注册或认证 |
-| HK | news/announcements | 技术 adapter live-ready；生产准入 pending（#26 source policy）；HKEX issuer announcements fixture-only | HKMA Press Releases API；HKEXnews title search | HKEX IIS paid feed | HKMA 无需凭据；HKEX IIS 无凭据 |
+| HK | macro/releases | allowlisted C&SD adapter live-ready；release-calendar coverage requires a separately approved source | DATA.GOV.HK/C&SD API、HKMA Open API | HKMA Economic & Financial Data page | 无需申请、注册或认证 |
+| HK | news/announcements | HKMA press releases live-ready；HKEX issuer announcements fixture-only | HKMA Press Releases API；HKEXnews title search | HKEX IIS paid feed | HKMA 无需凭据；HKEX IIS 无凭据 |
 
 `live-ready` 只表示两日内可在不写入 secret 的前提下实现在线 smoke。`fixture-only` 表示只能用合成或脱敏 fixture 验证 parser/normalizer，不得让 worker 在生产调度中调用该来源。
 
@@ -303,7 +303,7 @@ Provider roles: `cn.instruments.primary`, `cn.bars.primary`, `cn.macro.primary`,
 |---|---|---|
 | Provider role | `hk.macro.primary` | `hk.macro.fallback` |
 | 来源 | C&SD open data via DATA.GOV.HK/C&SD API；HKMA Open API | HKMA Economic & Financial Data page |
-| 状态 | 技术 adapter live-ready；生产准入 pending（#26 source policy） | fixture-only for manual validation |
+| 状态 | allowlisted C&SD adapter live-ready；release-calendar coverage requires a separately approved source | fixture-only for manual validation |
 | 官方文档 | DATA.GOV.HK API spec、C&SD resource pages、HKMA API docs | HKMA data page |
 | Base URL/端点 | C&SD: `https://www.censtatd.gov.hk/api/get.php`; HKMA: `https://api.hkma.gov.hk/public/...` | `https://www.hkma.gov.hk/eng/data-publications-and-research/data-and-statistics/economic-financial-data-for-hong-kong/` |
 | 请求参数 | C&SD: `id`, `lang`, `full_series`; HKMA: dataset parameters plus `pagesize`, `offset`, `fields`, `choose/from/to`, `sortby/sortorder` | HTML table |
@@ -335,7 +335,7 @@ Provider roles: `cn.instruments.primary`, `cn.bars.primary`, `cn.macro.primary`,
 |---|---|---|
 | Provider role | `hk.news.primary` | `hk.news.fallback` |
 | 来源 | HKMA Press Releases API for official policy news; HKEXnews title search for listed issuer announcements | HKEX IIS paid feed |
-| 状态 | 技术 adapter live-ready；生产准入 pending（#26 source policy）；HKEXnews fixture-only | gap |
+| 状态 | HKMA press-release adapter live-ready；HKEXnews fixture-only | gap |
 | 官方文档 | HKMA Press Releases API、HKEXnews About/title search、HKEX Terms | HKEX IIS technical docs |
 | Base URL/端点 | HKMA: `https://api.hkma.gov.hk/public/press-releases`; HKEXnews: `https://www1.hkexnews.hk/search/titlesearch.xhtml` | IIS feed endpoint after contract/certification |
 | 请求参数 | HKMA: `lang`, `offset`, optional common API params; HKEXnews: `category`, `market`, `stockId`, date/title filters | feed subscription params |
@@ -425,7 +425,7 @@ Provider roles: `cn.instruments.primary`, `cn.bars.primary`, `cn.macro.primary`,
 
 Issue #28 的 live 选择通过 `PROVIDER_MODE` 显式控制：`live` 才会由应用工厂注册 live roles；`fixture` 只绑定 `*.contract_fixture` roles，生产环境拒绝该模式。当前实现的 allowlist 与公共 contract 映射如下：
 
-| adapter | allowlisted endpoint | live datasets | 权利边界 |
+| adapter | allowlisted endpoint | live datasets | 数据边界 |
 |---|---|---|---|
 | `CnNbsReleaseProvider` | NBS release calendar | `macro_releases` | 只输出发布日程 metadata，不保存正文 |
 | `HkCsdProvider` | C&SD `510-60004` API | `macro_series`, `macro_observations` | 以 API 首次可见时间作为 `available_at`，不声称 PIT 或 revision history |
@@ -452,8 +452,8 @@ Adapter authors must register capabilities according to this matrix:
 | `cn.news.primary` | news | CN | fixture-only for headline/url; body prohibited |
 | `hk.instruments.primary` | instruments | HK | fixture-only, no live capability |
 | `hk.bars.primary` | bars | HK | fixture-only, no live capability |
-| `hk.macro.primary` | macro_series/macro_observations | HK | technical live-ready for the allowlisted C&SD table API; production policy pending; release-calendar coverage requires a separately approved source |
-| `hk.news.primary` | news | HK | technical live-ready for HKMA press-release metadata; production policy pending; HKEXnews fixture-only |
+| `hk.macro.primary` | macro_series/macro_observations | HK | live-ready for the allowlisted C&SD table API; release-calendar coverage requires a separately approved source |
+| `hk.news.primary` | news | HK | live-ready for HKMA press-release metadata; HKEXnews fixture-only |
 
 ## 失败与降级
 
@@ -506,4 +506,4 @@ Adapter authors must register capabilities according to this matrix:
 
 - 实习生 A 可在本文件基础上实现 CN/HK fixture/provider skeleton。
 - review 中需由实习生 B 交叉检查本文件中的 contract 映射、`available_at` basis、cursor/分页和 `UsageRights`，并运行公共 provider contract suite。
-- 后续 Issue 如需新增公共字段、改变 ID、改变 `available_at` 语义或放开外部 LLM/embedding 权限，必须先提交 ADR 和负责人批准。
+- 后续 Issue 如需新增公共字段、改变 ID 或改变 `available_at` 语义，必须先提交 ADR 和负责人批准；`UsageRights` 兼容元数据不构成内部运行时 gate。

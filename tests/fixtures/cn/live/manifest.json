@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "fixture_kind": "recorded_upstream_response",
+  "fixture_kind": "deidentified_upstream_response",
   "provider_id": "cn.nbs.release-calendar.v1",
   "region": "CN",
   "offline_only": true,

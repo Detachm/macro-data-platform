@@ -112,8 +112,8 @@ def test_recorded_live_fixture_manifests_are_provenanced() -> None:
     cn_manifest = json.loads(_recorded_fixture("cn/live/manifest.json"))
     hk_manifest = json.loads(_recorded_fixture("hk/live/manifest.json"))
 
-    assert cn_manifest["fixture_kind"] == "recorded_upstream_response"
-    assert hk_manifest["fixture_kind"] == "recorded_upstream_response"
+    assert cn_manifest["fixture_kind"] == "deidentified_upstream_response"
+    assert hk_manifest["fixture_kind"] == "deidentified_upstream_response"
     for relative_dir, manifest in (("cn/live", cn_manifest), ("hk/live", hk_manifest)):
         for name, metadata in manifest["fixtures"].items():
             path = LIVE_FIXTURE_ROOT / relative_dir / name
@@ -629,6 +629,36 @@ async def test_live_adapter_rejects_malformed_json_as_schema_drift() -> None:
 
     with pytest.raises(ProviderSchemaError):
         await provider.fetch_macro_series(MacroSeriesQuery(regions={Region.HK}), CONTEXT)
+
+    await provider.aclose()
+
+
+@pytest.mark.asyncio
+async def test_csd_rejects_frequency_drift_against_the_approved_registry() -> None:
+    payload = {
+        "header": {"status": {"name": "Success", "code": 0}},
+        "dataSet": [
+            {
+                "freq": "Q",
+                "period": "202605",
+                "sv": "CPI_COMP",
+                "svDesc": "Composite CPI (%)",
+                "figure": "1.5",
+            }
+        ],
+    }
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json=payload, request=request)
+        )
+    )
+    provider = HkCsdProvider(client=client, clock=lambda: NOW)
+
+    with pytest.raises(ProviderSchemaError, match="frequency"):
+        await provider.fetch_macro_series(
+            MacroSeriesQuery(regions={Region.HK}),
+            CONTEXT,
+        )
 
     await provider.aclose()
 

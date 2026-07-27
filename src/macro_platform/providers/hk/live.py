@@ -55,6 +55,7 @@ _MAX_API_PAGE_SIZE = 100
 class _CsdSeriesDefinition:
     name: str
     source_description: str
+    source_frequency: str
     frequency: Frequency
     unit: str
     transformation: Literal["level", "mom", "qoq", "yoy", "annualized", "index"]
@@ -67,6 +68,7 @@ HK_CSD_SERIES_REGISTRY = {
     "CPI_COMP": _CsdSeriesDefinition(
         name="Composite CPI (%)",
         source_description="Composite CPI (%)",
+        source_frequency="M",
         frequency=Frequency.MONTHLY,
         unit="percent",
         transformation="yoy",
@@ -610,9 +612,15 @@ def _series_definition(row: Mapping[str, Any]) -> tuple[str, _CsdSeriesDefinitio
             f"C&SD series {sv} is not in the approved registry", code="SERIES_UNRESOLVED"
         )
     description = _required_text(row, "svDesc", "dataSet.svDesc")
+    frequency = _required_text(row, "freq", "dataSet.freq")
     if description != definition.source_description:
         raise ProviderSchemaError(
             f"C&SD series {sv} metadata does not match the approved registry",
+            code="SERIES_METADATA_MISMATCH",
+        )
+    if frequency != definition.source_frequency:
+        raise ProviderSchemaError(
+            f"C&SD series {sv} frequency does not match the approved registry",
             code="SERIES_METADATA_MISMATCH",
         )
     return sv, definition

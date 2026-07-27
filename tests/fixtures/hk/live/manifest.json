@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "fixture_kind": "recorded_upstream_response",
+  "fixture_kind": "deidentified_upstream_response",
   "provider_ids": [
     "hk.censtatd.v1",
     "hk.hkma.press-releases.v1"

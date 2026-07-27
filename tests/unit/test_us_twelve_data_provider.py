@@ -226,6 +226,8 @@ async def test_PRV_001_factory_reads_live_secrets_from_runtime_settings() -> Non
     client = httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(200)))
     settings = Settings(
         app_env="production",
+        provider_mode="live",
+        provider_cursor_secret=SecretStr("test-provider-cursor-secret"),
         service_token=SecretStr("test-service-token"),
         us_provider_mode="live",
         twelve_data_api_key=TEST_API_KEY,
