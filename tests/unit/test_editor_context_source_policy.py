@@ -30,6 +30,7 @@ from macro_platform.governance.source_policy import (
     RetentionRule,
     SourcePolicyEntry,
     SourcePolicyManifest,
+    load_production_source_policy,
 )
 from macro_platform.services.editor_context_service import EditorContextService
 from macro_platform.services.macro_service import MacroService
@@ -344,3 +345,25 @@ async def test_gov_026_editor_context_excludes_sources_denied_for_citation() -> 
     assert context.macro_observations == []
     assert context.macro_releases == []
     assert context.news_events == []
+
+
+async def test_gov_026_twelve_data_bars_are_excluded_from_production_editor_context() -> None:
+    policy = load_production_source_policy()
+    repository = _RecordsRepository("us.twelve-data.v1")
+    service = EditorContextService(
+        MarketService(repository),
+        MacroService(repository),
+        NewsService(repository, source_policy=policy),
+        source_policy=policy,
+    )
+
+    context = await service.build(
+        EditorContextRequest(
+            regions={Region.US},
+            as_of=NOW,
+            market={"instrument_ids": ["ins_unresolved"]},
+        )
+    )
+
+    assert context.market_snapshots == []
+    assert context.market_bars == []

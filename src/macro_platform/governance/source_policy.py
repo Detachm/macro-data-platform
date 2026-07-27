@@ -66,6 +66,7 @@ class SourcePolicyEntry(StrictModel):
     approval_status: ApprovalStatus
     production_enabled: bool
     evidence: list[str] = Field(min_length=1)
+    allowed_symbols: frozenset[str] | None = None
 
     @model_validator(mode="after")
     def validate_production_enablement(self) -> SourcePolicyEntry:
@@ -73,6 +74,10 @@ class SourcePolicyEntry(StrictModel):
             self.approval_status is not ApprovalStatus.APPROVED or not self.ingestion_allowed
         ):
             raise ValueError("production_enabled requires approved ingestion policy")
+        if self.allowed_symbols is not None and any(
+            not symbol or symbol != symbol.upper() for symbol in self.allowed_symbols
+        ):
+            raise ValueError("allowed_symbols must contain non-empty uppercase provider symbols")
         return self
 
 
@@ -103,6 +108,7 @@ class PolicyDecision(StrictModel):
     purpose: PolicyPurpose
     policy_id: str | None = None
     retention_rule: RetentionRule | None = None
+    allowed_symbols: frozenset[str] | None = None
     reason: str
 
 
@@ -129,6 +135,7 @@ class SourcePolicy(Protocol):
         dataset: Dataset,
         region: Region,
         purpose: PolicyPurpose,
+        source_symbol: str | None = None,
     ) -> PolicyDecision: ...
 
 
@@ -164,6 +171,7 @@ class ProductionSourcePolicy:
         dataset: Dataset,
         region: Region,
         purpose: PolicyPurpose,
+        source_symbol: str | None = None,
     ) -> PolicyDecision:
         entry = self._entries.get((provider_id, dataset, region))
         if entry is None:
@@ -185,6 +193,20 @@ class ProductionSourcePolicy:
                 entry=entry,
                 reason=f"approval status is {entry.approval_status.value}",
             )
+        if (
+            source_symbol is not None
+            and entry.allowed_symbols is not None
+            and source_symbol.upper() not in entry.allowed_symbols
+        ):
+            return self._decision(
+                False,
+                provider_id,
+                dataset,
+                region,
+                purpose,
+                entry=entry,
+                reason="source symbol is not allowed",
+            )
 
         allowed, reason = self._permission_for(entry, purpose)
         return self._decision(
@@ -204,12 +226,14 @@ class ProductionSourcePolicy:
         dataset: Dataset,
         region: Region,
         purpose: PolicyPurpose,
+        source_symbol: str | None = None,
     ) -> PolicyDecision:
         decision = self.decision(
             provider_id=provider_id,
             dataset=dataset,
             region=region,
             purpose=purpose,
+            source_symbol=source_symbol,
         )
         if not decision.allowed:
             raise SourcePolicyDeniedError(decision)
@@ -266,6 +290,7 @@ class ProductionSourcePolicy:
             purpose=purpose,
             policy_id=None if entry is None else entry.policy_id,
             retention_rule=None if entry is None else entry.retention_rule,
+            allowed_symbols=None if entry is None else entry.allowed_symbols,
             reason=reason,
         )
 
@@ -284,6 +309,7 @@ class NonProductionSourcePolicy:
         dataset: Dataset,
         region: Region,
         purpose: PolicyPurpose,
+        source_symbol: str | None = None,
     ) -> PolicyDecision:
         return PolicyDecision(
             allowed=True,

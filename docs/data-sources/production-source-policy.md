@@ -10,10 +10,15 @@ Issue: [#26](https://github.com/Detachm/macro-data-platform/issues/26)
 
 ## 当前结论
 
-截至策略版本 `2026-07-27`，来源矩阵中的“首次批准日期”仍是待项目负责人批准。因此没有
-来源处于 `approved + production_enabled` 状态：生产环境会拒绝所有尚未完成审批的来源，即使
-其技术状态是 `live-ready`。这是刻意的双重门槛，不能以在线 smoke 或无凭据公开端点替代
-授权审批。
+截至策略版本 `2026-07-27`，唯一处于 `approved + production_enabled` 状态的条目是
+`us.twelve-data.v1 / bars / US`。项目负责人已将 Twelve Data Basic 的生产范围批准为
+仅内部存储 `SPY`、`QQQ`、`DIA` 的日线事实；它必须使用运行时 API key，不能发送到外部
+LLM、不能作为对外报告引用，也不能再分发。完整授权、端点和退出约束见
+[`us-twelve-data.md`](us-twelve-data.md) 与
+[`ADR 0003`](../adr/0003-us-twelve-data-basic-internal-daily-bars.md)。
+
+除该受限条目外，生产环境仍会拒绝所有尚未完成审批的来源，即使其技术状态是
+`live-ready`。这是刻意的双重门槛，不能以在线 smoke 或无凭据公开端点替代授权审批。
 
 已明确为 `fixture-only`、`gap`、未采购市场数据、GDELT、FRED/ALFRED 和未签约新闻来源
 在策略中是 `denied`；它们不能进入生产 ingestion、EditorContext 或外部 LLM 输入。
@@ -26,6 +31,7 @@ Issue: [#26](https://github.com/Detachm/macro-data-platform/issues/26)
 - `ingestion_allowed`、`external_llm_allowed`、`citation_allowed`、`retention_rule`：分别服务于 worker、LLM 和报告生成校验。
 - `approval_status`：只能是 `approved`、`pending` 或 `denied`。
 - `production_enabled`：只有它、`approval_status=approved` 和 `ingestion_allowed=true` 同时成立时，生产 ingestion/EditorContext 才会放行。
+- `allowed_symbols`：可选的 provider 代码白名单。存在时，live adapter 必须只请求和输出其中的代码；它不扩大 `provider_id + dataset + region` 之外的权限。
 - `evidence`：必须指向 #1/#2 冻结矩阵中的具体来源登记文件或章节。
 
 缺少条目、区域不匹配、`pending` 或 `denied` 一律拒绝。策略只返回可审计的决定和原因，永不读取或暴露凭据。
