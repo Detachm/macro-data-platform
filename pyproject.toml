@@ -59,7 +59,7 @@ plugins = ["pydantic.mypy"]
 packages = ["macro_platform"]
 
 [[tool.mypy.overrides]]
-module = ["alembic.*", "baostock", "baostock.*", "testcontainers.*"]
+module = ["alembic.*", "baostock", "baostock.*", "testcontainers.*", "xtquant", "xtquant.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

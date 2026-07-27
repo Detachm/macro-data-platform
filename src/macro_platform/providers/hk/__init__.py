@@ -12,6 +12,15 @@ from macro_platform.providers.hk.live import (
     HkmaLiveNewsProvider,
     HkmaPressReleaseProvider,
 )
+from macro_platform.providers.hk.xtquant import (
+    HK_XTQUANT_DEFAULT_INSTRUMENTS,
+    HK_XTQUANT_PRIMARY_ROLE,
+    HK_XTQUANT_PROVIDER_ID,
+    HkXtQuantDailyBarsProvider,
+    HkXtQuantInstrument,
+    hk_xtquant_instruments_from_symbols,
+    register_hk_xtquant_provider_roles,
+)
 from macro_platform.providers.registry import ProviderRegistry
 
 HK_PROVIDER_ID = "hk.contract-fixture.v1"
@@ -65,11 +74,18 @@ def register_hk_provider_roles(registry: ProviderRegistry, provider: HkSynthetic
 __all__ = [
     "HK_PROVIDER_ID",
     "HK_ROLE_BINDINGS",
+    "HK_XTQUANT_DEFAULT_INSTRUMENTS",
+    "HK_XTQUANT_PRIMARY_ROLE",
+    "HK_XTQUANT_PROVIDER_ID",
     "HkContractFixtureProvider",
     "HkSyntheticProvider",
+    "HkXtQuantDailyBarsProvider",
+    "HkXtQuantInstrument",
     "HkCsdProvider",
     "HkLiveMacroProvider",
     "HkmaLiveNewsProvider",
     "HkmaPressReleaseProvider",
+    "hk_xtquant_instruments_from_symbols",
     "register_hk_provider_roles",
+    "register_hk_xtquant_provider_roles",
 ]

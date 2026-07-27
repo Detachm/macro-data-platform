@@ -8,7 +8,13 @@ from macro_platform.providers.cn import (
     register_cn_provider_roles,
 )
 from macro_platform.providers.cn.live import CnNbsReleaseProvider
-from macro_platform.providers.hk import HkSyntheticProvider, register_hk_provider_roles
+from macro_platform.providers.hk import (
+    HkSyntheticProvider,
+    HkXtQuantDailyBarsProvider,
+    hk_xtquant_instruments_from_symbols,
+    register_hk_provider_roles,
+    register_hk_xtquant_provider_roles,
+)
 from macro_platform.providers.hk.live import HkCsdProvider, HkmaPressReleaseProvider
 from macro_platform.providers.registry import ProviderRegistry
 from macro_platform.providers.us.factory import create_us_provider_registry_from_settings
@@ -40,6 +46,13 @@ def create_provider_registry(settings: Settings) -> ProviderRegistry:
             timeout_seconds=settings.provider_timeout_seconds,
             cursor_signing_secret=cursor_secret,
         )
+        hk_xtquant = HkXtQuantDailyBarsProvider(
+            instruments=hk_xtquant_instruments_from_symbols(settings.hk_xtquant_symbols),
+            host=settings.hk_xtquant_host,
+            port=settings.hk_xtquant_port,
+            timeout_seconds=settings.provider_timeout_seconds,
+            cursor_signing_secret=cursor_secret,
+        )
         hk_csd = HkCsdProvider(
             timeout_seconds=settings.provider_timeout_seconds,
             cursor_signing_secret=cursor_secret,
@@ -50,6 +63,7 @@ def create_provider_registry(settings: Settings) -> ProviderRegistry:
         )
         registry.register(cn)
         register_cn_baostock_provider_roles(registry, cn_baostock)
+        register_hk_xtquant_provider_roles(registry, hk_xtquant)
         registry.register(hk_csd)
         registry.register(hkma)
         registry.bind_role("cn.macro.primary", cn.provider_id)
