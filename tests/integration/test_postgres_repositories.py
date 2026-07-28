@@ -49,6 +49,11 @@ from macro_platform.services.report_delivery import (
     PostgresReportDeliveryStore,
     ReportDeliveryService,
 )
+from macro_platform.services.workflow_alerts import (
+    PostgresWorkflowAlertStore,
+    WorkflowAlert,
+    WorkflowAlertDeliveryService,
+)
 from macro_platform.storage.database import Database
 from macro_platform.storage.models import (
     DailyReportRow,
@@ -63,6 +68,7 @@ from macro_platform.storage.models import (
     ProviderRunRow,
     ReportGenerationAttemptRow,
     ReportInputSnapshotRow,
+    WorkflowAlertAttemptRow,
 )
 from macro_platform.storage.reporting import (
     DeliveryAttempt,
@@ -358,14 +364,15 @@ async def test_db_002_migration_upgrades_0002_to_current_schema(database: Databa
                         "WHERE schemaname = 'public' AND tablename IN "
                         "('report_input_snapshots', 'daily_reports', 'daily_report_source_refs', "
                         "'delivery_attempts', 'macro_release_revisions', 'market_bar_revisions', "
-                        "'report_generation_attempts', 'scheduled_task_checkpoints')"
+                        "'report_generation_attempts', 'scheduled_task_checkpoints', "
+                        "'workflow_alert_attempts')"
                     )
                 )
             ).all()
         )
         preserved_run = await session.get(ProviderRunRow, _previous_schema_run_id)
         preserved_instrument = await session.get(InstrumentRow, _previous_schema_instrument_id)
-    assert revision == "0011"
+    assert revision == "0012"
     assert tables == {
         "report_input_snapshots",
         "daily_reports",
@@ -375,6 +382,7 @@ async def test_db_002_migration_upgrades_0002_to_current_schema(database: Databa
         "market_bar_revisions",
         "report_generation_attempts",
         "scheduled_task_checkpoints",
+        "workflow_alert_attempts",
     }
     assert preserved_run is not None
     assert preserved_run.idempotency_key is None
@@ -780,6 +788,57 @@ async def test_rpt_032_postgres_delivery_store_commits_idempotency_before_send(
             first.delivery_attempt.delivery_id
         )
     assert persisted == first.delivery_attempt
+
+
+async def test_e2e_033_postgres_workflow_alert_is_durable_and_idempotent(
+    database: Database,
+) -> None:
+    workflow_run_id = uuid4()
+    alert = WorkflowAlert(
+        workflow_run_id=workflow_run_id,
+        report_date=date(2026, 7, 28),
+        stage="ingestion",
+        error_code="REQUIRED_PROVIDER_FAILED",
+        summary="必需采集任务失败，正常日报已阻断。",
+        safe_retry="恢复 provider 后按报告日期显式重跑。",
+        provider_run_ids=(uuid4(),),
+    )
+
+    class _SuccessfulTransport:
+        def __init__(self) -> None:
+            self.requests: list[tuple[str, Mapping[str, Any], str]] = []
+
+        async def send_card(
+            self,
+            *,
+            chat_id: str,
+            card: Mapping[str, Any],
+            request_uuid: str,
+        ) -> FeishuSendResult:
+            self.requests.append((chat_id, card, request_uuid))
+            return FeishuSendResult(
+                message_id="om_workflow_alert",
+                response_payload={"code": 0},
+            )
+
+    transport = _SuccessfulTransport()
+    store = PostgresWorkflowAlertStore(database)
+    service = WorkflowAlertDeliveryService(transport)
+
+    first = await service.deliver(store, alert=alert, chat_id="oc_alert_contract")
+    replay = await service.deliver(store, alert=alert, chat_id="oc_alert_contract")
+
+    assert first.status == "succeeded"
+    assert replay.attempt == first.attempt
+    assert first.attempt.message_id == "om_workflow_alert"
+    assert len(transport.requests) == 1
+    async with database.session() as session:
+        count = await session.scalar(
+            select(func.count())
+            .select_from(WorkflowAlertAttemptRow)
+            .where(WorkflowAlertAttemptRow.workflow_run_id == workflow_run_id)
+        )
+    assert count == 1
 
 
 async def test_rep_027_production_runner_replays_completed_ingestion_without_provider_call(

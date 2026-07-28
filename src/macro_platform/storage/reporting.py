@@ -177,3 +177,20 @@ class DeliveryAttempt(StrictModel):
     response_payload: dict[str, Any] | None = None
     message_id: str | None = Field(default=None, min_length=1, max_length=128)
     error_code: str | None = Field(default=None, min_length=1, max_length=64)
+
+
+class WorkflowAlertAttempt(StrictModel):
+    """One durable, idempotent terminal-workflow alert delivery."""
+
+    alert_id: UUID
+    workflow_run_id: UUID
+    report_date: date
+    stage: str = Field(min_length=1, max_length=32)
+    delivery_target: str = Field(min_length=1, max_length=128)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    attempt_no: int = Field(default=1, ge=1)
+    status: Literal["pending", "succeeded", "failed", "retry_wait", "uncertain"] = "pending"
+    request_payload: dict[str, Any] = Field(default_factory=dict)
+    response_payload: dict[str, Any] | None = None
+    message_id: str | None = Field(default=None, min_length=1, max_length=128)
+    error_code: str | None = Field(default=None, min_length=1, max_length=64)
