@@ -39,6 +39,8 @@ dev = [
 
 [project.scripts]
 macro-data-archive-monitor = "macro_platform.jobs.archive_monitor:main"
+macro-data-xtquant-probe = "macro_platform.host.xtquant_entitlement_probe:main"
+macro-data-xtquant-server = "macro_platform.host.xtquant_data_center:main"
 macro-data-worker = "macro_platform.jobs.scheduler:main"
 
 [tool.hatch.build.targets.wheel]

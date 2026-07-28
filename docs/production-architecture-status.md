@@ -138,6 +138,9 @@ PostgreSQL 设计：
 - 已增加受 Bearer token 保护的 worker readiness、按日脱敏状态查询和人工投递恢复 API；人工恢复以
   `X-Request-ID` 和迁移 `0013` 的 `delivery_operator_actions` 永久审计，`uncertain` 必须人工确认
   群内无消息，API 不接收 Chat ID。
+- #50 仓库侧已增加 fail-closed 的宿主机 XtQuant data-centre CLI、systemd unit、TCP 自检和只输出
+  HSI/HSTECH 标识元数据的 entitlement probe；真实 token 轮换、Beast 139 个 tracked 配置清理、
+  防火墙、服务启动和指数 allowlist 仍需现场验收。
 
 ### 尚未完成
 

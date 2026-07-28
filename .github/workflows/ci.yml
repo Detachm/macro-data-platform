@@ -70,6 +70,10 @@ jobs:
             command -v alembic
             command -v macro-data-worker
             command -v macro-data-archive-monitor
+            command -v macro-data-xtquant-probe
+            command -v macro-data-xtquant-server
             macro-data-worker --help >/dev/null
             macro-data-archive-monitor --help >/dev/null
+            macro-data-xtquant-probe --help >/dev/null
+            macro-data-xtquant-server --help >/dev/null
           '

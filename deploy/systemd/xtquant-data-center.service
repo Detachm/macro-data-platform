@@ -1,0 +1,46 @@
+[Unit]
+Description=Macro Data Platform XtQuant Data Centre
+Documentation=file:/home/hliu/macro-data-platform/docs/runbooks/xtquant-host-service.md
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=macro-data
+Group=macro-data
+WorkingDirectory=/home/hliu/macro-data-platform
+EnvironmentFile=/etc/macro-data-platform/xtquant.env
+ExecStart=/home/hliu/macro-data-platform/.venv/bin/macro-data-xtquant-server serve
+ExecStartPost=/home/hliu/macro-data-platform/.venv/bin/macro-data-xtquant-server check --wait-seconds 180 --timeout-seconds 3
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=240
+TimeoutStopSec=30
+KillSignal=SIGTERM
+KillMode=control-group
+UMask=0077
+LimitNOFILE=65536
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectKernelLogs=true
+ProtectClock=true
+ProtectHostname=true
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadWritePaths=/mnt/data/macro-data-platform/xtquant
+
+[Install]
+WantedBy=multi-user.target

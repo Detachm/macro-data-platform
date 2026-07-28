@@ -172,6 +172,9 @@ sudo k3s kubectl -n macro-data-platform logs job/macro-data-migration
 
 只有 #50 的宿主机 XtQuant 服务已经安全监听节点可达地址、#51 的生产输入已就绪时才启动 worker：
 
+XtQuant 安装与防火墙验收按
+[`xtquant-host-service.md`](xtquant-host-service.md) 执行；K8s Secret 中不得出现 XtQuant token。
+
 ```bash
 sudo k3s kubectl apply -k deploy/k3s/production/phase-3-workloads
 sudo k3s kubectl -n macro-data-platform rollout status deployment/macro-data-api --timeout=5m

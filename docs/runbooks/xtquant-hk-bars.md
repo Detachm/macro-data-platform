@@ -4,6 +4,9 @@
 数据中心与 macro worker 分开运行：前者拥有 vendor SDK、`XTQUANT_TOKEN` 和本地缓存；后者不应
 拥有 token，也绝不能清理或终止 data-centre 的监听端口。
 
+宿主机 service、token 轮换、防火墙和指数权限探测的完整步骤见
+[`xtquant-host-service.md`](xtquant-host-service.md)。
+
 ## 部署前提
 
 - 为数据中心和 worker 使用与 Beast 验证过的 CPython 3.12 XtQuant vendor package；worker 可从
