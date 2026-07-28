@@ -160,10 +160,21 @@ def test_daily_report_v1_feishu_card_fixture_is_delivery_only() -> None:
     assert card["body"]["elements"]
     assert all(element["tag"] in {"markdown", "hr"} for element in card["body"]["elements"])
     assert all(element["tag"] != "note" for element in card["body"]["elements"])
-    assert report["sections"]["executive_summary"]["text"] in card["body"]["elements"][0]["content"]
-    assert (
-        report["sections"]["data_quality_notice"]["text"] in card["body"]["elements"][2]["content"]
+    card_text = "\n".join(
+        element["content"] for element in card["body"]["elements"] if element["tag"] == "markdown"
     )
+    for section_id in (
+        "executive_summary",
+        "cn_highlights",
+        "hk_highlights",
+        "us_highlights",
+        "data_quality_notice",
+    ):
+        assert report["sections"][section_id]["text"] in card_text
+    for event in report["sections"]["upcoming_calendar"]["items"]:
+        assert event["name"] in card_text
+    for source in report["sections"]["source_references"]["items"]:
+        assert source["source_url"] in card_text
 
 
 def test_daily_report_v1_contract_checks_nested_fact_and_source_references() -> None:

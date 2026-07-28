@@ -75,3 +75,6 @@ Fixture 文件和所覆盖的错误/时间场景记录在
 当前部署定位为内部个人使用。采集、EditorContext、报告引用和 LLM 输入不再经过
 来源权利 gate；`usage_rights` 仅作为 v1 兼容元数据保留。边界说明见
 [`docs/data-sources/internal-personal-use.md`](docs/data-sources/internal-personal-use.md)。
+
+已验证日报的飞书交付审计、幂等与联调前置条件见
+[`docs/feishu-delivery.md`](docs/feishu-delivery.md)。完整自动交付编排仍由 #33 负责。

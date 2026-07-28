@@ -233,6 +233,7 @@ def _report_commands(token: str) -> tuple[ReportInputSnapshot, StoredDailyReport
         DeliveryAttempt(
             delivery_id=uuid4(),
             report_id=report_id,
+            report_version=stored_report.report_version,
             delivery_target="feishu:contract-test",
             idempotency_key=f"delivery-{token}",
             request_payload={"report_id": report_id},
@@ -358,7 +359,7 @@ async def test_db_002_migration_upgrades_0002_to_current_schema(database: Databa
         )
         preserved_run = await session.get(ProviderRunRow, _previous_schema_run_id)
         preserved_instrument = await session.get(InstrumentRow, _previous_schema_instrument_id)
-    assert revision == "0010"
+    assert revision == "0011"
     assert tables == {
         "report_input_snapshots",
         "daily_reports",
@@ -680,6 +681,35 @@ async def test_rep_027_002_ingestion_run_and_report_recover_after_restart(
     assert recovered_snapshot == snapshot
     assert recovered_report == report
     assert recovered_delivery == delivery
+
+
+async def test_rpt_032_delivery_attempt_persists_feishu_audit_fields(
+    database: Database,
+) -> None:
+    token = uuid4().hex
+    snapshot, report, delivery = _report_commands(token)
+
+    async with UnitOfWork(database).transaction() as session:
+        repository = ReportRepository(session)
+        assert await repository.put_input_snapshot(snapshot)
+        assert await repository.put_report(report)
+        assert await repository.reserve_delivery_attempt(delivery)
+        assert await repository.update_delivery_attempt(
+            delivery_id=delivery.delivery_id,
+            expected_attempt_no=1,
+            status="succeeded",
+            response_payload={"provider": "feishu", "result": "succeeded"},
+            message_id="om_contract_message",
+        )
+
+    async with database.session() as session:
+        persisted = await ReportRepository(session).load_delivery_attempt(delivery.delivery_id)
+
+    assert persisted is not None
+    assert persisted.report_version == report.report_version
+    assert persisted.status == "succeeded"
+    assert persisted.message_id == "om_contract_message"
+    assert persisted.error_code is None
 
 
 async def test_rep_027_production_runner_replays_completed_ingestion_without_provider_call(

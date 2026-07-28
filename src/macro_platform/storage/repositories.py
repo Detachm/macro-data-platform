@@ -1350,12 +1350,15 @@ class ReportRepository:
             .values(
                 delivery_id=attempt.delivery_id,
                 report_id=attempt.report_id,
+                report_version=attempt.report_version,
                 delivery_target=attempt.delivery_target,
                 idempotency_key=attempt.idempotency_key,
                 attempt_no=attempt.attempt_no,
                 status=attempt.status,
                 request_payload=attempt.request_payload,
                 response_payload=attempt.response_payload,
+                message_id=attempt.message_id,
+                error_code=attempt.error_code,
             )
             .on_conflict_do_nothing(
                 constraint="uq_delivery_attempt_idempotency",
@@ -1380,8 +1383,10 @@ class ReportRepository:
         *,
         delivery_id: UUID,
         expected_attempt_no: int,
-        status: Literal["failed", "retry_wait", "succeeded"],
+        status: Literal["failed", "retry_wait", "succeeded", "uncertain"],
         response_payload: dict[str, Any] | None,
+        message_id: str | None = None,
+        error_code: str | None = None,
     ) -> bool:
         if expected_attempt_no < 1:
             raise ValueError("expected delivery attempt number must be positive")
@@ -1395,6 +1400,8 @@ class ReportRepository:
             .values(
                 status=status,
                 response_payload=response_payload,
+                message_id=message_id,
+                error_code=error_code,
             )
             .returning(DeliveryAttemptRow.delivery_id)
         )
@@ -1412,6 +1419,8 @@ class ReportRepository:
             .values(
                 status="pending",
                 response_payload=None,
+                message_id=None,
+                error_code=None,
                 attempt_no=DeliveryAttemptRow.attempt_no + 1,
             )
             .returning(DeliveryAttemptRow.delivery_id)
@@ -1459,12 +1468,15 @@ class ReportRepository:
         return DeliveryAttempt(
             delivery_id=row.delivery_id,
             report_id=row.report_id,
+            report_version=row.report_version,
             delivery_target=row.delivery_target,
             idempotency_key=row.idempotency_key,
             attempt_no=row.attempt_no,
             status=row.status,
             request_payload=row.request_payload,
             response_payload=row.response_payload,
+            message_id=row.message_id,
+            error_code=row.error_code,
         )
 
     async def load_delivery_attempt_for_key(
@@ -1486,12 +1498,15 @@ class ReportRepository:
         return DeliveryAttempt(
             delivery_id=row.delivery_id,
             report_id=row.report_id,
+            report_version=row.report_version,
             delivery_target=row.delivery_target,
             idempotency_key=row.idempotency_key,
             attempt_no=row.attempt_no,
             status=row.status,
             request_payload=row.request_payload,
             response_payload=row.response_payload,
+            message_id=row.message_id,
+            error_code=row.error_code,
         )
 
 

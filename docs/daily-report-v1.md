@@ -167,7 +167,9 @@ freshness 是相对于本次快照 cutoff 的数据年龄，而不是抓取完�
 
 ## 6. Feishu 交付边界
 
-`tests/golden/daily_report_v1_feishu_card.json` 是把已验证报告映射为 Feishu 卡片的最小示例。它只展示摘要、质量提示和版本信息，不定义 Feishu API 调用、鉴权或重试策略。
+`tests/golden/daily_report_v1_feishu_card.json` 是把已验证报告映射为 Feishu 卡片的
+冻结示例。它展示报告日期、摘要、CN/HK/US 高亮、未来日程、数据质量和可点击的来源
+链接；它不定义 Feishu API 调用、鉴权或重试策略。
 
 交付器必须遵守：
 

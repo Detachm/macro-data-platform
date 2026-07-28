@@ -6,6 +6,7 @@
 
 - `daily_report_v1_success.json`：完整、可发布的 `DailyReport`。
 - `daily_report_v1_incomplete.json`：必需输入缺失、明确阻断发布的 `DailyReport`。
-- `daily_report_v1_feishu_card.json`：由已验证报告映射得到的最小 Feishu 交付卡片。
+- `daily_report_v1_feishu_card.json`：由已验证报告映射得到的 Feishu 交付卡片，包含摘要、
+  CN/HK/US 高亮、日程、质量状态和来源链接。
 
 样例的字段语义和调度规则见 [`docs/daily-report-v1.md`](../../docs/daily-report-v1.md)，契约测试入口为 `tests/contract/test_daily_report_product_contract.py`。

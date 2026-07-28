@@ -13,6 +13,16 @@ from macro_platform.services.llm import (
 from macro_platform.services.macro_service import MacroService
 from macro_platform.services.market_service import MarketService
 from macro_platform.services.news_service import NewsService
+from macro_platform.services.report_delivery import (
+    ConfiguredFeishuDelivery,
+    FeishuCardRenderer,
+    FeishuSendResult,
+    FeishuTransport,
+    FeishuTransportError,
+    ReportDeliveryError,
+    ReportDeliveryResult,
+    ReportDeliveryService,
+)
 from macro_platform.services.report_generator import (
     DailyReportInputPreset,
     ReportGenerationError,
@@ -48,4 +58,12 @@ __all__ = [
     "ReportValidationError",
     "ReportValidationService",
     "ReportValidator",
+    "ConfiguredFeishuDelivery",
+    "FeishuCardRenderer",
+    "FeishuSendResult",
+    "FeishuTransport",
+    "FeishuTransportError",
+    "ReportDeliveryError",
+    "ReportDeliveryResult",
+    "ReportDeliveryService",
 ]
