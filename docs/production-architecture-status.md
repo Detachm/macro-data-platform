@@ -145,10 +145,11 @@ PostgreSQL 设计：
    核心指数。
 2. 按 #51 补齐 CN 新闻、HK/US 日历和节假日报告策略。
 3. 实现周末/节假日宏观版，不把休市当作必需行情缺失。
-4. 按 #49 安装单节点 K3s，并落地 Namespace、Deployment、StatefulSet、Service、Job、
-   CronJob、PVC 和 Secrets；当前仓库尚无 Kubernetes 清单。
-5. 在 #49 的 K8s 清单和最终运行手册中配置 readiness probe、NetworkPolicy、Secret、回滚和明确
-   ownership。
+4. #49 的三阶段 K3s 清单和详细运行手册已经进入仓库：包括 Namespace、Deployment、
+   StatefulSet、Service、migration Job、CronJob、100 Gi PVC、readiness、NetworkPolicy、运行时
+   Secret 创建流程、`/archive` 备份、70%/85% 幂等预警和隔离恢复演练；尚未在本机安装 K3s 或执行
+   真实 PVC/重启/恢复验收。
+5. 在维护窗口安装固定版本 K3s，执行 #49 的宿主机验收，并确认最终值班 ownership。
 6. 完成 provider 连续两个报告日验证和完整链路连续五个工作日 soak。
 
 GitHub 当前开放的生产任务是 #33、#49、#50 和 #51，分别跟踪编排、部署/存储、

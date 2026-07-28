@@ -1,0 +1,153 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-backup-script
+  namespace: macro-data-platform
+  labels:
+    app.kubernetes.io/name: postgres-backup
+    app.kubernetes.io/part-of: macro-data-platform
+data:
+  backup.sh: |
+    #!/bin/sh
+    set -eu
+
+    umask 077
+    backup_root=/archive/backups
+    daily_dir="$backup_root/daily"
+    weekly_dir="$backup_root/weekly"
+    mkdir -p "$daily_dir" "$weekly_dir"
+    chmod 0700 "$backup_root" "$daily_dir" "$weekly_dir"
+
+    usage_percent="$(df -P "$backup_root" | awk 'NR == 2 {gsub(/%/, "", $5); print $5}')"
+    if [ "$usage_percent" -ge 85 ]; then
+      echo "archive_capacity status=critical used_percent=$usage_percent threshold=85"
+    elif [ "$usage_percent" -ge 70 ]; then
+      echo "archive_capacity status=warning used_percent=$usage_percent threshold=70"
+    else
+      echo "archive_capacity status=ok used_percent=$usage_percent"
+    fi
+
+    stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+    final_path="$daily_dir/macro_data_$stamp.dump"
+    partial_path="$final_path.partial"
+    trap 'rm -f "$partial_path"' EXIT HUP INT TERM
+
+    pg_dump \
+      --host=postgres \
+      --username="$POSTGRES_USER" \
+      --dbname="$POSTGRES_DB" \
+      --format=custom \
+      --compress=6 \
+      --no-owner \
+      --no-privileges \
+      --file="$partial_path"
+    pg_restore --list "$partial_path" >/dev/null
+    chmod 0600 "$partial_path"
+    mv "$partial_path" "$final_path"
+    trap - EXIT HUP INT TERM
+
+    if [ "$(date -u +%u)" = "7" ]; then
+      weekly_path="$weekly_dir/macro_data_weekly_$stamp.dump"
+      cp -p "$final_path" "$weekly_path"
+      chmod 0600 "$weekly_path"
+    fi
+
+    prune_to_count() {
+      directory="$1"
+      pattern="$2"
+      keep="$3"
+      find "$directory" -maxdepth 1 -type f -name "$pattern" -print \
+        | sort -r \
+        | awk -v keep="$keep" 'NR > keep' \
+        | while IFS= read -r stale; do rm -f -- "$stale"; done
+    }
+
+    prune_to_count "$daily_dir" 'macro_data_*.dump' 14
+    prune_to_count "$weekly_dir" 'macro_data_weekly_*.dump' 8
+    echo "postgres_backup status=succeeded file=$(basename "$final_path")"
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgres-backup
+  namespace: macro-data-platform
+  labels:
+    app.kubernetes.io/name: postgres-backup
+    app.kubernetes.io/part-of: macro-data-platform
+spec:
+  schedule: "0 9 * * *"
+  timeZone: Asia/Shanghai
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 1800
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 3600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: postgres-backup
+            app.kubernetes.io/component: backup
+            app.kubernetes.io/part-of: macro-data-platform
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsUser: 999
+            runAsGroup: 999
+            runAsNonRoot: true
+            fsGroup: 999
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: backup
+              image: postgres:16.14-bookworm@sha256:92620daddcd947f8d5ab5ba66e848702fe443d87fed30c4cea8e389fd78dfc55
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/sh
+                - /scripts/backup.sh
+              env:
+                - name: POSTGRES_DB
+                  valueFrom:
+                    secretKeyRef:
+                      name: macro-postgres
+                      key: POSTGRES_DB
+                - name: POSTGRES_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: macro-postgres
+                      key: POSTGRES_USER
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: macro-postgres
+                      key: POSTGRES_PASSWORD
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+                limits:
+                  cpu: "1"
+                  memory: 1Gi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+              volumeMounts:
+                - name: backup-script
+                  mountPath: /scripts
+                  readOnly: true
+                - name: archive-backups
+                  mountPath: /archive/backups
+          volumes:
+            - name: backup-script
+              configMap:
+                name: postgres-backup-script
+                defaultMode: 0555
+            - name: archive-backups
+              hostPath:
+                path: /archive/macro-data-platform/postgres-backups
+                type: Directory

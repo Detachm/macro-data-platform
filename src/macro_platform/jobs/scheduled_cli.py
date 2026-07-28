@@ -6,9 +6,11 @@ import argparse
 import asyncio
 from datetime import date
 
-from macro_platform.config import get_settings
+from macro_platform.config import Settings, get_settings
 from macro_platform.jobs.scheduled_runtime import run_scheduler
 from macro_platform.observability import configure_logging
+from macro_platform.services.workflow_operations import PostgresWorkerReadinessReader
+from macro_platform.storage.database import Database
 
 
 def main() -> None:
@@ -22,7 +24,22 @@ def main() -> None:
         "--backfill-start", type=_parse_report_date, help="inclusive ISO start date"
     )
     parser.add_argument("--backfill-end", type=_parse_report_date, help="inclusive ISO end date")
+    parser.add_argument(
+        "--check-ready",
+        action="store_true",
+        help="check database, schema, provider, and delivery configuration, then exit",
+    )
     arguments = parser.parse_args()
+    if arguments.check_ready and any(
+        value is not None
+        for value in (
+            arguments.report_date,
+            arguments.report_version,
+            arguments.backfill_start,
+            arguments.backfill_end,
+        )
+    ):
+        parser.error("--check-ready cannot be combined with report or backfill arguments")
     if arguments.report_date is not None and arguments.backfill_start is not None:
         parser.error("--report-date cannot be combined with --backfill-start/--backfill-end")
     if arguments.report_version is not None and arguments.report_date is None:
@@ -31,6 +48,8 @@ def main() -> None:
         parser.error("--backfill-start and --backfill-end must be provided together")
     settings = get_settings()
     configure_logging(settings.log_level)
+    if arguments.check_ready:
+        raise SystemExit(asyncio.run(_worker_readiness_exit_code(settings)))
     asyncio.run(
         run_scheduler(
             settings=settings,
@@ -40,6 +59,16 @@ def main() -> None:
             backfill_end_date=arguments.backfill_end,
         )
     )
+
+
+async def _worker_readiness_exit_code(settings: Settings) -> int:
+    database = Database(settings.database_url)
+    try:
+        result = await PostgresWorkerReadinessReader(database, settings).check()
+        print(result.model_dump_json())
+        return 0 if result.status == "ready" else 1
+    finally:
+        await database.dispose()
 
 
 def _parse_report_date(value: str) -> date:

@@ -16,6 +16,9 @@ uv run alembic upgrade head
 uv run uvicorn macro_platform.api.app:create_app --factory --reload
 ```
 
+生产单节点 K3s、PostgreSQL PVC、`/archive` 备份与恢复流程见
+[`docs/runbooks/k3s-production.md`](docs/runbooks/k3s-production.md)。
+
 健康检查：
 
 ```bash
