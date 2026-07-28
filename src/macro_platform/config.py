@@ -99,12 +99,19 @@ class Settings(BaseSettings):
         ):
             raise ValueError("WORKER_RUN_ONCE_REPORT_DATE cannot be combined with worker backfill")
         if self.feishu_delivery_enabled and (
-            not self.feishu_app_id or self.feishu_app_secret is None or not self.feishu_chat_id
+            not self.feishu_app_id
+            or not self.feishu_app_id.strip()
+            or self.feishu_app_secret is None
+            or not self.feishu_app_secret.get_secret_value().strip()
+            or not self.feishu_chat_id
+            or not self.feishu_chat_id.strip()
         ):
             raise ValueError(
                 "FEISHU_APP_ID, FEISHU_APP_SECRET, and FEISHU_CHAT_ID are required "
                 "when Feishu delivery is enabled"
             )
+        if self.feishu_delivery_enabled and not self.feishu_api_base_url.startswith("https://"):
+            raise ValueError("FEISHU_API_BASE_URL must use HTTPS when delivery is enabled")
         return self
 
 

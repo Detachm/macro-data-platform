@@ -1,8 +1,5 @@
 {
   "schema": "2.0",
-  "report_contract_version": "1.0",
-  "report_id": "daily-report-2026-07-23-v1",
-  "publication_decision": "published",
   "header": {
     "title": {
       "tag": "plain_text",

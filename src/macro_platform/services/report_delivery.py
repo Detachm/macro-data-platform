@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, Protocol, cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -15,7 +15,10 @@ from pydantic import SecretStr, ValidationError
 
 from macro_platform.config import Settings
 from macro_platform.contracts.report import DailyReport, ReportSourceReference
+from macro_platform.storage.database import Database
 from macro_platform.storage.reporting import DeliveryAttempt, StoredDailyReport
+from macro_platform.storage.repositories import ReportRepository
+from macro_platform.storage.unit_of_work import UnitOfWork
 
 _REDACTED_KEY_NAMES = frozenset(
     {
@@ -30,8 +33,13 @@ _REDACTED_KEY_NAMES = frozenset(
 )
 _TOKEN_REFRESH_MARGIN = timedelta(seconds=60)
 _REPORT_TIMEZONE = ZoneInfo("Asia/Shanghai")
+_MAX_FEISHU_CARD_BYTES = 30 * 1024
 _FEISHU_RATE_LIMIT_CODES = frozenset({230020, 11232, 11233, 99991400})
-_FEISHU_CHAT_UNAVAILABLE_CODES = frozenset({230002, 230013, 232009})
+_FEISHU_AUTH_CODES = frozenset({230006, 230027})
+_FEISHU_CARD_INVALID_CODES = frozenset({200621, 200732, 200861, 230099})
+_FEISHU_CHAT_UNAVAILABLE_CODES = frozenset(
+    {230002, 230013, 230018, 230034, 230035, 230053, 230054, 230075, 232009}
+)
 
 
 class ReportDeliveryError(RuntimeError):
@@ -69,7 +77,13 @@ class FeishuSendResult:
 
 
 class FeishuCardTransport(Protocol):
-    async def send_card(self, *, chat_id: str, card: Mapping[str, Any]) -> FeishuSendResult: ...
+    async def send_card(
+        self,
+        *,
+        chat_id: str,
+        card: Mapping[str, Any],
+        request_uuid: str,
+    ) -> FeishuSendResult: ...
 
 
 class FeishuCardRenderer:
@@ -98,9 +112,6 @@ class FeishuCardRenderer:
         template = "blue" if typed_report.status == "complete" else "orange"
         return {
             "schema": "2.0",
-            "report_contract_version": typed_report.contract_version,
-            "report_id": typed_report.report_id,
-            "publication_decision": typed_report.publication.decision,
             "header": {
                 "title": {
                     "tag": "plain_text",
@@ -147,13 +158,13 @@ class FeishuTransport:
         timeout_seconds: float = 15,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
-        if not app_id:
+        if not app_id.strip():
             raise ValueError("Feishu app ID is required")
         secret = app_secret.get_secret_value() if isinstance(app_secret, SecretStr) else app_secret
-        if not secret:
+        if not secret.strip():
             raise ValueError("Feishu app secret is required")
-        if not api_base_url.startswith(("https://", "http://")):
-            raise ValueError("Feishu API base URL must be an absolute HTTP(S) URL")
+        if not api_base_url.startswith("https://"):
+            raise ValueError("Feishu API base URL must be an absolute HTTPS URL")
         if timeout_seconds <= 0:
             raise ValueError("Feishu timeout must be positive")
         self._app_id = app_id
@@ -166,13 +177,28 @@ class FeishuTransport:
         self._tenant_access_token: str | None = None
         self._token_expires_at: datetime | None = None
 
-    async def send_card(self, *, chat_id: str, card: Mapping[str, Any]) -> FeishuSendResult:
-        if not chat_id:
+    async def send_card(
+        self,
+        *,
+        chat_id: str,
+        card: Mapping[str, Any],
+        request_uuid: str,
+    ) -> FeishuSendResult:
+        if not chat_id.strip():
             raise ValueError("Feishu chat ID is required")
+        if not request_uuid or len(request_uuid) > 50:
+            raise ValueError("Feishu request UUID must contain 1 to 50 characters")
+        content = json.dumps(card, ensure_ascii=False, separators=(",", ":"))
+        if len(content.encode()) > _MAX_FEISHU_CARD_BYTES:
+            raise FeishuTransportError(
+                "FEISHU_CARD_INVALID",
+                response_payload={"reason": "card content exceeds the 30 KB API limit"},
+            )
         token = await self._tenant_token()
         return await self._send_card_with_token(
             chat_id=chat_id,
-            card=card,
+            content=content,
+            request_uuid=request_uuid,
             token=token,
             allow_token_refresh=True,
         )
@@ -225,12 +251,27 @@ class FeishuTransport:
                 response_payload={"exception": type(error).__name__},
                 retryable=True,
             ) from error
+        if response.status_code == 429:
+            raise FeishuTransportError(
+                "FEISHU_RATE_LIMITED",
+                response_payload=_response_object_or_status(response),
+                retryable=True,
+            )
+        if 400 <= response.status_code < 500:
+            payload = _response_object_or_status(response)
+            if _is_rate_limited_payload(payload):
+                raise FeishuTransportError(
+                    "FEISHU_RATE_LIMITED",
+                    response_payload=payload,
+                    retryable=True,
+                )
+            raise FeishuTransportError("FEISHU_AUTH_FAILED", response_payload=payload)
         payload = _response_object(
             response,
             invalid_response_retryable=response.status_code >= 500,
             invalid_response_outcome_unknown=False,
         )
-        if response.status_code == 429 or _is_rate_limited_payload(payload):
+        if _is_rate_limited_payload(payload):
             raise FeishuTransportError(
                 "FEISHU_RATE_LIMITED",
                 response_payload=payload,
@@ -242,17 +283,16 @@ class FeishuTransport:
                 response_payload=payload,
                 retryable=True,
             )
-        if response.status_code >= 400:
-            raise FeishuTransportError("FEISHU_TOKEN_HTTP_ERROR", response_payload=payload)
         if payload.get("code") != 0:
-            raise FeishuTransportError("FEISHU_TOKEN_REJECTED", response_payload=payload)
+            raise FeishuTransportError("FEISHU_AUTH_FAILED", response_payload=payload)
         return payload
 
     async def _send_card_with_token(
         self,
         *,
         chat_id: str,
-        card: Mapping[str, Any],
+        content: str,
+        request_uuid: str,
         token: str,
         allow_token_refresh: bool,
     ) -> FeishuSendResult:
@@ -265,7 +305,8 @@ class FeishuTransport:
                 json={
                     "receive_id": chat_id,
                     "msg_type": "interactive",
-                    "content": json.dumps(card, ensure_ascii=False, separators=(",", ":")),
+                    "content": content,
+                    "uuid": request_uuid,
                 },
             )
         except httpx.RequestError as error:
@@ -281,18 +322,28 @@ class FeishuTransport:
             refreshed = await self._tenant_token()
             return await self._send_card_with_token(
                 chat_id=chat_id,
-                card=card,
+                content=content,
+                request_uuid=request_uuid,
                 token=refreshed,
                 allow_token_refresh=False,
+            )
+        if response.status_code in (401, 403):
+            raise FeishuTransportError(
+                "FEISHU_AUTH_FAILED",
+                response_payload=_response_object_or_status(response),
+            )
+        if response.status_code == 429:
+            raise FeishuTransportError(
+                "FEISHU_RATE_LIMITED",
+                response_payload=_response_object_or_status(response),
+                retryable=True,
             )
         payload = _response_object(
             response,
             invalid_response_retryable=False,
             invalid_response_outcome_unknown=(response.is_success or response.status_code >= 500),
         )
-        if response.status_code in (401, 403):
-            raise FeishuTransportError("FEISHU_AUTH_FAILED", response_payload=payload)
-        if response.status_code == 429 or _is_rate_limited_payload(payload):
+        if _is_rate_limited_payload(payload):
             raise FeishuTransportError(
                 "FEISHU_RATE_LIMITED",
                 response_payload=payload,
@@ -334,7 +385,7 @@ class ReportDeliveryStore(Protocol):
     async def update_delivery_attempt(
         self,
         *,
-        delivery_id: Any,
+        delivery_id: UUID,
         expected_attempt_no: int,
         status: Literal["failed", "retry_wait", "succeeded", "uncertain"],
         response_payload: dict[str, Any] | None,
@@ -342,9 +393,9 @@ class ReportDeliveryStore(Protocol):
         error_code: str | None = None,
     ) -> bool: ...
 
-    async def retry_delivery_attempt(self, delivery_id: Any) -> bool: ...
+    async def retry_delivery_attempt(self, delivery_id: UUID) -> bool: ...
 
-    async def load_delivery_attempt(self, delivery_id: Any) -> DeliveryAttempt | None: ...
+    async def load_delivery_attempt(self, delivery_id: UUID) -> DeliveryAttempt | None: ...
 
     async def load_delivery_attempt_for_key(
         self,
@@ -353,6 +404,63 @@ class ReportDeliveryStore(Protocol):
         delivery_target: str,
         idempotency_key: str,
     ) -> DeliveryAttempt | None: ...
+
+
+class PostgresReportDeliveryStore:
+    """Commit every delivery state transition before returning to the network layer."""
+
+    def __init__(self, database: Database) -> None:
+        self._database = database
+
+    async def load_report(self, report_id: str) -> StoredDailyReport | None:
+        async with self._database.session() as session:
+            return await ReportRepository(session).load_report(report_id)
+
+    async def reserve_delivery_attempt(self, attempt: DeliveryAttempt) -> bool:
+        async with UnitOfWork(self._database).transaction() as session:
+            return await ReportRepository(session).reserve_delivery_attempt(attempt)
+
+    async def update_delivery_attempt(
+        self,
+        *,
+        delivery_id: UUID,
+        expected_attempt_no: int,
+        status: Literal["failed", "retry_wait", "succeeded", "uncertain"],
+        response_payload: dict[str, Any] | None,
+        message_id: str | None = None,
+        error_code: str | None = None,
+    ) -> bool:
+        async with UnitOfWork(self._database).transaction() as session:
+            return await ReportRepository(session).update_delivery_attempt(
+                delivery_id=delivery_id,
+                expected_attempt_no=expected_attempt_no,
+                status=status,
+                response_payload=response_payload,
+                message_id=message_id,
+                error_code=error_code,
+            )
+
+    async def retry_delivery_attempt(self, delivery_id: UUID) -> bool:
+        async with UnitOfWork(self._database).transaction() as session:
+            return await ReportRepository(session).retry_delivery_attempt(delivery_id)
+
+    async def load_delivery_attempt(self, delivery_id: UUID) -> DeliveryAttempt | None:
+        async with self._database.session() as session:
+            return await ReportRepository(session).load_delivery_attempt(delivery_id)
+
+    async def load_delivery_attempt_for_key(
+        self,
+        *,
+        report_id: str,
+        delivery_target: str,
+        idempotency_key: str,
+    ) -> DeliveryAttempt | None:
+        async with self._database.session() as session:
+            return await ReportRepository(session).load_delivery_attempt_for_key(
+                report_id=report_id,
+                delivery_target=delivery_target,
+                idempotency_key=idempotency_key,
+            )
 
 
 @dataclass(frozen=True)
@@ -407,10 +515,13 @@ class ReportDeliveryService:
             raise ReportDeliveryError(f"report does not exist: {report_id}")
         if report.lifecycle_status != "validated" or report.publication_decision != "published":
             raise ReportDeliveryError("only validated published reports may be delivered")
+        if not chat_id.strip():
+            raise ReportDeliveryError("Feishu chat ID is required")
 
         card = self._card_renderer.render(report)
         delivery_target = f"feishu:{chat_id}"
         idempotency_key = _idempotency_key(report, delivery_target)
+        request_uuid = _feishu_request_uuid(idempotency_key)
         if dry_run:
             return ReportDeliveryResult(
                 report_id=report.report_id,
@@ -428,7 +539,12 @@ class ReportDeliveryService:
             report_version=report.report_version,
             delivery_target=delivery_target,
             idempotency_key=idempotency_key,
-            request_payload=_request_audit_payload(report, delivery_target, card),
+            request_payload=_request_audit_payload(
+                report,
+                delivery_target,
+                card,
+                request_uuid=request_uuid,
+            ),
         )
         inserted = await store.reserve_delivery_attempt(initial_attempt)
         if inserted:
@@ -453,7 +569,11 @@ class ReportDeliveryService:
 
         while True:
             try:
-                sent = await self._transport.send_card(chat_id=chat_id, card=card)
+                sent = await self._transport.send_card(
+                    chat_id=chat_id,
+                    card=card,
+                    request_uuid=request_uuid,
+                )
             except FeishuTransportError as error:
                 next_status: Literal["failed", "retry_wait", "uncertain"]
                 if error.outcome_unknown:
@@ -555,7 +675,13 @@ class ConfiguredFeishuDelivery:
     from runtime configuration.
     """
 
-    def __init__(self, *, settings: Settings, client: httpx.AsyncClient) -> None:
+    def __init__(
+        self,
+        *,
+        settings: Settings,
+        client: httpx.AsyncClient,
+        store: ReportDeliveryStore,
+    ) -> None:
         if not settings.feishu_delivery_enabled:
             raise ValueError("Feishu delivery is disabled")
         if (
@@ -564,6 +690,7 @@ class ConfiguredFeishuDelivery:
             or settings.feishu_chat_id is None
         ):
             raise ValueError("enabled Feishu delivery requires complete configuration")
+        self._store = store
         self._chat_id = settings.feishu_chat_id
         self._service = ReportDeliveryService(
             FeishuTransport(
@@ -578,13 +705,12 @@ class ConfiguredFeishuDelivery:
 
     async def deliver(
         self,
-        store: ReportDeliveryStore,
         *,
         report_id: str,
         dry_run: bool = False,
     ) -> ReportDeliveryResult:
         return await self._service.deliver(
-            store,
+            self._store,
             report_id=report_id,
             chat_id=self._chat_id,
             dry_run=dry_run,
@@ -650,10 +776,16 @@ def _idempotency_key(report: StoredDailyReport, delivery_target: str) -> str:
     return f"feishu:{hashlib.sha256(scope.encode()).hexdigest()}"
 
 
+def _feishu_request_uuid(idempotency_key: str) -> str:
+    return hashlib.sha256(idempotency_key.encode()).hexdigest()[:50]
+
+
 def _request_audit_payload(
     report: StoredDailyReport,
     delivery_target: str,
     card: Mapping[str, Any],
+    *,
+    request_uuid: str,
 ) -> dict[str, Any]:
     serialized_card = json.dumps(card, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return {
@@ -662,6 +794,7 @@ def _request_audit_payload(
         "report_date": report.report_date.isoformat(),
         "report_version": report.report_version,
         "message_type": "interactive",
+        "request_uuid": request_uuid,
         "card_sha256": hashlib.sha256(serialized_card.encode()).hexdigest(),
     }
 
@@ -700,6 +833,16 @@ def _response_object(
     return cast(dict[str, Any], payload)
 
 
+def _response_object_or_status(response: httpx.Response) -> dict[str, Any]:
+    try:
+        payload = response.json()
+    except ValueError:
+        return {"http_status": response.status_code}
+    if not isinstance(payload, dict):
+        return {"http_status": response.status_code}
+    return cast(dict[str, Any], payload)
+
+
 def _is_rate_limited_payload(payload: Mapping[str, Any]) -> bool:
     return payload.get("code") in _FEISHU_RATE_LIMIT_CODES
 
@@ -714,6 +857,10 @@ def _classify_send_failure(payload: Mapping[str, Any], *, fallback: str) -> str:
     """
 
     code = payload.get("code")
+    if code in _FEISHU_AUTH_CODES:
+        return "FEISHU_AUTH_FAILED"
+    if code in _FEISHU_CARD_INVALID_CODES:
+        return "FEISHU_CARD_INVALID"
     if code in _FEISHU_CHAT_UNAVAILABLE_CODES:
         return "FEISHU_CHAT_UNAVAILABLE"
     if code in _FEISHU_RATE_LIMIT_CODES:

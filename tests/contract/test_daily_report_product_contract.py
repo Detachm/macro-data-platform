@@ -154,9 +154,7 @@ def test_daily_report_v1_feishu_card_fixture_is_delivery_only() -> None:
     report = load_json_fixture("daily_report_v1_success.json")
 
     assert card["schema"] == "2.0"
-    assert card["report_contract_version"] == "1.0"
-    assert card["report_id"] == "daily-report-2026-07-23-v1"
-    assert card["publication_decision"] == "published"
+    assert set(card) == {"schema", "header", "body"}
     assert card["body"]["elements"]
     assert all(element["tag"] in {"markdown", "hr"} for element in card["body"]["elements"])
     assert all(element["tag"] != "note" for element in card["body"]["elements"])

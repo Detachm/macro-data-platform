@@ -125,10 +125,16 @@ class _Store:
 class _Transport:
     def __init__(self, responses: list[FeishuSendResult | FeishuTransportError]) -> None:
         self._responses = responses
-        self.requests: list[tuple[str, Mapping[str, Any]]] = []
+        self.requests: list[tuple[str, Mapping[str, Any], str]] = []
 
-    async def send_card(self, *, chat_id: str, card: Mapping[str, Any]) -> FeishuSendResult:
-        self.requests.append((chat_id, card))
+    async def send_card(
+        self,
+        *,
+        chat_id: str,
+        card: Mapping[str, Any],
+        request_uuid: str,
+    ) -> FeishuSendResult:
+        self.requests.append((chat_id, card, request_uuid))
         result = self._responses.pop(0)
         if isinstance(result, FeishuTransportError):
             raise result
@@ -219,6 +225,9 @@ async def test_report_delivery_retries_only_known_safe_failure() -> None:
     assert result.delivery_attempt.attempt_no == 2
     assert delays == [0.1]
     assert len(transport.requests) == 2
+    assert len({request_uuid for _, _, request_uuid in transport.requests}) == 1
+    assert len(transport.requests[0][2]) == 50
+    assert result.delivery_attempt.request_payload["request_uuid"] == transport.requests[0][2]
 
 
 async def test_report_delivery_keeps_ambiguous_send_outcome_out_of_auto_retry() -> None:
@@ -228,15 +237,18 @@ async def test_report_delivery_keeps_ambiguous_send_outcome_out_of_auto_retry() 
         [FeishuTransportError("FEISHU_SEND_OUTCOME_UNKNOWN", outcome_unknown=True)]
     )
 
-    result = await ReportDeliveryService(transport).deliver(
+    service = ReportDeliveryService(transport)
+    result = await service.deliver(
         store,
         report_id=report.report_id,
         chat_id="oc_test",
     )
+    replay = await service.deliver(store, report_id=report.report_id, chat_id="oc_test")
 
     assert result.status == "uncertain"
     assert result.delivery_attempt is not None
     assert result.delivery_attempt.error_code == "FEISHU_SEND_OUTCOME_UNKNOWN"
+    assert replay.delivery_attempt == result.delivery_attempt
     assert len(transport.requests) == 1
 
 
@@ -288,8 +300,8 @@ async def test_feishu_transport_caches_token_and_sends_interactive_card() -> Non
             client=client,
         )
         card = FeishuCardRenderer().render(_report())
-        first = await transport.send_card(chat_id="oc_test", card=card)
-        second = await transport.send_card(chat_id="oc_test", card=card)
+        first = await transport.send_card(chat_id="oc_test", card=card, request_uuid="a" * 50)
+        second = await transport.send_card(chat_id="oc_test", card=card, request_uuid="a" * 50)
 
     assert first.message_id == "om_message"
     assert second.message_id == "om_message"
@@ -298,6 +310,7 @@ async def test_feishu_transport_caches_token_and_sends_interactive_card() -> Non
     body = json.loads(requests[1].content)
     assert body["receive_id"] == "oc_test"
     assert body["msg_type"] == "interactive"
+    assert body["uuid"] == "a" * 50
     assert json.loads(body["content"]) == card
 
 
@@ -333,6 +346,7 @@ async def test_feishu_transport_refreshes_token_once_after_unauthorized_response
         result = await transport.send_card(
             chat_id="oc_test",
             card=FeishuCardRenderer().render(_report()),
+            request_uuid="b" * 50,
         )
 
     assert result.message_id == "om_refreshed"
@@ -360,6 +374,7 @@ async def test_feishu_transport_marks_non_json_server_response_as_ambiguous() ->
             await transport.send_card(
                 chat_id="oc_test",
                 card=FeishuCardRenderer().render(_report()),
+                request_uuid="c" * 50,
             )
 
     assert caught.value.error_code == "FEISHU_RESPONSE_INVALID"
@@ -367,18 +382,96 @@ async def test_feishu_transport_marks_non_json_server_response_as_ambiguous() ->
     assert caught.value.retryable is False
 
 
+async def test_feishu_transport_classifies_non_json_http_rate_limit() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("tenant_access_token/internal"):
+            return httpx.Response(
+                200,
+                json={"code": 0, "tenant_access_token": "tenant-token", "expire": 7200},
+            )
+        return httpx.Response(429, text="rate limited")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        transport = FeishuTransport(
+            app_id="cli_test",
+            app_secret="secret-test",
+            client=client,
+        )
+        with pytest.raises(FeishuTransportError) as caught:
+            await transport.send_card(
+                chat_id="oc_test",
+                card=FeishuCardRenderer().render(_report()),
+                request_uuid="r" * 50,
+            )
+
+    assert caught.value.error_code == "FEISHU_RATE_LIMITED"
+    assert caught.value.retryable is True
+    assert caught.value.response_payload == {"http_status": 429}
+
+
+async def test_feishu_transport_classifies_token_rejection_as_auth_failure() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"code": 10003, "msg": "invalid app credentials"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        transport = FeishuTransport(
+            app_id="cli_test",
+            app_secret="secret-test",
+            client=client,
+        )
+        with pytest.raises(FeishuTransportError) as caught:
+            await transport.send_card(
+                chat_id="oc_test",
+                card=FeishuCardRenderer().render(_report()),
+                request_uuid="t" * 50,
+            )
+
+    assert caught.value.error_code == "FEISHU_AUTH_FAILED"
+    assert len(requests) == 1
+
+
+async def test_feishu_transport_rejects_an_oversized_card_before_network_io() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(500)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        transport = FeishuTransport(
+            app_id="cli_test",
+            app_secret="secret-test",
+            client=client,
+        )
+        with pytest.raises(FeishuTransportError) as caught:
+            await transport.send_card(
+                chat_id="oc_test",
+                card={
+                    "schema": "2.0",
+                    "body": {"elements": [{"tag": "markdown", "content": "x" * (31 * 1024)}]},
+                },
+                request_uuid="s" * 50,
+            )
+
+    assert caught.value.error_code == "FEISHU_CARD_INVALID"
+    assert requests == []
+
+
 @pytest.mark.parametrize(
     ("status_code", "payload", "expected_error_code", "retryable"),
     [
         (
-            403,
+            400,
             {"code": 230027, "msg": "Lack of necessary permissions"},
             "FEISHU_AUTH_FAILED",
             False,
         ),
         (
             400,
-            {"code": 230001, "msg": "invalid interactive card content"},
+            {"code": 230099, "msg": "failed to create card content"},
             "FEISHU_CARD_INVALID",
             False,
         ),
@@ -420,6 +513,7 @@ async def test_feishu_transport_classifies_message_api_failures(
             await transport.send_card(
                 chat_id="oc_test",
                 card=FeishuCardRenderer().render(_report()),
+                request_uuid="d" * 50,
             )
 
     assert caught.value.error_code == expected_error_code
@@ -449,25 +543,35 @@ async def test_configured_feishu_delivery_uses_the_enabled_runtime_target() -> N
         feishu_delivery_max_attempts=2,
     )
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        delivery = ConfiguredFeishuDelivery(settings=settings, client=client)
-        result = await delivery.deliver(store, report_id=report.report_id)
+        delivery = ConfiguredFeishuDelivery(settings=settings, client=client, store=store)
+        result = await delivery.deliver(report_id=report.report_id)
 
     assert result.status == "succeeded"
     assert result.delivery_target == "feishu:oc_configured"
     body = json.loads(requests[-1].content)
     assert body["receive_id"] == "oc_configured"
+    assert isinstance(body["uuid"], str)
+    assert len(body["uuid"]) == 50
 
 
 async def test_configured_feishu_delivery_rejects_disabled_configuration() -> None:
     async with httpx.AsyncClient() as client:
         with pytest.raises(ValueError, match="disabled"):
-            ConfiguredFeishuDelivery(settings=Settings(), client=client)
+            ConfiguredFeishuDelivery(settings=Settings(), client=client, store=_Store(_report()))
 
 
 def test_feishu_settings_are_required_only_when_delivery_is_enabled() -> None:
     assert Settings().feishu_delivery_enabled is False
     with pytest.raises(ValueError, match="FEISHU_APP_ID"):
         Settings(feishu_delivery_enabled=True)
+    with pytest.raises(ValueError, match="must use HTTPS"):
+        Settings(
+            feishu_delivery_enabled=True,
+            feishu_app_id="cli_test",
+            feishu_app_secret=SecretStr("secret-test"),
+            feishu_chat_id="oc_test",
+            feishu_api_base_url="http://open.feishu.cn",
+        )
 
     settings = Settings(
         feishu_delivery_enabled=True,
