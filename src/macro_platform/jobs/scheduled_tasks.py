@@ -181,4 +181,5 @@ def scheduled_task_result_from_checkpoint(
         record_count=checkpoint.records_accepted,
         records_rejected=checkpoint.records_rejected,
         run_id=checkpoint.run_id,
+        run_ids=checkpoint.run_ids,
     )

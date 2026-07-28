@@ -193,6 +193,9 @@ async def test_job_029_checkpointed_calendar_and_headline_tasks_persist_facts(
         update={
             "news_id": "job-029-news-1",
             "regions": [Region.HK],
+            "published_at": NOW - timedelta(hours=1),
+            "published_date": None,
+            "available_at": NOW,
             "source": SourceRef(
                 provider_id="job-029.news-provider",
                 provider_record_id="headline-row-1",
@@ -370,9 +373,30 @@ async def test_job_029_checkpointed_calendar_and_headline_tasks_persist_facts(
         ),
     )
     by_input_id = {item.input_id: item for item in evidence}
-    assert by_input_id["calendar.macro_releases_7d"].status == "available"
+    assert by_input_id["calendar.macro_releases_7d"].status == "missing"
     assert by_input_id["news.cn.official_headlines_24h"].status == "missing"
-    assert by_input_id["calendar.us_macro_releases_7d"].status == "missing"
+    hk_news = by_input_id["news.hk.official_headlines_24h"]
+    assert hk_news.status == "available"
+    assert hk_news.facts == (
+        {
+            "fact_id": hk_news.facts[0]["fact_id"],
+            "input_id": "news.hk.official_headlines_24h",
+            "fact_type": "news_event",
+            "section_id": "hk_highlights",
+            "news_id": news.news_id,
+            "title": news.title,
+            "summary": news.summary,
+            "published_at": news.published_at.isoformat().replace("+00:00", "Z"),
+            "published_date": None,
+            "content_mode": news.content_mode.value,
+            "label": news.title,
+            "display_text": f"{news.title}: {news.summary}",
+            "value": None,
+            "available_at": news.available_at.isoformat().replace("+00:00", "Z"),
+            "report_date": NOW.date().isoformat(),
+            "source_ref_ids": [hk_news.source_references[0]["source_ref_id"]],
+        },
+    )
 
 
 NOW = datetime(2026, 7, 28, 0, 0, tzinfo=UTC)
@@ -454,6 +478,69 @@ class _ThreePageHandler:
         )
 
 
+class _MarketBarsPageHandler:
+    """One committed page used to prove revision payload selection."""
+
+    provider_id = "job-029.revision-provider"
+
+    def __init__(self, bars: tuple[MarketBar, ...]) -> None:
+        self._bars = bars
+
+    async def run(self, request: IngestJobRequest) -> IngestJobResult:
+        raise AssertionError("revision evidence must use JobRunner checkpointed execution")
+
+    async def run_checkpointed(
+        self,
+        request: IngestJobRequest,
+        checkpoints: IngestionCheckpointService,
+        database: Database,
+        execution: IngestionExecutionContext,
+    ) -> IngestJobResult:
+        page = CommittedPage(
+            provider_role=request.provider_role,
+            dataset=request.dataset,
+            region=Region.CN.value,
+            page_fingerprint=canonical_json_checksum(
+                {
+                    "request": request.model_dump(mode="json"),
+                    "checksums": [bar.source.checksum_sha256 for bar in self._bars],
+                }
+            ),
+            source_watermark="revision-evidence",
+            next_cursor=None,
+            accepted_record_ids=[bar.source.provider_record_id for bar in self._bars],
+        )
+        async with UnitOfWork(database).transaction() as session:
+            repository = IngestionCheckpointRepository(session, ingestion_run_id=execution.run_id)
+
+            async def write_records(_: object) -> None:
+                for bar in self._bars:
+                    await repository.upsert_instrument(
+                        _instrument(
+                            instrument_id=bar.instrument_id,
+                            canonical_symbol=bar.canonical_symbol,
+                            local_symbol=bar.source.source_symbol or bar.instrument_id,
+                        )
+                    )
+                    await repository.upsert_bar(bar)
+
+            committed = await checkpoints.commit_page(repository, page, write_records)
+        return IngestJobResult(
+            run_id=execution.run_id,
+            status="succeeded",
+            provider_role=request.provider_role,
+            dataset=request.dataset,
+            started_at=NOW,
+            finished_at=NOW,
+            records_fetched=len(self._bars),
+            records_accepted=len(self._bars),
+            records_rejected=0,
+            records_inserted=len(self._bars) if committed else 0,
+            records_updated=0,
+            source_watermark=page.source_watermark,
+        )
+
+
 def _source(local_symbol: str) -> SourceRef:
     return SourceRef(
         provider_id=_ThreePageHandler.provider_id,
@@ -463,6 +550,20 @@ def _source(local_symbol: str) -> SourceRef:
         source_symbol=local_symbol,
         retrieved_at=NOW,
         checksum_sha256=canonical_json_checksum({"symbol": local_symbol, "date": REPORT_DATE}),
+    )
+
+
+def _revision_source(*, local_symbol: str, checksum_seed: str) -> SourceRef:
+    return SourceRef(
+        provider_id=_MarketBarsPageHandler.provider_id,
+        provider_record_id=f"{local_symbol}:{REPORT_DATE.isoformat()}",
+        source_name="Job 029 revision evidence provider",
+        source_url=f"https://example.com/revision/{local_symbol}",
+        source_symbol=local_symbol,
+        retrieved_at=NOW,
+        checksum_sha256=canonical_json_checksum(
+            {"symbol": local_symbol, "revision": checksum_seed}
+        ),
     )
 
 
@@ -506,6 +607,31 @@ def _bar(
         available_at=NOW,
         availability_basis=AvailabilityBasis.FIRST_SEEN,
         source=_source(local_symbol),
+    )
+
+
+def _revision_bar(
+    *,
+    instrument_id: str,
+    canonical_symbol: str,
+    local_symbol: str,
+    report_date: date,
+    close: Decimal,
+    available_at: datetime,
+    checksum_seed: str,
+) -> MarketBar:
+    return _bar(
+        instrument_id=instrument_id,
+        canonical_symbol=canonical_symbol,
+        local_symbol=local_symbol,
+        report_date=report_date,
+    ).model_copy(
+        update={
+            "close": close,
+            "high": Decimal("12"),
+            "available_at": available_at,
+            "source": _revision_source(local_symbol=local_symbol, checksum_seed=checksum_seed),
+        }
     )
 
 
@@ -618,9 +744,165 @@ async def test_job_029_postgres_worker_resumes_pages_materializes_quality_and_ba
                 .order_by(ReportInputSnapshotRow.report_date)
             )
         ).all()
+        recovered_snapshot = await session.get(
+            ReportInputSnapshotRow,
+            recovered.snapshot_id,
+        )
     assert bar_count == 9
     assert snapshot_dates == [
         REPORT_DATE,
         REPORT_DATE + timedelta(days=1),
         REPORT_DATE + timedelta(days=2),
     ]
+    assert recovered_snapshot is not None
+    market_facts = [
+        fact
+        for fact in recovered_snapshot.payload["facts"]
+        if fact.get("input_id") == "market.cn.core_indices.previous_close"
+    ]
+    closes_by_instrument = {fact["instrument_id"]: fact["close"] for fact in market_facts}
+    assert closes_by_instrument == {
+        "ins_cn_index_csi300": "10.5",
+        "ins_cn_index_sse_composite": "10.5",
+        "ins_cn_index_szse_component": "10.5",
+    }
+    assert all(fact["trading_date"] == "2026-07-27" for fact in market_facts)
+    assert all(len(fact["source_ref_ids"]) == 1 for fact in market_facts)
+
+
+async def test_job_029_evidence_uses_committed_task_runs_and_excludes_late_market_bars(
+    database: Database,
+) -> None:
+    runner = JobRunner(_ThreePageHandler(), database=database, now=lambda: NOW)
+    task = CheckpointedScheduledTask(
+        task_id="cn.daily-bars",
+        required=True,
+        provider_role="cn.bars.primary",
+        dataset=Dataset.BARS,
+        region=Region.CN,
+        executor=runner,
+        checkpoint_store=PostgresScheduledTaskCheckpointStore(database),
+        request_factory=_request,
+        now=lambda: NOW,
+    )
+    task_result = await task.run(REPORT_DATE)
+    evidence_store = PostgresReportInputEvidenceStore(database)
+
+    late = await evidence_store.collect(
+        report_date=REPORT_DATE,
+        as_of=NOW,
+        cutoff_at=NOW - timedelta(minutes=1),
+        task_results=(task_result,),
+    )
+    unbound = await evidence_store.collect(
+        report_date=REPORT_DATE,
+        as_of=NOW,
+        cutoff_at=NOW,
+        task_results=(
+            ScheduledTaskResult(
+                task_id="cn.daily-bars",
+                provider_role="cn.bars.primary",
+                dataset=Dataset.BARS,
+                region=Region.CN,
+                status="succeeded",
+                run_id=uuid4(),
+            ),
+        ),
+    )
+
+    late_market = {item.input_id: item for item in late}["market.cn.core_indices.previous_close"]
+    unbound_market = {item.input_id: item for item in unbound}[
+        "market.cn.core_indices.previous_close"
+    ]
+    assert (late_market.status, late_market.facts, late_market.source_references) == (
+        "late",
+        (),
+        (),
+    )
+    assert unbound_market.status == "unavailable"
+    assert unbound_market.facts == ()
+
+
+async def test_job_029_market_evidence_uses_the_latest_revision_payload_before_cutoff(
+    database: Database,
+) -> None:
+    revision_report_date = date(2026, 8, 4)
+    base_bars = tuple(
+        _revision_bar(
+            instrument_id=instrument_id,
+            canonical_symbol=canonical_symbol,
+            local_symbol=local_symbol,
+            report_date=revision_report_date,
+            close=Decimal("10.5"),
+            available_at=NOW - timedelta(minutes=2),
+            checksum_seed="base",
+        )
+        for instrument_id, canonical_symbol, local_symbol in _CN_INSTRUMENTS
+    )
+    revised_bars = tuple(
+        bar.model_copy(
+            update={
+                "close": Decimal("11.5"),
+                "high": Decimal("12"),
+                "available_at": NOW - timedelta(minutes=1),
+                "source": _revision_source(
+                    local_symbol=bar.source.source_symbol or bar.instrument_id,
+                    checksum_seed="revision",
+                ),
+            }
+        )
+        for bar in base_bars
+    )
+    runner = JobRunner(
+        _MarketBarsPageHandler(base_bars),
+        database=database,
+        now=lambda: NOW,
+    )
+    first = await runner.execute(_request(revision_report_date, NOW + timedelta(days=1), None))
+    second = await JobRunner(
+        _MarketBarsPageHandler(revised_bars),
+        database=database,
+        now=lambda: NOW,
+    ).execute(_request(revision_report_date, NOW + timedelta(days=1), "revision"))
+
+    evidence = await PostgresReportInputEvidenceStore(database).collect(
+        report_date=revision_report_date,
+        as_of=NOW,
+        cutoff_at=NOW,
+        task_results=(
+            ScheduledTaskResult(
+                task_id="cn.daily-bars",
+                provider_role="cn.bars.primary",
+                dataset=Dataset.BARS,
+                region=Region.CN,
+                status="succeeded",
+                run_id=second.run_id,
+                run_ids=(first.run_id, second.run_id),
+            ),
+        ),
+    )
+    base_only_evidence = await PostgresReportInputEvidenceStore(database).collect(
+        report_date=revision_report_date,
+        as_of=NOW,
+        cutoff_at=NOW,
+        task_results=(
+            ScheduledTaskResult(
+                task_id="cn.daily-bars",
+                provider_role="cn.bars.primary",
+                dataset=Dataset.BARS,
+                region=Region.CN,
+                status="succeeded",
+                run_id=first.run_id,
+            ),
+        ),
+    )
+
+    market = {item.input_id: item for item in evidence}["market.cn.core_indices.previous_close"]
+    base_only_market = {item.input_id: item for item in base_only_evidence}[
+        "market.cn.core_indices.previous_close"
+    ]
+    assert market.status == "revised"
+    assert {fact["close"] for fact in market.facts} == {"11.5"}
+    assert {fact["value"] for fact in market.facts} == {"11.5"}
+    assert base_only_market.status == "available"
+    assert {fact["close"] for fact in base_only_market.facts} == {"10.5"}

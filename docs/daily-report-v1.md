@@ -93,14 +93,13 @@ freshness 是相对于本次快照 cutoff 的数据年龄，而不是抓取完�
 | `news.cn.official_headlines_24h` | CN | 中国 highlights 与质量判断 | 是 |
 | `market.hk.core_indices.previous_close` | HK | 香港 highlights、摘要、关键变动 | 是 |
 | `news.hk.official_headlines_24h` | HK | 香港 highlights 与质量判断 | 是 |
-| `calendar.macro_releases_7d` | CN | 已获批 NBS 未来发布日历、摘要 | 是 |
-| `calendar.us_macro_releases_7d` | US | US 未来发布日历覆盖证明 | 是；当前无获批 live provider，必须显式 `missing` 并阻断 |
+| `calendar.macro_releases_7d` | CN/HK/US | upcoming calendar、摘要 | 是 |
 | `market.cn.breadth.turnover` | CN | 关键变动补充 | 否 |
 | `market.hk.southbound.net_flow` | HK | 关键变动补充 | 否 |
 | `macro.*.latest_key_observations` | CN/HK/US | 宏观背景补充 | 否 |
 | `market.us.core_indices.previous_close` | US | 美国 highlights、摘要、关键变动 | 是 |
 
-必需输入必须在 cutoff 前存在、通过公共 contract 并满足 freshness 规则。可选输入缺失时可以发布 `degraded` 报告，但必须在 `data_quality_notice` 中披露。`calendar.macro_releases_7d` 可以是合法的空列表，但抓取失败或无法证明覆盖窗口时是 `unavailable`。CN news 和 US 宏观日历尚无获批 live provider 时，必须分别以 `news.cn.official_headlines_24h`、`calendar.us_macro_releases_7d` 的 `missing` 证据阻断；不得用 fixture、历史行或合成记录代替。
+必需输入必须在 cutoff 前存在、通过公共 contract 并满足 freshness 规则。可选输入缺失时可以发布 `degraded` 报告，但必须在 `data_quality_notice` 中披露。`calendar.macro_releases_7d` 可以是合法的空列表，但抓取失败或无法证明 CN/HK/US 全部覆盖窗口时是 `unavailable`。CN news 或任一地区宏观日历尚无获批 live provider 时，必须以对应冻结输入的 `missing` 证据阻断；不得用 fixture、历史行或合成记录代替。
 
 ## 4. 输出结构
 

@@ -2,16 +2,28 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
+from typing import Literal
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from macro_platform.contracts.common import Region
-from macro_platform.contracts.macro import MacroRelease
+from macro_platform.contracts.common import Region, SourceRef
 from macro_platform.contracts.market import MarketBar
 from macro_platform.contracts.news import NewsEvent
 from macro_platform.jobs.scheduler import ScheduledTaskResult
+from macro_platform.normalization.common import stable_id
+from macro_platform.services.report_input_evidence_queries import (
+    has_late_macro_release,
+    late_market_instruments,
+    macro_has_revision_before_cutoff,
+    macro_release_fact,
+    macro_releases_as_of,
+    market_bar_fact,
+    market_bars_as_of,
+    market_has_revision_before_cutoff,
+    news_event_fact,
+)
 from macro_platform.services.report_input_evidence_support import (
     MARKET_INPUT_SPECS,
     ExchangeMarketSessionCalendar,
@@ -20,6 +32,7 @@ from macro_platform.services.report_input_evidence_support import (
     MarketSessionCalendar,
     MarketSessionCalendarUnavailableError,
     ReportInputEvidenceStore,
+    committed_task_pages,
     news_task_id,
     rejections_by_run_id,
     source_reference,
@@ -29,14 +42,7 @@ from macro_platform.services.report_input_evidence_support import (
     unexpected_trading_dates,
 )
 from macro_platform.storage.database import Database
-from macro_platform.storage.models import (
-    MacroReleaseRevisionRow,
-    MacroReleaseRow,
-    MarketBarRevisionRow,
-    MarketBarRow,
-    NewsEventRegionRow,
-    NewsEventRow,
-)
+from macro_platform.storage.models import NewsEventRegionRow, NewsEventRow
 
 
 class PostgresReportInputEvidenceStore(ReportInputEvidenceStore):
@@ -46,17 +52,15 @@ class PostgresReportInputEvidenceStore(ReportInputEvidenceStore):
         self,
         database: Database,
         *,
-        market_max_age: timedelta = timedelta(hours=72),
-        news_max_age: timedelta = timedelta(hours=30),
-        macro_max_age: timedelta = timedelta(days=8),
+        market_max_age: timedelta = timedelta(hours=36),
+        news_max_age: timedelta = timedelta(hours=24),
         market_session_calendar: MarketSessionCalendar | None = None,
     ) -> None:
-        if min(market_max_age, news_max_age, macro_max_age) <= timedelta(0):
+        if min(market_max_age, news_max_age) <= timedelta(0):
             raise ValueError("report input freshness windows must be positive")
         self._database = database
         self._market_max_age = market_max_age
         self._news_max_age = news_max_age
-        self._macro_max_age = macro_max_age
         self._market_session_calendar = market_session_calendar or ExchangeMarketSessionCalendar()
 
     async def collect(
@@ -117,10 +121,9 @@ class PostgresReportInputEvidenceStore(ReportInputEvidenceStore):
                 "CN official headlines have no approved live provider",
             ),
             hk_news,
-            cn_macro,
-            _unsupported_live_input(
-                "calendar.us_macro_releases_7d",
-                "US macro release calendar has no approved live provider",
+            _global_calendar_evidence(
+                cn_macro,
+                missing_regions=(Region.HK, Region.US),
             ),
         )
 
@@ -138,29 +141,60 @@ class PostgresReportInputEvidenceStore(ReportInputEvidenceStore):
         problem = task_problem(spec.input_id, task_result, rejection_count=rejection_count)
         if problem is not None:
             return problem
-        rows = (
-            await session.scalars(
-                select(MarketBarRow)
-                .where(
-                    MarketBarRow.region == spec.region.value,
-                    MarketBarRow.instrument_id.in_(sorted(spec.expected_instrument_ids)),
-                    MarketBarRow.trading_date < report_date,
-                    MarketBarRow.available_at <= as_of,
-                )
-                .order_by(
-                    MarketBarRow.instrument_id,
-                    MarketBarRow.trading_date.desc(),
-                    MarketBarRow.available_at.desc(),
-                    MarketBarRow.bar_id.desc(),
-                )
+        if task_result is None:
+            raise AssertionError("a successful task result is required after task_problem")
+        commits = await committed_task_pages(session, task_result)
+        if commits.page_count == 0:
+            return _unavailable_evidence(
+                spec.input_id,
+                "scheduled task has no committed provider pages for its durable run evidence",
             )
-        ).all()
+        if not commits.provider_record_ids:
+            return InputQualityEvidence(
+                input_id=spec.input_id,
+                status="missing",
+                required=True,
+                reason="scheduled task committed no market-bar provider records",
+            )
+        rows = await market_bars_as_of(
+            session,
+            region=spec.region,
+            instrument_ids=spec.expected_instrument_ids,
+            provider_record_ids=commits.provider_record_ids,
+            run_ids=task_result.evidence_run_ids,
+            available_at=cutoff_at,
+            report_date=report_date,
+        )
         selected: dict[str, MarketBar] = {}
-        for row in rows:
-            if row.instrument_id not in selected:
-                selected[row.instrument_id] = MarketBar.model_validate(row.payload)
+        for bar in rows:
+            selected.setdefault(bar.instrument_id, bar)
         missing = sorted(spec.expected_instrument_ids - set(selected))
+        try:
+            expected = self._market_session_calendar.previous_session(
+                region=spec.region, report_date=report_date
+            )
+        except MarketSessionCalendarUnavailableError as exc:
+            return _unavailable_evidence(spec.input_id, str(exc))
         if missing:
+            late_instruments = await late_market_instruments(
+                session,
+                region=spec.region,
+                provider_record_ids=commits.provider_record_ids,
+                run_ids=task_result.evidence_run_ids,
+                cutoff_at=cutoff_at,
+                as_of=as_of,
+                expected_trading_date=expected,
+            )
+            if set(missing).issubset(late_instruments):
+                return InputQualityEvidence(
+                    input_id=spec.input_id,
+                    status="late",
+                    required=True,
+                    reason=(
+                        "required market bars were committed after the report cutoff: "
+                        + ", ".join(missing)
+                    ),
+                )
             return InputQualityEvidence(
                 input_id=spec.input_id,
                 status="missing",
@@ -168,17 +202,6 @@ class PostgresReportInputEvidenceStore(ReportInputEvidenceStore):
                 reason=f"missing expected instruments: {', '.join(missing)}",
             )
         bars = tuple(selected[instrument_id] for instrument_id in sorted(selected))
-        try:
-            expected = self._market_session_calendar.previous_session(
-                region=spec.region, report_date=report_date
-            )
-        except MarketSessionCalendarUnavailableError as exc:
-            return InputQualityEvidence(
-                input_id=spec.input_id,
-                status="unavailable",
-                required=True,
-                reason=str(exc),
-            )
         stale_dates = unexpected_trading_dates(
             (bar.trading_date for bar in bars), expected_trading_date=expected
         )
@@ -192,22 +215,17 @@ class PostgresReportInputEvidenceStore(ReportInputEvidenceStore):
                     f"{', '.join(value.isoformat() for value in stale_dates)}"
                 ),
             )
-        revised = set(
-            (
-                await session.scalars(
-                    select(MarketBarRevisionRow.bar_id).where(
-                        MarketBarRevisionRow.bar_id.in_([bar.bar_id for bar in bars]),
-                        MarketBarRevisionRow.available_at <= as_of,
-                    )
-                )
-            ).all()
+        revised = await market_has_revision_before_cutoff(
+            session,
+            bar_ids={bar.bar_id for bar in bars},
+            run_ids=task_result.evidence_run_ids,
+            cutoff_at=cutoff_at,
         )
         status, reason = source_status(
             available_ats=tuple(bar.available_at for bar in bars),
-            as_of=as_of,
             cutoff_at=cutoff_at,
             max_age=self._market_max_age,
-            revised=bool(revised),
+            revised=revised,
         )
         sources = tuple(source_reference(bar.source) for bar in bars)
         return InputQualityEvidence(
@@ -215,19 +233,14 @@ class PostgresReportInputEvidenceStore(ReportInputEvidenceStore):
             status=status,
             required=True,
             reason=reason,
-            facts=(
-                {
-                    "fact_id": f"fact.{spec.input_id}",
-                    "label": f"{spec.region.value} previous close coverage",
-                    "display_text": (
-                        f"{spec.region.value} previous-close coverage: {len(bars)} instruments."
-                    ),
-                    "value": len(bars),
-                    "unit": "instruments",
-                    "available_at": _isoformat(max(bar.available_at for bar in bars)),
-                    "report_date": report_date.isoformat(),
-                    "source_ref_ids": [source["source_ref_id"] for source in sources],
-                },
+            facts=tuple(
+                market_bar_fact(
+                    bar,
+                    input_id=spec.input_id,
+                    report_date=report_date,
+                    source_ref_id=_source_ref_id(bar.source),
+                )
+                for bar in bars
             ),
             source_references=sources,
         )
@@ -247,6 +260,14 @@ class PostgresReportInputEvidenceStore(ReportInputEvidenceStore):
         problem = task_problem(input_id, task_result, rejection_count=rejection_count)
         if problem is not None:
             return problem
+        if task_result is None:
+            raise AssertionError("a successful task result is required after task_problem")
+        commits = await committed_task_pages(session, task_result)
+        if commits.page_count == 0:
+            return _unavailable_evidence(
+                input_id,
+                "scheduled task has no committed provider pages for its durable run evidence",
+            )
         window_start = cutoff_at - timedelta(hours=24)
         rows = (
             await session.scalars(
@@ -255,7 +276,9 @@ class PostgresReportInputEvidenceStore(ReportInputEvidenceStore):
                 .where(
                     NewsEventRegionRow.region == region.value,
                     NewsEventRow.status.in_(("active", "corrected")),
-                    NewsEventRow.available_at <= as_of,
+                    NewsEventRow.provider_record_id.in_(sorted(commits.provider_record_ids)),
+                    NewsEventRow.ingestion_run_id.in_(task_result.evidence_run_ids),
+                    NewsEventRow.available_at <= cutoff_at,
                     or_(
                         NewsEventRow.published_at >= window_start,
                         NewsEventRow.published_date >= window_start.date(),
@@ -265,6 +288,34 @@ class PostgresReportInputEvidenceStore(ReportInputEvidenceStore):
             )
         ).all()
         if not rows:
+            late_rows = (
+                await session.scalars(
+                    select(NewsEventRow.news_id)
+                    .join(
+                        NewsEventRegionRow,
+                        NewsEventRegionRow.news_id == NewsEventRow.news_id,
+                    )
+                    .where(
+                        NewsEventRegionRow.region == region.value,
+                        NewsEventRow.status.in_(("active", "corrected")),
+                        NewsEventRow.provider_record_id.in_(sorted(commits.provider_record_ids)),
+                        NewsEventRow.ingestion_run_id.in_(task_result.evidence_run_ids),
+                        NewsEventRow.available_at > cutoff_at,
+                        NewsEventRow.available_at <= as_of,
+                        or_(
+                            NewsEventRow.published_at >= window_start,
+                            NewsEventRow.published_date >= window_start.date(),
+                        ),
+                    )
+                )
+            ).all()
+            if late_rows:
+                return InputQualityEvidence(
+                    input_id=input_id,
+                    status="late",
+                    required=True,
+                    reason="official headlines were committed after the report cutoff",
+                )
             return InputQualityEvidence(
                 input_id=input_id,
                 status="missing",
@@ -274,7 +325,6 @@ class PostgresReportInputEvidenceStore(ReportInputEvidenceStore):
         events = tuple(NewsEvent.model_validate(row.payload) for row in rows)
         status, reason = source_status(
             available_ats=tuple(event.available_at for event in events),
-            as_of=as_of,
             cutoff_at=cutoff_at,
             max_age=self._news_max_age,
             revised=any(event.status == "corrected" for event in events),
@@ -285,17 +335,14 @@ class PostgresReportInputEvidenceStore(ReportInputEvidenceStore):
             status=status,
             required=True,
             reason=reason,
-            facts=(
-                {
-                    "fact_id": f"fact.{input_id}",
-                    "label": f"{region.value} official headlines",
-                    "display_text": f"{len(events)} official headlines materialized.",
-                    "value": len(events),
-                    "unit": "events",
-                    "available_at": _isoformat(max(event.available_at for event in events)),
-                    "report_date": report_date.isoformat(),
-                    "source_ref_ids": [source["source_ref_id"] for source in sources],
-                },
+            facts=tuple(
+                news_event_fact(
+                    event,
+                    input_id=input_id,
+                    report_date=report_date,
+                    source_ref_id=_source_ref_id(event.source),
+                )
+                for event in events
             ),
             source_references=sources,
         )
@@ -315,24 +362,39 @@ class PostgresReportInputEvidenceStore(ReportInputEvidenceStore):
         problem = task_problem(input_id, task_result, rejection_count=rejection_count)
         if problem is not None:
             return problem
-        end_date = report_date + timedelta(days=7)
-        rows = (
-            await session.scalars(
-                select(MacroReleaseRow)
-                .where(
-                    MacroReleaseRow.region == region.value,
-                    MacroReleaseRow.available_at <= as_of,
-                    or_(
-                        (MacroReleaseRow.scheduled_at >= cutoff_at)
-                        & (MacroReleaseRow.scheduled_at < cutoff_at + timedelta(days=7)),
-                        (MacroReleaseRow.scheduled_date >= report_date)
-                        & (MacroReleaseRow.scheduled_date < end_date),
-                    ),
-                )
-                .order_by(MacroReleaseRow.available_at.desc(), MacroReleaseRow.release_id)
+        if task_result is None:
+            raise AssertionError("a successful task result is required after task_problem")
+        commits = await committed_task_pages(session, task_result)
+        if commits.page_count == 0:
+            return _unavailable_evidence(
+                input_id,
+                "scheduled task has no committed provider pages for its durable run evidence",
             )
-        ).all()
-        if not rows:
+        releases = await macro_releases_as_of(
+            session,
+            region=region,
+            provider_record_ids=commits.provider_record_ids,
+            run_ids=task_result.evidence_run_ids,
+            report_date=report_date,
+            cutoff_at=cutoff_at,
+        )
+        if not releases:
+            late = await has_late_macro_release(
+                session,
+                region=region,
+                provider_record_ids=commits.provider_record_ids,
+                run_ids=task_result.evidence_run_ids,
+                report_date=report_date,
+                cutoff_at=cutoff_at,
+                as_of=as_of,
+            )
+            if late:
+                return InputQualityEvidence(
+                    input_id=input_id,
+                    status="late",
+                    required=True,
+                    reason="macro release calendar entries were committed after the report cutoff",
+                )
             return InputQualityEvidence(
                 input_id=input_id,
                 status="available",
@@ -343,7 +405,9 @@ class PostgresReportInputEvidenceStore(ReportInputEvidenceStore):
                 ),
                 facts=(
                     {
-                        "fact_id": f"fact.{input_id}",
+                        "fact_id": f"fact.{input_id}.empty",
+                        "input_id": input_id,
+                        "fact_type": "macro_release_calendar",
                         "label": f"{region.value} macro releases in next seven days",
                         "display_text": "No macro releases are scheduled in the next seven days.",
                         "value": 0,
@@ -353,25 +417,17 @@ class PostgresReportInputEvidenceStore(ReportInputEvidenceStore):
                     },
                 ),
             )
-        releases = tuple(MacroRelease.model_validate(row.payload) for row in rows)
-        revised = set(
-            (
-                await session.scalars(
-                    select(MacroReleaseRevisionRow.release_id).where(
-                        MacroReleaseRevisionRow.release_id.in_(
-                            [release.release_id for release in releases]
-                        ),
-                        MacroReleaseRevisionRow.available_at <= as_of,
-                    )
-                )
-            ).all()
-        )
-        status, reason = source_status(
-            available_ats=tuple(release.available_at for release in releases),
-            as_of=as_of,
+        revised = await macro_has_revision_before_cutoff(
+            session,
+            release_ids={release.release_id for release in releases},
+            run_ids=task_result.evidence_run_ids,
             cutoff_at=cutoff_at,
-            max_age=self._macro_max_age,
-            revised=bool(revised),
+        )
+        status: Literal["available", "revised"] = "revised" if revised else "available"
+        reason = (
+            "a later source revision exists for this report input"
+            if revised
+            else "calendar coverage is materialized before cutoff"
         )
         sources = tuple(source_reference(release.source) for release in releases)
         return InputQualityEvidence(
@@ -379,24 +435,52 @@ class PostgresReportInputEvidenceStore(ReportInputEvidenceStore):
             status=status,
             required=True,
             reason=reason,
-            facts=(
-                {
-                    "fact_id": f"fact.{input_id}",
-                    "label": f"{region.value} macro releases in next seven days",
-                    "display_text": f"{len(releases)} macro releases materialized.",
-                    "value": len(releases),
-                    "unit": "events",
-                    "available_at": _isoformat(max(release.available_at for release in releases)),
-                    "report_date": report_date.isoformat(),
-                    "source_ref_ids": [source["source_ref_id"] for source in sources],
-                },
+            facts=tuple(
+                macro_release_fact(
+                    release,
+                    input_id=input_id,
+                    report_date=report_date,
+                    source_ref_id=_source_ref_id(release.source),
+                )
+                for release in releases
             ),
             source_references=sources,
         )
 
 
-def _isoformat(value: datetime) -> str:
-    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+def _unavailable_evidence(input_id: str, reason: str) -> InputQualityEvidence:
+    return InputQualityEvidence(
+        input_id=input_id,
+        status="unavailable",
+        required=True,
+        reason=reason,
+    )
+
+
+def _source_ref_id(source: SourceRef) -> str:
+    return stable_id(
+        "report-source", source.provider_id, source.provider_record_id, source.checksum_sha256
+    )
+
+
+def _global_calendar_evidence(
+    cn_evidence: InputQualityEvidence,
+    *,
+    missing_regions: tuple[Region, ...],
+) -> InputQualityEvidence:
+    """Keep the frozen v1 aggregate calendar input fail-closed by region."""
+
+    if cn_evidence.status not in {"available", "revised"}:
+        return cn_evidence
+    return InputQualityEvidence(
+        input_id=cn_evidence.input_id,
+        status="missing",
+        required=True,
+        reason=(
+            "no approved live macro-release calendar provider for "
+            + ", ".join(region.value for region in missing_regions)
+        ),
+    )
 
 
 def _unsupported_live_input(input_id: str, reason: str) -> InputQualityEvidence:

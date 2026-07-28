@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from macro_platform.contracts.common import Region, SourceRef
 from macro_platform.jobs.scheduler import ScheduledTaskResult
 from macro_platform.normalization.common import stable_id
-from macro_platform.storage.models import IngestRejectionRow
+from macro_platform.storage.models import IngestPageCommitRow, IngestRejectionRow
 
 InputEvidenceStatus = Literal[
     "available",
@@ -41,6 +41,14 @@ class InputQualityEvidence:
     reason: str
     facts: tuple[dict[str, object], ...] = ()
     source_references: tuple[dict[str, object], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class TaskCommitEvidence:
+    """Committed page evidence for one scheduled task's durable run set."""
+
+    page_count: int
+    provider_record_ids: frozenset[str]
 
 
 class ReportInputEvidenceStore(Protocol):
@@ -150,7 +158,12 @@ def task_problem(
     rejection_count: int,
 ) -> InputQualityEvidence | None:
     if task_result is None:
-        return None
+        return InputQualityEvidence(
+            input_id=input_id,
+            status="unavailable",
+            required=True,
+            reason="scheduled task did not produce a durable result",
+        )
     if rejection_count > 0:
         return InputQualityEvidence(
             input_id=input_id,
@@ -159,6 +172,13 @@ def task_problem(
             reason=f"scheduled task quarantined {rejection_count} records",
         )
     if task_result.status == "succeeded":
+        if not task_result.evidence_run_ids:
+            return InputQualityEvidence(
+                input_id=input_id,
+                status="unavailable",
+                required=True,
+                reason="scheduled task succeeded without durable run evidence",
+            )
         return None
     return InputQualityEvidence(
         input_id=input_id,
@@ -188,14 +208,13 @@ def unexpected_trading_dates(
 def source_status(
     *,
     available_ats: tuple[datetime, ...],
-    as_of: datetime,
     cutoff_at: datetime,
     max_age: timedelta,
     revised: bool,
 ) -> tuple[InputEvidenceStatus, str]:
     if any(available_at > cutoff_at for available_at in available_ats):
         return "late", "a required fact became available after the report cutoff"
-    if any(as_of - available_at > max_age for available_at in available_ats):
+    if any(cutoff_at - available_at > max_age for available_at in available_ats):
         return "stale", "a required fact exceeds the configured freshness window"
     if revised:
         return "revised", "a later source revision exists for this report input"
@@ -206,7 +225,7 @@ async def rejections_by_run_id(
     session: AsyncSession,
     task_results: tuple[ScheduledTaskResult, ...],
 ) -> dict[UUID, int]:
-    run_ids = [result.run_id for result in task_results if result.run_id is not None]
+    run_ids = [run_id for result in task_results for run_id in result.evidence_run_ids]
     if not run_ids:
         return {}
     rows = await session.execute(
@@ -223,15 +242,49 @@ def task_rejection_count(
 ) -> int:
     if task_result is None:
         return 0
-    persisted = 0 if task_result.run_id is None else persisted_rejections.get(task_result.run_id, 0)
+    persisted = sum(persisted_rejections.get(run_id, 0) for run_id in task_result.evidence_run_ids)
     return max(task_result.records_rejected, persisted)
+
+
+async def committed_task_pages(
+    session: AsyncSession,
+    task_result: ScheduledTaskResult,
+) -> TaskCommitEvidence:
+    """Return provider records committed by exactly this scheduled task.
+
+    A task can span several page-level provider runs. ``evidence_run_ids`` is
+    persisted with its checkpoint, so old rows, fixture rows, and other tasks
+    cannot satisfy this task's quality evidence.
+    """
+
+    if task_result.dataset is None or task_result.region is None:
+        return TaskCommitEvidence(page_count=0, provider_record_ids=frozenset())
+    run_ids = task_result.evidence_run_ids
+    if not run_ids:
+        return TaskCommitEvidence(page_count=0, provider_record_ids=frozenset())
+    page_rows = await session.scalars(
+        select(IngestPageCommitRow.accepted_record_ids).where(
+            IngestPageCommitRow.ingestion_run_id.in_(run_ids),
+            IngestPageCommitRow.provider_role == task_result.provider_role,
+            IngestPageCommitRow.dataset == task_result.dataset.value,
+            IngestPageCommitRow.region == task_result.region.value,
+        )
+    )
+    pages = tuple(page_rows.all())
+    return TaskCommitEvidence(
+        page_count=len(pages),
+        provider_record_ids=frozenset(
+            record_id
+            for page_record_ids in pages
+            for record_id in page_record_ids
+            if isinstance(record_id, str)
+        ),
+    )
 
 
 def source_reference(source: SourceRef) -> dict[str, object]:
     return {
-        "source_ref_id": stable_id(
-            "report-source", source.provider_id, source.provider_record_id, source.checksum_sha256
-        ),
+        "source_ref_id": _source_ref_id(source),
         "provider_id": source.provider_id,
         "provider_record_id": source.provider_record_id,
         "source_name": source.source_name,
@@ -239,3 +292,9 @@ def source_reference(source: SourceRef) -> dict[str, object]:
         "retrieved_at": source.retrieved_at.astimezone(UTC).isoformat().replace("+00:00", "Z"),
         "checksum_sha256": source.checksum_sha256,
     }
+
+
+def _source_ref_id(source: SourceRef) -> str:
+    return stable_id(
+        "report-source", source.provider_id, source.provider_record_id, source.checksum_sha256
+    )

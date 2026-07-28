@@ -93,7 +93,6 @@ async def test_rpt_029_materializer_derives_quality_and_persists_an_immutable_sn
                     "news.cn.official_headlines_24h",
                     "news.hk.official_headlines_24h",
                     "calendar.macro_releases_7d",
-                    "calendar.us_macro_releases_7d",
                 )
             ),
         )
@@ -135,6 +134,71 @@ async def test_rpt_029_materializer_derives_quality_and_persists_an_immutable_sn
     assert prompt.input_payload["editor_context"] == result.snapshot.payload["editor_context"]
     assert "usage_rights" not in result.snapshot.payload
     assert snapshot_store.saved == [result.snapshot]
+
+
+@pytest.mark.asyncio
+async def test_rpt_029_materializer_excludes_late_evidence_from_the_snapshot() -> None:
+    evidence_store = _EvidenceStore(
+        (
+            InputQualityEvidence(
+                input_id="market.cn.core_indices.previous_close",
+                status="available",
+                required=True,
+                reason="all required facts are materialized before cutoff",
+                facts=(
+                    {
+                        "fact_id": "fact.market.cn.before-cutoff",
+                        "value": "10.50",
+                        "available_at": NOW.isoformat().replace("+00:00", "Z"),
+                        "source_ref_ids": ["source-before-cutoff"],
+                    },
+                ),
+                source_references=(
+                    {
+                        "source_ref_id": "source-before-cutoff",
+                        "provider_id": "test.provider",
+                    },
+                ),
+            ),
+            InputQualityEvidence(
+                input_id="news.hk.official_headlines_24h",
+                status="available",
+                required=True,
+                reason="all required facts are materialized before cutoff",
+                facts=(
+                    {
+                        "fact_id": "fact.news.hk.after-cutoff",
+                        "value": "must not enter snapshot",
+                        "available_at": (NOW.replace(hour=1)).isoformat().replace("+00:00", "Z"),
+                        "source_ref_ids": ["source-after-cutoff"],
+                    },
+                ),
+                source_references=(
+                    {
+                        "source_ref_id": "source-after-cutoff",
+                        "provider_id": "test.provider",
+                    },
+                ),
+            ),
+        )
+    )
+    snapshot_store = _SnapshotStore([])
+    materializer = ReportInputSnapshotMaterializer(
+        evidence_store=evidence_store,
+        snapshot_store=snapshot_store,
+        now=lambda: NOW,
+        cutoff_at=lambda _: NOW,
+    )
+
+    result = await materializer.materialize(REPORT_DATE, task_results=())
+
+    assert result.snapshot.fact_ids == ["fact.market.cn.before-cutoff"]
+    assert result.snapshot.payload["source_ref_ids"] == ["source-before-cutoff"]
+    assert result.snapshot.payload["input_quality"]["news.hk.official_headlines_24h"] == {
+        "status": "late",
+        "required": True,
+        "reason": "materialized fact became available after the report cutoff",
+    }
 
 
 @pytest.mark.parametrize(

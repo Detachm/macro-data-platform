@@ -30,7 +30,15 @@ class ScheduledTaskResult:
     records_rejected: int = 0
     attempt_no: int = 1
     run_id: UUID | None = None
+    run_ids: tuple[UUID, ...] = ()
     error_code: str | None = None
+
+    @property
+    def evidence_run_ids(self) -> tuple[UUID, ...]:
+        """All durable page runs whose committed records may support this task."""
+
+        values = (*self.run_ids, *(() if self.run_id is None else (self.run_id,)))
+        return tuple(dict.fromkeys(values))
 
 
 @dataclass(frozen=True, slots=True)

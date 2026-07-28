@@ -835,6 +835,7 @@ class ScheduledTaskCheckpoint:
     next_cursor: str | None
     source_watermark: str | None
     run_id: UUID | None
+    run_ids: tuple[UUID, ...]
     records_accepted: int
     records_rejected: int
     lease_epoch: int
@@ -912,6 +913,9 @@ class ScheduledTaskCheckpointRepository:
         if checkpoint.status == "completed":
             raise ValueError("completed scheduled task checkpoint cannot advance")
         completed = next_cursor is None
+        run_ids = (
+            checkpoint.run_ids if run_id in checkpoint.run_ids else (*checkpoint.run_ids, run_id)
+        )
         updated = await self._session.execute(
             update(ScheduledTaskCheckpointRow)
             .where(
@@ -924,6 +928,7 @@ class ScheduledTaskCheckpointRepository:
             .values(
                 status="completed" if completed else "active",
                 run_id=run_id,
+                run_ids=[str(value) for value in run_ids],
                 next_cursor=next_cursor,
                 source_watermark=source_watermark,
                 records_accepted=ScheduledTaskCheckpointRow.records_accepted + records_accepted,
@@ -940,6 +945,12 @@ class ScheduledTaskCheckpointRepository:
 def _scheduled_task_checkpoint(row: ScheduledTaskCheckpointRow) -> ScheduledTaskCheckpoint:
     if row.status not in {"active", "completed"}:
         raise RuntimeError("scheduled task checkpoint has an invalid status")
+    try:
+        run_ids = tuple(UUID(value) for value in row.run_ids)
+    except (TypeError, ValueError) as error:
+        raise RuntimeError("scheduled task checkpoint has invalid run IDs") from error
+    if len(run_ids) != len(set(run_ids)):
+        raise RuntimeError("scheduled task checkpoint has duplicate run IDs")
     return ScheduledTaskCheckpoint(
         report_date=row.report_date,
         task_id=row.task_id,
@@ -951,6 +962,7 @@ def _scheduled_task_checkpoint(row: ScheduledTaskCheckpointRow) -> ScheduledTask
         next_cursor=row.next_cursor,
         source_watermark=row.source_watermark,
         run_id=row.run_id,
+        run_ids=run_ids,
         records_accepted=row.records_accepted,
         records_rejected=row.records_rejected,
         lease_epoch=row.lease_epoch,

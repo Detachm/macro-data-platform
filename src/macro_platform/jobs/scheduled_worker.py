@@ -10,6 +10,7 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import replace
 from datetime import date
 from typing import Literal, Protocol
+from uuid import UUID
 
 import structlog
 from sqlalchemy import text
@@ -23,6 +24,8 @@ from macro_platform.jobs.scheduled_types import (
 )
 from macro_platform.observability.metrics import SCHEDULED_REPORT_RUNS, SCHEDULED_TASK_RUNS
 from macro_platform.storage.database import Database
+
+_WORKER_SERVICE = "macro-data-worker"
 
 
 class ReportDateLock(Protocol):
@@ -96,11 +99,24 @@ class ScheduledIngestionWorker:
     async def run_for_date(self, report_date: date) -> ScheduledWorkerResult:
         started = time.monotonic()
         if not self._tasks:
-            return ScheduledWorkerResult(report_date, "blocked", ())
+            result = ScheduledWorkerResult(report_date, "blocked", ())
+            SCHEDULED_REPORT_RUNS.labels(status=result.status).inc()
+            await self._log_report_finished(
+                result,
+                started=started,
+                error_code="SCHEDULED_TASKS_NOT_CONFIGURED",
+            )
+            return result
         async with self._report_date_lock.hold(report_date) as acquired:
             if not acquired:
-                SCHEDULED_REPORT_RUNS.labels(status="locked").inc()
-                return ScheduledWorkerResult(report_date, "locked", ())
+                result = ScheduledWorkerResult(report_date, "locked", ())
+                SCHEDULED_REPORT_RUNS.labels(status=result.status).inc()
+                await self._log_report_finished(
+                    result,
+                    started=started,
+                    error_code="REPORT_DATE_LOCKED",
+                )
+                return result
             task_results = tuple([await self._run_task(task, report_date) for task in self._tasks])
             worker_status = _worker_status(task_results, self._tasks)
             snapshot_id: str | None = None
@@ -129,27 +145,43 @@ class ScheduledIngestionWorker:
                 snapshot_id=snapshot_id,
                 quality_status=quality_status,
             )
-            run_ids = sorted({str(task.run_id) for task in task_results if task.run_id is not None})
             SCHEDULED_REPORT_RUNS.labels(status=result.status).inc()
-            await self._logger.ainfo(
-                "scheduled_report_finished",
-                action="scheduled_report",
-                run_id=run_ids[0] if len(run_ids) == 1 else None,
-                provider_role=None,
-                dataset=None,
-                region=None,
-                report_date=report_date.isoformat(),
-                attempt_no=None,
-                terminal=result.status,
-                duration_ms=_duration_ms(started),
-                record_count=sum(task.record_count for task in task_results),
+            await self._log_report_finished(
+                result,
+                started=started,
                 error_code=materialization_error_code,
-                task_count=len(task_results),
-                run_ids=run_ids,
-                snapshot_id=snapshot_id,
-                quality_status=quality_status,
             )
             return result
+
+    async def _log_report_finished(
+        self,
+        result: ScheduledWorkerResult,
+        *,
+        started: float,
+        error_code: str | None,
+    ) -> None:
+        run_ids = sorted(
+            {str(task.run_id) for task in result.task_results if task.run_id is not None}
+        )
+        await self._logger.ainfo(
+            "scheduled_report_finished",
+            service=_WORKER_SERVICE,
+            action="scheduled_report",
+            run_id=run_ids[0] if len(run_ids) == 1 else None,
+            provider_role=None,
+            dataset=None,
+            region=None,
+            report_date=result.report_date.isoformat(),
+            attempt_no=None,
+            terminal=result.status,
+            duration_ms=_duration_ms(started),
+            record_count=sum(task.record_count for task in result.task_results),
+            error_code=error_code,
+            task_count=len(result.task_results),
+            run_ids=run_ids,
+            snapshot_id=result.snapshot_id,
+            quality_status=result.quality_status,
+        )
 
     async def backfill(self, start_date: date, end_date: date) -> tuple[ScheduledWorkerResult, ...]:
         if end_date < start_date:
@@ -176,6 +208,7 @@ class ScheduledIngestionWorker:
                         task=task,
                         report_date=report_date,
                         provider_role=task_result.provider_role,
+                        run_id=task_result.run_id,
                         attempt_no=attempt_no,
                         error_code=task_result.error_code,
                     )
@@ -200,6 +233,7 @@ class ScheduledIngestionWorker:
                         task=task,
                         report_date=report_date,
                         provider_role=provider_role,
+                        run_id=None,
                         attempt_no=attempt_no,
                         error_code=type(error).__name__,
                     )
@@ -226,6 +260,7 @@ class ScheduledIngestionWorker:
             ).inc()
             await self._logger.ainfo(
                 "scheduled_task_finished",
+                service=_WORKER_SERVICE,
                 action="scheduled_task",
                 report_date=report_date.isoformat(),
                 task_id=result.task_id,
@@ -248,13 +283,15 @@ class ScheduledIngestionWorker:
         task: ScheduledTask,
         report_date: date,
         provider_role: str,
+        run_id: UUID | None,
         attempt_no: int,
         error_code: str | None,
     ) -> None:
         await self._logger.awarning(
             "scheduled_task_retrying",
+            service=_WORKER_SERVICE,
             action="scheduled_task",
-            run_id=None,
+            run_id=str(run_id) if run_id is not None else None,
             provider_role=provider_role,
             dataset=None,
             region=None,

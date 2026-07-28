@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from typing import Protocol
 
@@ -108,15 +108,21 @@ def _snapshot_from_evidence(
     by_input_id = {item.input_id: item for item in evidence}
     if len(by_input_id) != len(evidence):
         raise ValueError("report input evidence IDs must be unique")
+    cutoff_safe_evidence = tuple(
+        _exclude_after_cutoff_evidence(item, cutoff_at=cutoff_at) for item in evidence
+    )
+    usable_evidence = tuple(
+        item for item in cutoff_safe_evidence if item.status in {"available", "revised"}
+    )
     facts = sorted(
-        (fact for item in evidence for fact in item.facts),
+        (fact for item in usable_evidence for fact in item.facts),
         key=lambda fact: str(fact.get("fact_id", "")),
     )
     fact_ids = [str(fact["fact_id"]) for fact in facts if isinstance(fact.get("fact_id"), str)]
     if len(fact_ids) != len(facts) or len(fact_ids) != len(set(fact_ids)):
         raise ValueError("materialized report facts must have unique fact IDs")
     source_by_id: dict[str, dict[str, object]] = {}
-    for source in (source for item in evidence for source in item.source_references):
+    for source in (source for item in usable_evidence for source in item.source_references):
         source_ref_id = source.get("source_ref_id")
         if not isinstance(source_ref_id, str):
             raise ValueError("materialized report source reference is missing source_ref_id")
@@ -131,8 +137,13 @@ def _snapshot_from_evidence(
             "required": item.required,
             "reason": item.reason,
         }
-        for input_id, item in sorted(by_input_id.items())
+        for input_id, item in sorted({item.input_id: item for item in cutoff_safe_evidence}.items())
     }
+    editor_context = _editor_context(
+        facts=facts,
+        source_references=source_references,
+        input_quality=input_quality,
+    )
     body = {
         "report_date": report_date.isoformat(),
         "as_of": _isoformat(as_of),
@@ -143,11 +154,7 @@ def _snapshot_from_evidence(
         "source_ref_ids": source_ref_ids,
         "source_references": source_references,
         "input_quality": input_quality,
-        "editor_context": _editor_context(
-            facts=facts,
-            source_references=source_references,
-            input_quality=input_quality,
-        ),
+        "editor_context": editor_context,
     }
     fingerprint = canonical_json_checksum(body)
     snapshot_id = stable_id("report-input", snapshot_version, report_date.isoformat(), fingerprint)
@@ -162,11 +169,7 @@ def _snapshot_from_evidence(
         "source_ref_ids": source_ref_ids,
         "source_references": source_references,
         "input_quality": input_quality,
-        "editor_context": _editor_context(
-            facts=facts,
-            source_references=source_references,
-            input_quality=input_quality,
-        ),
+        "editor_context": editor_context,
     }
     return ReportInputSnapshot(
         snapshot_id=snapshot_id,
@@ -193,6 +196,47 @@ def _editor_context(
         "source_references": source_references,
         "input_quality": input_quality,
     }
+
+
+def _exclude_after_cutoff_evidence(
+    evidence: InputQualityEvidence,
+    *,
+    cutoff_at: datetime,
+) -> InputQualityEvidence:
+    """Fail closed if an evidence adapter attempts to materialize late facts."""
+
+    if evidence.status not in {"available", "revised"}:
+        return evidence
+    for fact in evidence.facts:
+        available_at = _fact_available_at(fact)
+        if available_at is None:
+            return replace(
+                evidence,
+                status="invalid",
+                reason="materialized fact is missing a valid available_at audit timestamp",
+                facts=(),
+                source_references=(),
+            )
+        if available_at > cutoff_at:
+            return replace(
+                evidence,
+                status="late",
+                reason="materialized fact became available after the report cutoff",
+                facts=(),
+                source_references=(),
+            )
+    return evidence
+
+
+def _fact_available_at(fact: dict[str, object]) -> datetime | None:
+    raw = fact.get("available_at")
+    if not isinstance(raw, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return None if parsed.tzinfo is None else parsed.astimezone(UTC)
 
 
 def _isoformat(value: datetime) -> str:

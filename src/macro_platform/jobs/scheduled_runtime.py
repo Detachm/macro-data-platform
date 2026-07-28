@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime, timedelta
@@ -35,7 +34,6 @@ from macro_platform.jobs.scheduled_worker import (
 )
 from macro_platform.jobs.us_twelve_data_ingestion import UsTwelveDataIngestHandler
 from macro_platform.normalization.common import utc_now
-from macro_platform.observability import configure_logging
 from macro_platform.providers.cn.baostock import BaoStockDailyBarsProvider
 from macro_platform.providers.cn.live import CnNbsReleaseProvider
 from macro_platform.providers.factory import create_provider_registry
@@ -55,7 +53,8 @@ def build_registered_tasks(
 ) -> tuple[ScheduledTask, ...]:
     """Bind all currently approved live report-input providers to durable tasks.
 
-    No synthetic source is registered for CN news or the US macro calendar.
+    No synthetic source is registered for CN news or incomplete global macro
+    calendar coverage.
     Their absence remains explicit materialized quality evidence and blocks a
     report rather than fabricating a successful input.
     """
@@ -340,6 +339,7 @@ async def run_scheduler(
         if not registered_tasks:
             await logger.aerror(
                 "scheduler_not_configured",
+                service="macro-data-worker",
                 action="scheduler_startup",
                 run_id=None,
                 provider_role=None,
@@ -372,7 +372,6 @@ async def run_scheduler(
                     resolved_database,
                     market_max_age=timedelta(hours=resolved_settings.worker_market_freshness_hours),
                     news_max_age=timedelta(hours=resolved_settings.worker_news_freshness_hours),
-                    macro_max_age=timedelta(days=resolved_settings.worker_macro_freshness_days),
                 ),
                 snapshot_store=PostgresReportInputSnapshotStore(resolved_database),
                 now=now,
@@ -390,15 +389,22 @@ async def run_scheduler(
         if resolved_run_once_date is not None:
             await worker.run_for_date(resolved_run_once_date)
             return
+        execution_time = _first_safe_run_time(
+            schedule_hour=resolved_settings.worker_schedule_hour_local,
+            schedule_minute=resolved_settings.worker_schedule_minute_local,
+            cutoff_hour=resolved_settings.worker_report_cutoff_hour_local,
+            cutoff_minute=resolved_settings.worker_report_cutoff_minute_local,
+        )
         await _run_configured_schedule(
             worker,
             timezone=schedule_timezone,
-            hour=resolved_settings.worker_schedule_hour_local,
-            minute=resolved_settings.worker_schedule_minute_local,
+            hour=execution_time.hour,
+            minute=execution_time.minute,
             poll_seconds=resolved_settings.worker_schedule_poll_seconds,
             now=now,
             sleeper=sleeper,
             retry_delay_seconds=resolved_settings.worker_retry_delay_seconds,
+            max_report_attempts=resolved_settings.worker_max_report_attempts,
             max_schedule_runs=max_schedule_runs,
         )
     finally:
@@ -418,8 +424,11 @@ async def _run_configured_schedule(
     now: Callable[[], datetime],
     sleeper: Callable[[float], Awaitable[None]],
     retry_delay_seconds: float,
+    max_report_attempts: int,
     max_schedule_runs: int | None,
 ) -> None:
+    if max_report_attempts < 1:
+        raise ValueError("max_report_attempts must be at least one")
     completed_dates: set[date] = set()
     retry_attempts: dict[date, int] = {}
     next_attempt_at: dict[date, datetime] = {}
@@ -433,13 +442,17 @@ async def _run_configured_schedule(
             if report_date not in completed_dates and (due_at is None or local_now >= due_at):
                 result = await worker.run_for_date(report_date)
                 schedule_runs += 1
-                if result.status in {"succeeded", "degraded"}:
+                if result.status in {"succeeded", "degraded", "blocked"}:
                     completed_dates.add(report_date)
                     retry_attempts.pop(report_date, None)
                     next_attempt_at.pop(report_date, None)
                 else:
                     attempt_no = retry_attempts.get(report_date, 0) + 1
                     retry_attempts[report_date] = attempt_no
+                    if attempt_no >= max_report_attempts:
+                        completed_dates.add(report_date)
+                        next_attempt_at.pop(report_date, None)
+                        continue
                     delay_seconds = (
                         poll_seconds
                         if result.status == "locked"
@@ -454,36 +467,16 @@ def _report_cutoff_at(*, report_date: date, timezone: ZoneInfo, hour: int, minut
     return datetime.combine(report_date, time_of_day(hour=hour, minute=minute), tzinfo=timezone)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the macro-data scheduled ingestion worker")
-    parser.add_argument("--report-date", type=_parse_report_date, help="run one ISO report date")
-    parser.add_argument(
-        "--backfill-start", type=_parse_report_date, help="inclusive ISO start date"
+def _first_safe_run_time(
+    *,
+    schedule_hour: int,
+    schedule_minute: int,
+    cutoff_hour: int,
+    cutoff_minute: int,
+) -> time_of_day:
+    """Do not execute a daily input run before its frozen reporting cutoff."""
+
+    return max(
+        time_of_day(hour=schedule_hour, minute=schedule_minute),
+        time_of_day(hour=cutoff_hour, minute=cutoff_minute),
     )
-    parser.add_argument("--backfill-end", type=_parse_report_date, help="inclusive ISO end date")
-    arguments = parser.parse_args()
-    if arguments.report_date is not None and arguments.backfill_start is not None:
-        parser.error("--report-date cannot be combined with --backfill-start/--backfill-end")
-    if (arguments.backfill_start is None) != (arguments.backfill_end is None):
-        parser.error("--backfill-start and --backfill-end must be provided together")
-    settings = get_settings()
-    configure_logging(settings.log_level)
-    asyncio.run(
-        run_scheduler(
-            settings=settings,
-            run_once_report_date=arguments.report_date,
-            backfill_start_date=arguments.backfill_start,
-            backfill_end_date=arguments.backfill_end,
-        )
-    )
-
-
-def _parse_report_date(value: str) -> date:
-    try:
-        return date.fromisoformat(value)
-    except ValueError as error:
-        raise argparse.ArgumentTypeError("report dates must use YYYY-MM-DD") from error
-
-
-if __name__ == "__main__":
-    main()

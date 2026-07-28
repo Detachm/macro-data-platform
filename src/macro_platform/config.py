@@ -42,10 +42,10 @@ class Settings(BaseSettings):
     worker_report_cutoff_minute_local: int = Field(default=15, ge=0, le=59)
     worker_bar_lookback_days: int = Field(default=14, ge=7, le=366)
     worker_max_task_attempts: int = Field(default=3, ge=1, le=10)
+    worker_max_report_attempts: int = Field(default=3, ge=1, le=10)
     worker_retry_delay_seconds: float = Field(default=1.0, gt=0, le=300)
-    worker_market_freshness_hours: int = Field(default=72, ge=1, le=720)
-    worker_news_freshness_hours: int = Field(default=30, ge=1, le=720)
-    worker_macro_freshness_days: int = Field(default=8, ge=1, le=365)
+    worker_market_freshness_hours: int = Field(default=36, ge=1, le=720)
+    worker_news_freshness_hours: int = Field(default=24, ge=1, le=720)
     worker_run_once_report_date: date | None = None
     worker_backfill_start_date: date | None = None
     worker_backfill_end_date: date | None = None

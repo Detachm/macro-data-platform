@@ -5,10 +5,11 @@ durable task checkpointing, and date-level orchestration live in focused
 modules so each has one operational responsibility.
 """
 
+from macro_platform.jobs.scheduled_cli import main
 from macro_platform.jobs.scheduled_runtime import (
+    _first_safe_run_time,
     _run_configured_schedule,
     build_registered_tasks,
-    main,
     run_scheduler,
 )
 from macro_platform.jobs.scheduled_tasks import (
@@ -51,6 +52,7 @@ __all__ = [
     "ScheduledWorkerResult",
     "ScheduledWorkerStatus",
     "SchedulerNotConfiguredError",
+    "_first_safe_run_time",
     "_run_configured_schedule",
     "build_registered_tasks",
     "main",

@@ -102,13 +102,23 @@ class _CheckpointStore:
                 "next_cursor": next_cursor,
                 "source_watermark": source_watermark,
                 "run_id": run_id,
+                "run_ids": (
+                    checkpoint.run_ids
+                    if run_id in checkpoint.run_ids
+                    else (*checkpoint.run_ids, run_id)
+                ),
                 "records_accepted": checkpoint.records_accepted + records_accepted,
             }
         )
         return self.checkpoint
 
 
-def _checkpoint(*, cursor: str | None = None, completed: bool = False) -> ScheduledTaskCheckpoint:
+def _checkpoint(
+    *,
+    cursor: str | None = None,
+    completed: bool = False,
+    run_ids: tuple[UUID, ...] = (),
+) -> ScheduledTaskCheckpoint:
     return ScheduledTaskCheckpoint(
         report_date=REPORT_DATE,
         task_id="us.daily-bars",
@@ -120,6 +130,7 @@ def _checkpoint(*, cursor: str | None = None, completed: bool = False) -> Schedu
         next_cursor=cursor,
         source_watermark=None,
         run_id=None,
+        run_ids=run_ids,
         records_accepted=0,
         records_rejected=0,
         lease_epoch=1,
@@ -137,7 +148,7 @@ async def test_job_029_checkpointed_task_resumes_the_persisted_cursor_until_comp
         ],
         requests=[],
     )
-    checkpoint_store = _CheckpointStore(_checkpoint(cursor="cursor-1"), [])
+    checkpoint_store = _CheckpointStore(_checkpoint(cursor="cursor-1", run_ids=(first_run_id,)), [])
     task = CheckpointedScheduledTask(
         task_id="us.daily-bars",
         required=True,
@@ -160,6 +171,7 @@ async def test_job_029_checkpointed_task_resumes_the_persisted_cursor_until_comp
         status="succeeded",
         record_count=3,
         run_id=second_run_id,
+        run_ids=(first_run_id, second_run_id),
     )
     assert [request.cursor for request in executor.requests] == ["cursor-1"]
     assert checkpoint_store.advances == [(None, second_run_id)]
@@ -173,7 +185,12 @@ async def test_job_029_completed_task_replays_its_durable_result_without_upstrea
     run_id = uuid4()
     checkpoint_store = _CheckpointStore(
         ScheduledTaskCheckpoint(
-            **{**_checkpoint(completed=True).__dict__, "run_id": run_id, "records_accepted": 9}
+            **{
+                **_checkpoint(completed=True).__dict__,
+                "run_id": run_id,
+                "run_ids": (run_id,),
+                "records_accepted": 9,
+            }
         ),
         [],
     )

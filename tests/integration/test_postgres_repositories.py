@@ -358,7 +358,7 @@ async def test_db_002_migration_upgrades_0002_to_current_schema(database: Databa
         )
         preserved_run = await session.get(ProviderRunRow, _previous_schema_run_id)
         preserved_instrument = await session.get(InstrumentRow, _previous_schema_instrument_id)
-    assert revision == "0009"
+    assert revision == "0010"
     assert tables == {
         "report_input_snapshots",
         "daily_reports",

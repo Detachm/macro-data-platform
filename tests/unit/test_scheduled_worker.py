@@ -9,12 +9,14 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import pytest
+from structlog.testing import capture_logs
 
 from macro_platform.jobs.scheduler import (
     RetryableScheduledTaskError,
     ScheduledIngestionWorker,
     ScheduledTaskResult,
     SchedulerNotConfiguredError,
+    _first_safe_run_time,
     _run_configured_schedule,
     run_scheduler,
 )
@@ -130,14 +132,14 @@ def test_rpt_029_missing_required_quality_result_blocks_the_report() -> None:
     assert {issue.code for issue in result.issues} == {"REQUIRED_INPUT_UNAVAILABLE"}
 
 
-def test_rpt_029_unapproved_us_macro_calendar_remains_a_required_blocker() -> None:
+def test_rpt_029_incomplete_global_macro_calendar_remains_a_required_blocker() -> None:
     result = ReportInputQualityGate().evaluate(
         _snapshot(
             {
-                "calendar.us_macro_releases_7d": {
+                "calendar.macro_releases_7d": {
                     "status": "missing",
                     "required": True,
-                    "reason": "US macro release calendar has no approved live provider",
+                    "reason": "HK and US macro release calendars have no approved live provider",
                 }
             }
         )
@@ -145,7 +147,7 @@ def test_rpt_029_unapproved_us_macro_calendar_remains_a_required_blocker() -> No
 
     assert result.status == "blocked"
     assert [(issue.input_id, issue.code) for issue in result.issues] == [
-        ("calendar.us_macro_releases_7d", "MISSING_REQUIRED_INPUT")
+        ("calendar.macro_releases_7d", "MISSING_REQUIRED_INPUT")
     ]
 
 
@@ -206,6 +208,18 @@ def test_rpt_029_duplicate_declared_fact_id_blocks_even_when_payload_is_nonempty
     ]
 
 
+def test_job_029_scheduler_does_not_start_before_the_report_cutoff() -> None:
+    assert (
+        _first_safe_run_time(
+            schedule_hour=7,
+            schedule_minute=50,
+            cutoff_hour=8,
+            cutoff_minute=15,
+        )
+        == datetime(2026, 7, 27, 8, 15).time()
+    )
+
+
 @dataclass
 class _Task:
     task_id: str
@@ -259,6 +273,69 @@ async def test_job_029_worker_retries_then_records_a_required_task_result() -> N
     assert result.task_results[0].attempt_no == 2
     assert task.report_dates == [date(2026, 7, 27), date(2026, 7, 27)]
     assert delays == [1.0]
+
+
+@pytest.mark.asyncio
+async def test_job_029_worker_logs_service_and_retry_run_id() -> None:
+    retry_run_id = uuid4()
+    task = _Task(
+        task_id="us.daily-bars",
+        outcomes=[
+            ScheduledTaskResult(
+                task_id="us.daily-bars",
+                provider_role="test.provider.primary",
+                status="retryable",
+                run_id=retry_run_id,
+            ),
+            None,
+        ],
+    )
+    worker = ScheduledIngestionWorker(
+        tasks=[task],
+        report_date_lock=_Lock(),
+        max_attempts=2,
+        sleeper=lambda _: _record_delay([], 0),
+    )
+
+    with capture_logs() as logs:
+        await worker.run_for_date(date(2026, 7, 27))
+
+    relevant = [
+        event
+        for event in logs
+        if event["event"]
+        in {"scheduled_task_retrying", "scheduled_task_finished", "scheduled_report_finished"}
+    ]
+    assert relevant
+    assert {event["service"] for event in relevant} == {"macro-data-worker"}
+    retry_event = next(event for event in relevant if event["event"] == "scheduled_task_retrying")
+    assert retry_event["run_id"] == str(retry_run_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tasks", "acquired", "expected_status", "expected_error_code"),
+    [
+        ([], True, "blocked", "SCHEDULED_TASKS_NOT_CONFIGURED"),
+        ([_Task(task_id="us.daily-bars")], False, "locked", "REPORT_DATE_LOCKED"),
+    ],
+)
+async def test_job_029_worker_logs_early_terminal_report_outcomes(
+    tasks: list[_Task],
+    acquired: bool,
+    expected_status: str,
+    expected_error_code: str,
+) -> None:
+    worker = ScheduledIngestionWorker(tasks=tasks, report_date_lock=_Lock(acquired=acquired))
+
+    with capture_logs() as logs:
+        result = await worker.run_for_date(date(2026, 7, 27))
+
+    assert result.status == expected_status
+    event = next(event for event in logs if event["event"] == "scheduled_report_finished")
+    assert event["service"] == "macro-data-worker"
+    assert event["terminal"] == expected_status
+    assert event["error_code"] == expected_error_code
 
 
 @pytest.mark.asyncio
@@ -401,7 +478,7 @@ async def test_job_029_worker_entrypoint_fails_closed_without_registered_schedul
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("first_status", ["retryable", "blocked", "locked"])
+@pytest.mark.parametrize("first_status", ["retryable", "locked"])
 async def test_job_029_configured_schedule_retries_nonterminal_report_dates(
     first_status: str,
 ) -> None:
@@ -430,10 +507,75 @@ async def test_job_029_configured_schedule_retries_nonterminal_report_dates(
         now=lambda: clock["now"],
         sleeper=advance_clock,
         retry_delay_seconds=1,
+        max_report_attempts=2,
         max_schedule_runs=2,
     )
 
     assert worker.report_dates == [report_date, report_date]
+
+
+@pytest.mark.asyncio
+async def test_job_029_configured_schedule_does_not_retry_blocked_report_dates() -> None:
+    clock = {"now": datetime(2026, 7, 27, 8, 0, tzinfo=UTC)}
+
+    class _Worker:
+        def __init__(self) -> None:
+            self.report_dates: list[date] = []
+
+        async def run_for_date(self, value: date) -> object:
+            self.report_dates.append(value)
+            return SimpleNamespace(status="blocked")
+
+    async def advance_clock(delay: float) -> None:
+        clock["now"] += timedelta(seconds=delay)
+
+    worker = _Worker()
+    await _run_configured_schedule(
+        worker,  # type: ignore[arg-type]
+        timezone=ZoneInfo("UTC"),
+        hour=8,
+        minute=0,
+        poll_seconds=1,
+        now=lambda: clock["now"],
+        sleeper=advance_clock,
+        retry_delay_seconds=1,
+        max_report_attempts=3,
+        max_schedule_runs=1,
+    )
+
+    assert worker.report_dates == [date(2026, 7, 27)]
+
+
+@pytest.mark.asyncio
+async def test_job_029_configured_schedule_stops_at_the_report_retry_budget() -> None:
+    clock = {"now": datetime(2026, 7, 27, 8, 0, tzinfo=UTC)}
+
+    class _Worker:
+        def __init__(self) -> None:
+            self.report_dates: list[date] = []
+
+        async def run_for_date(self, value: date) -> object:
+            self.report_dates.append(value)
+            return SimpleNamespace(status="retryable")
+
+    async def advance_clock(delay: float) -> None:
+        clock["now"] += timedelta(seconds=delay)
+
+    worker = _Worker()
+    await _run_configured_schedule(
+        worker,  # type: ignore[arg-type]
+        timezone=ZoneInfo("UTC"),
+        hour=8,
+        minute=0,
+        poll_seconds=1,
+        now=lambda: clock["now"],
+        sleeper=advance_clock,
+        retry_delay_seconds=1,
+        max_report_attempts=2,
+        max_schedule_runs=2,
+    )
+
+    assert worker.report_dates == [date(2026, 7, 27), date(2026, 7, 27)]
 
 
 async def _record_delay(delays: list[float], delay: float) -> None:

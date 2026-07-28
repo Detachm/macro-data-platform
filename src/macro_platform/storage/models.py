@@ -373,6 +373,7 @@ class ScheduledTaskCheckpointRow(Base):
     run_id: Mapped[UUID | None] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("provider_runs.run_id", ondelete="RESTRICT"), nullable=True
     )
+    run_ids: Mapped[list[str]] = mapped_column(JSONB, default=list)
     records_accepted: Mapped[int] = mapped_column(Integer, default=0)
     records_rejected: Mapped[int] = mapped_column(Integer, default=0)
     lease_epoch: Mapped[int] = mapped_column(BigInteger, default=1)

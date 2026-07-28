@@ -22,7 +22,9 @@ checkpoint 恢复、backfill 和质量门禁的公共执行边界；API 继续�
   page commit 后退出时，下一 worker 从该 cursor 继续；完成 task 复放其 durable run result，不重新
   访问 provider。normalized facts 仍由 page commit 和事实表唯一约束去重。
 - 默认上海 07:50 开始，08:15 为 input cutoff。通过 `WORKER_SCHEDULE_*`、
-  `WORKER_REPORT_CUTOFF_*`、`WORKER_*_FRESHNESS_*` 配置时区、时刻、轮询和时效阈值。
+  `WORKER_REPORT_CUTOFF_*`、`WORKER_MAX_REPORT_ATTEMPTS`、市场/新闻 `WORKER_*_FRESHNESS_*` 配置时区、时刻、
+  报告级重试上限、轮询和时效阈值。若开始时刻早于 cutoff，实际 input run 在 cutoff 发起，避免遗漏
+  截止前到达的数据。
 - 市场日线 freshness 使用 XSHG、XHKG、XNYS 的交易日历来确定上一交易会话，不以工作日近似；日历
   无法覆盖的报告日会以 `unavailable` 阻断报告，待日历版本更新后再重跑。
 - 常规常驻：`macro-data-worker`。
@@ -30,19 +32,21 @@ checkpoint 恢复、backfill 和质量门禁的公共执行边界；API 继续�
 - 显式回填：`macro-data-worker --backfill-start 2026-07-20 --backfill-end 2026-07-28`。首尾日期均包含，
   不可与单日模式混用。也可使用对应 `WORKER_RUN_ONCE_REPORT_DATE` 或 `WORKER_BACKFILL_*` 环境变量。
 
-CN news 和 US macro calendar 尚无获批的 live provider。materializer 无条件将相关必需输入写为
-`missing`，报告质量为 `blocked`；历史行、fixture 或其他未登记来源也不能填充这些输入。这是预期的
-安全状态，直到其各自的 provider Issue 实现完成。
+CN news 和冻结的全区域 `calendar.macro_releases_7d` 尚不能证明完整获批 live 覆盖。materializer
+将相应必需输入写为 `missing`，报告质量为 `blocked`；历史行、fixture 或其他未登记来源也不能填充
+这些输入。CN NBS 日历只覆盖 CN，不能单独满足该全区域输入。这是预期的安全状态，直到各地区
+provider Issue 实现完成。
 
 ## 观测与故障处理
 
-日志事件 `scheduled_task_finished` 含 `report_date`、`task_id`、`run_id`、`provider_role`、
+日志事件 `scheduled_task_finished` 含 `service`、`report_date`、`task_id`、`run_id`、`provider_role`、
 `dataset`、`region`、`attempt_no`、`duration_ms`、`record_count`、`terminal` 和 `error_code`。
 Prometheus 指标为
 `scheduled_report_run_total` 与 `scheduled_task_run_total`。
 
 遇到 `locked` 时确认另一个 worker 是否仍健康；不要解除其他进程的 PostgreSQL session lock。
-遇到 `retryable` 时依 provider run/checkpoint 检查上游错误和下一次重试；遇到 `blocked` 时先修复
+遇到 `retryable` 时依 provider run/checkpoint 检查上游错误和下一次重试；常驻调度对同一报告日最多
+执行 `WORKER_MAX_REPORT_ATTEMPTS` 次（默认 3，包含首次）。`blocked` 是该常驻进程中的终态：先修复
 必需输入的完整性、时效或 quarantine 原因，再执行同一 report date 的显式 backfill。不要以 rights、
 引用或 external-LLM 元数据作为解除阻断的条件。
 
