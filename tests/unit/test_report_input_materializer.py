@@ -128,12 +128,83 @@ async def test_rpt_029_materializer_derives_quality_and_persists_an_immutable_sn
         "facts": result.snapshot.payload["facts"],
         "source_references": result.snapshot.payload["source_references"],
         "input_quality": result.snapshot.payload["input_quality"],
+        "report_day_policy": result.snapshot.payload["report_day_policy"],
     }
     prompt = ReportPromptBuilder().build(result.snapshot, model="test-model", parameters={})
     assert prompt.source_ref_ids == ["source-cn-1"]
     assert prompt.input_payload["editor_context"] == result.snapshot.payload["editor_context"]
     assert "usage_rights" not in result.snapshot.payload
     assert snapshot_store.saved == [result.snapshot]
+
+
+@pytest.mark.asyncio
+async def test_rpt_051_weekend_snapshot_persists_policy_and_does_not_block_closed_markets() -> None:
+    report_date = date(2026, 7, 26)
+    as_of = datetime(2026, 7, 26, 0, 15, tzinfo=UTC)
+    market_inputs = (
+        "market.cn.core_indices.previous_close",
+        "market.hk.core_indices.previous_close",
+        "market.us.core_indices.previous_close",
+    )
+    always_required = (
+        "news.cn.official_headlines_24h",
+        "news.hk.official_headlines_24h",
+        "calendar.macro_releases_7d",
+    )
+
+    class WeekendEvidenceStore:
+        async def collect(self, **_kwargs: object) -> tuple[InputQualityEvidence, ...]:
+            return (
+                *tuple(
+                    InputQualityEvidence(
+                        input_id=input_id,
+                        status="missing",
+                        required=True,
+                        reason="no current-session market facts",
+                    )
+                    for input_id in market_inputs
+                ),
+                *tuple(
+                    InputQualityEvidence(
+                        input_id=input_id,
+                        status="available",
+                        required=True,
+                        reason="required weekend input is available",
+                        facts=(
+                            {
+                                "fact_id": f"fact.{input_id}",
+                                "available_at": as_of.isoformat().replace("+00:00", "Z"),
+                                "source_ref_ids": [],
+                            },
+                        ),
+                    )
+                    for input_id in always_required
+                ),
+            )
+
+    snapshot_store = _SnapshotStore([])
+    result = await ReportInputSnapshotMaterializer(
+        evidence_store=WeekendEvidenceStore(),
+        snapshot_store=snapshot_store,
+        now=lambda: as_of,
+        cutoff_at=lambda _: as_of,
+    ).materialize(report_date, task_results=())
+
+    assert result.quality.status == "degraded"
+    assert result.snapshot.payload["report_day_policy"]["day_type"] == "weekend"
+    for input_id in market_inputs:
+        assert result.snapshot.payload["input_quality"][input_id] == {
+            "status": "unavailable",
+            "required": False,
+            "reason": (
+                f"{input_id.split('.')[1].upper()} market is closed (weekend_closed); "
+                "current-session market input is optional for this report date"
+            ),
+        }
+    assert (
+        result.snapshot.payload["editor_context"]["report_day_policy"]
+        == result.snapshot.payload["report_day_policy"]
+    )
 
 
 @pytest.mark.asyncio

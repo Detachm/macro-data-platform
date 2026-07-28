@@ -70,6 +70,11 @@ daily_report:
 4. `holiday_policy=publish_with_notice` 是默认值：节假日照常运行并在 `calendar.holiday_notice` 与质量提示中说明。`skip` 表示不创建可发布报告；`next_business_day` 表示把运行移到下一个工作日，`report_date` 使用实际运行日，不制造假日期报告。
 5. `late_data_cutoff_local` 是当前报告的事实截断点。`available_at` 晚于 cutoff 的数据不进入当前 input snapshot，记录在 `data_quality.late_inputs`，等待下一次报告或人工重新生成。
 
+每份新 input snapshot 必须固化一个 `report_day_policy`：包括 policy ID、交易日历版本、三地 session
+状态、上一交易日以及 required/optional 输入集合。周末三地 market input 均为 optional；工作日只允许
+把交易所日历明确判定休市的地区 market input 降为 optional。CN/HK 官方新闻和三地发布日历始终
+required。日历覆盖未知或 policy 不完整时 fail closed，不按星期或旧行情猜测。
+
 ### 2.3 Freshness 规则
 
 freshness 是相对于本次快照 cutoff 的数据年龄，而不是抓取完成时间。以下阈值是 v1 默认上限；输入注册表可以为某个数据集设置更严格的阈值，取更严格者：
@@ -100,6 +105,10 @@ freshness 是相对于本次快照 cutoff 的数据年龄，而不是抓取完�
 | `market.us.core_indices.previous_close` | US | 美国 highlights、摘要、关键变动 | 是 |
 
 必需输入必须在 cutoff 前存在、通过公共 contract 并满足 freshness 规则。可选输入缺失时可以发布 `degraded` 报告，但必须在 `data_quality_notice` 中披露。`calendar.macro_releases_7d` 可以是合法的空列表，但抓取失败或无法证明 CN/HK/US 全部覆盖窗口时是 `unavailable`。CN news 或任一地区宏观日历尚无获批 live provider 时，必须以对应冻结输入的 `missing` 证据阻断；不得用 fixture、历史行或合成记录代替。
+
+上表的 market input “必需”指普通交易报告日。经 `report_day_policy` 明确为周末或区域休市时，对应
+market input 为 optional，缺失只使报告 `degraded`，且 section 必须显示休市原因；非休市日仍按必需
+输入处理。该例外不适用于新闻或宏观日历。
 
 ## 4. 输出结构
 

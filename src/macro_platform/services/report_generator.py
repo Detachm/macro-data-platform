@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Mapping
 from copy import deepcopy
-from datetime import UTC, date, datetime, time
+from datetime import UTC, datetime, time
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
@@ -21,6 +21,7 @@ from macro_platform.services.llm import (
     LlmStructuredOutputError,
     LlmTimeoutError,
 )
+from macro_platform.services.report_day_policy import report_calendar_payload
 from macro_platform.services.report_input_quality import ReportInputQualityGate
 from macro_platform.services.report_validation import (
     ReportValidationError,
@@ -367,7 +368,9 @@ class ReportGenerationService:
                 "contract_version": "1.0",
                 "timezone": "Asia/Shanghai",
                 "schedule": _default_schedule(),
-                "calendar": {"day_type": _day_type(snapshot.report_date), "holiday_notice": None},
+                "calendar": report_calendar_payload(
+                    snapshot.payload.get("report_day_policy"), report_date=snapshot.report_date
+                ),
                 "status": output.get("status", "complete"),
                 "data_quality": output.get("data_quality", _complete_quality()),
                 "sections": output.get("sections", {}),
@@ -380,6 +383,9 @@ class ReportGenerationService:
                 "report_id": report_id,
                 "report_date": snapshot.report_date.isoformat(),
                 "timezone": "Asia/Shanghai",
+                "calendar": report_calendar_payload(
+                    snapshot.payload.get("report_day_policy"), report_date=snapshot.report_date
+                ),
                 "generated_at": generated_at.isoformat().replace("+00:00", "Z"),
                 "input_snapshot": {
                     "snapshot_id": snapshot.snapshot_id,
@@ -474,10 +480,6 @@ def _attempt_source_ref_ids(snapshot: ReportInputSnapshot) -> list[str]:
 def _scheduled_publish_at(snapshot: ReportInputSnapshot) -> datetime:
     local = datetime.combine(snapshot.report_date, _REPORT_PUBLISH_TIME, tzinfo=_REPORT_TIMEZONE)
     return local.astimezone(UTC)
-
-
-def _day_type(report_date: date) -> str:
-    return "weekend" if report_date.weekday() >= 5 else "business_day"
 
 
 def _default_schedule() -> dict[str, Any]:

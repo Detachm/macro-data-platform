@@ -141,6 +141,8 @@ PostgreSQL 设计：
 - #50 仓库侧已增加 fail-closed 的宿主机 XtQuant data-centre CLI、systemd unit、TCP 自检和只输出
   HSI/HSTECH 标识元数据的 entitlement probe；真实 token 轮换、Beast 139 个 tracked 配置清理、
   防火墙、服务启动和指数 allowlist 仍需现场验收。
+- #51 第一阶段已定义并持久化单一 `report_day_policy`：周末/区域交易所休市不会把对应 market input
+  误报为必需缺失，新闻和宏观日历仍 fail closed；获批 CN 新闻、HK/US 发布日历及两日 live 验收未完成。
 
 ### 尚未完成
 
