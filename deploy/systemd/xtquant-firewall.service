@@ -1,0 +1,35 @@
+[Unit]
+Description=Macro Data Platform XtQuant Host Firewall
+Documentation=file:/home/hliu/macro-data-platform/docs/runbooks/xtquant-host-service.md
+Requires=k3s.service
+After=network-online.target k3s.service
+Before=xtquant-data-center.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/macro-data-platform/xtquant-firewall.env
+ExecStart=/usr/local/libexec/macro-data-platform/xtquant-firewall apply
+ExecStartPost=/usr/local/libexec/macro-data-platform/xtquant-firewall check
+ExecReload=/usr/local/libexec/macro-data-platform/xtquant-firewall apply
+ExecStop=/usr/local/libexec/macro-data-platform/xtquant-firewall remove
+RemainAfterExit=yes
+
+NoNewPrivileges=false
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectKernelLogs=true
+ProtectClock=true
+ProtectHostname=true
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK AF_UNIX
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+
+[Install]
+WantedBy=multi-user.target

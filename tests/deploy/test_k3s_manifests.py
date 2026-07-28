@@ -87,17 +87,17 @@ def test_backup_is_atomic_verified_private_and_retained_by_count() -> None:
     assert cron_job["spec"]["timeZone"] == "Asia/Shanghai"
     assert cron_job["spec"]["concurrencyPolicy"] == "Forbid"
     pod_spec = cron_job["spec"]["jobTemplate"]["spec"]["template"]["spec"]
-    host_path = next(volume["hostPath"] for volume in pod_spec["volumes"] if "hostPath" in volume)
-    assert host_path == {
-        "path": "/archive/macro-data-platform/postgres-backups",
-        "type": "Directory",
-    }
+    archive = next(volume for volume in pod_spec["volumes"] if volume["name"] == "archive-backups")
+    assert archive["persistentVolumeClaim"] == {"claimName": "postgres-backup-archive"}
 
     script = _resource("ConfigMap", "postgres-backup-script")["data"]["backup.sh"]
     for required in (
         "umask 077",
         ".partial",
         "pg_restore --list",
+        "pg_isready",
+        "readiness_attempt",
+        '"$readiness_attempt" -ge 60',
         "chmod 0600",
         "14",
         "8",
@@ -118,11 +118,38 @@ def test_archive_capacity_monitor_alerts_on_the_confirmed_thresholds() -> None:
         "--minimum-total-bytes",
         "20000000000000",
     ]
+    pod_spec = cron_job["spec"]["jobTemplate"]["spec"]["template"]["spec"]
+    archive = next(volume for volume in pod_spec["volumes"] if volume["name"] == "archive-backups")
+    assert archive["persistentVolumeClaim"]["claimName"] == "postgres-backup-archive"
+
+
+def test_archive_is_a_retained_static_local_volume_behind_a_pvc() -> None:
+    storage_class = _resource("StorageClass", "macro-archive")
+    volume = _resource("PersistentVolume", "macro-postgres-archive")
+    claim = _resource("PersistentVolumeClaim", "postgres-backup-archive")
+
+    assert storage_class["provisioner"] == "kubernetes.io/no-provisioner"
+    assert storage_class["reclaimPolicy"] == "Retain"
+    assert volume["spec"]["persistentVolumeReclaimPolicy"] == "Retain"
+    assert volume["spec"]["local"]["path"] == ("/archive/macro-data-platform/postgres-backups")
+    assert volume["spec"]["nodeAffinity"]["required"]["nodeSelectorTerms"][0]["matchExpressions"][
+        0
+    ] == {
+        "key": "macro-data-platform/archive",
+        "operator": "In",
+        "values": ["true"],
+    }
+    assert claim["spec"]["volumeName"] == "macro-postgres-archive"
+    assert claim["spec"]["storageClassName"] == "macro-archive"
 
 
 def test_migration_is_a_non_retrying_release_gate() -> None:
     job = _resource("Job", "macro-data-migration")
     assert job["spec"]["backoffLimit"] == 0
+    init_container = job["spec"]["template"]["spec"]["initContainers"][0]
+    assert init_container["name"] == "wait-for-postgres"
+    assert "pg_isready" in init_container["args"][0]
+    assert '"$readiness_attempt" -ge 60' in init_container["args"][0]
     container = next(_containers(job))
     assert container["command"] == ["alembic", "upgrade", "head"]
     assert container["imagePullPolicy"] == "Never"
@@ -178,8 +205,11 @@ def test_restore_drill_is_isolated_from_the_live_pvc() -> None:
     archive = next(volume for volume in volumes if volume["name"] == "archive-backups")
 
     assert restore_data["emptyDir"]["sizeLimit"] == "20Gi"
-    assert archive["hostPath"]["path"] == "/archive/macro-data-platform/postgres-backups"
-    assert all("persistentVolumeClaim" not in volume for volume in volumes)
+    assert archive["persistentVolumeClaim"]["claimName"] == "postgres-backup-archive"
+    assert all(
+        volume.get("persistentVolumeClaim", {}).get("claimName") != "postgres-data-postgres-0"
+        for volume in volumes
+    )
 
 
 def _env_example(relative_path: str) -> dict[str, str]:
@@ -189,3 +219,20 @@ def _env_example(relative_path: str) -> dict[str, str]:
             key, value = line.split("=", 1)
             values[key] = value
     return values
+
+
+def test_runtime_image_declares_a_numeric_non_root_user() -> None:
+    dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
+
+    assert "USER 100:101" in dockerfile
+    assert "USER app" not in dockerfile
+
+
+def test_k3s_containerd_streaming_port_uses_a_persistent_drop_in() -> None:
+    drop_in = Path("deploy/k3s/host/containerd/10-stream-server-port.toml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "version = 3" in drop_in
+    assert 'stream_server_port = "0"' in drop_in
+    assert 'stream_server_port = "10010"' not in drop_in

@@ -67,6 +67,5 @@ spec:
       emptyDir:
         sizeLimit: 20Gi
     - name: archive-backups
-      hostPath:
-        path: /archive/macro-data-platform/postgres-backups
-        type: Directory
+      persistentVolumeClaim:
+        claimName: postgres-backup-archive

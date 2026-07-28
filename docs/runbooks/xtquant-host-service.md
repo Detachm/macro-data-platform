@@ -21,7 +21,8 @@ symbol。禁止猜代码，也禁止把 token 或付费行情 payload 写入 Git
 仓库提供：
 
 - `macro-data-xtquant-server serve`：从环境读取 token，初始化 HK 市场并在明确 IP/端口监听。
-- `macro-data-xtquant-server check`：只做 TCP readiness（就绪检查），不读取 token、不取行情。
+- `macro-data-xtquant-server check`：默认只做 TCP readiness；systemd 使用 `--protocol` 再要求一次
+  XtQuant 协议握手。两种模式都不读取 token、不取行情。
 - `macro-data-xtquant-probe`：只扫描 sector/instrument identity metadata（板块/合约标识元数据），输出
   HSI/HSCEI/HSTECH 的匹配标识，不输出价格、成交量、原始响应或凭据。
 - `deploy/systemd/xtquant-data-center.service`：自动重启、启动后等待 readiness、最小权限和文件系统保护。
@@ -60,13 +61,41 @@ printf 'node_ip configured=%s, pod_cidr configured=%s\n' "yes" "yes"
 ```
 
 平台负责人根据实际 CNI interface（容器网络接口）配置规则：只允许 `pod_cidr` 经 K3s CNI 到
-`node_ip:58615/tcp`，随后拒绝 LAN、Tailscale、Docker bridge 和其他来源。UFW 示例必须在现场先核对
-现有顺序，不能盲目追加：
+`node_ip:58615/tcp`，随后拒绝 LAN、Tailscale、Docker bridge 和其他来源。先核对 UFW 与路由；不要为
+本服务直接启用当前未启用的整机防火墙，以免改变已有服务的网络边界：
 
 ```bash
 sudo ufw status numbered
 ip route show "$pod_cidr"
-# 复核接口后，由平台负责人插入“Pod CIDR allow”与后续“其他来源 deny”。
+```
+
+仓库提供独立的 `xtquant-firewall.service`。它只管理 `node_ip:58615/tcp`：允许回环自检，允许
+`pod_cidr` 经指定 CNI interface 且带有 kube-router NetworkPolicy 合规 mark 时访问，随后对其他来源
+返回 TCP reset。规则插在 `KUBE-ROUTER-INPUT` 后，并要求 `0x20000/0x20000` mark，避免仅凭 Pod CIDR
+绕过 Pod 级判定；停止服务时删除自己的 jump 和 chain，不刷新或改写宿主机其他 iptables 规则。
+
+```bash
+sudo install -d -o root -g root -m 0700 /etc/macro-data-platform
+sudo install -o root -g root -m 0600 \
+  deploy/systemd/xtquant-firewall.env.example \
+  /etc/macro-data-platform/xtquant-firewall.env
+sudoedit /etc/macro-data-platform/xtquant-firewall.env
+```
+
+填写刚确认的 `XTQUANT_BIND_ADDRESS`、`XTQUANT_POD_CIDR` 与 CNI interface；默认 K3s bridge 通常为
+`cni0`，必须用路由结果复核。随后安装但暂不启动，确保 data centre 不会在防火墙之前监听：
+
+```bash
+sudo install -d -o root -g root -m 0755 \
+  /usr/local/libexec/macro-data-platform
+sudo install -o root -g root -m 0755 \
+  deploy/systemd/xtquant-firewall \
+  /usr/local/libexec/macro-data-platform/xtquant-firewall
+sudo install -o root -g root -m 0644 \
+  deploy/systemd/xtquant-firewall.service \
+  /etc/systemd/system/xtquant-firewall.service
+sudo stat -c '%U %G %a %n' \
+  /etc/macro-data-platform/xtquant-firewall.env
 ```
 
 验收要从三处做：worker Pod 可连接；宿主机明确地址可自检；另一台 LAN 主机连接必须失败。当前 #49
@@ -120,15 +149,20 @@ sudo stat -c '%U %G %a %n' /etc/macro-data-platform/xtquant.env
 sudo install -o root -g root -m 0644 \
   deploy/systemd/xtquant-data-center.service \
   /etc/systemd/system/xtquant-data-center.service
-sudo systemd-analyze verify /etc/systemd/system/xtquant-data-center.service
+sudo systemd-analyze verify \
+  /etc/systemd/system/xtquant-firewall.service \
+  /etc/systemd/system/xtquant-data-center.service
 sudo systemctl daemon-reload
+sudo systemctl enable --now xtquant-firewall.service
+sudo systemctl is-active xtquant-firewall.service
 sudo systemctl enable --now xtquant-data-center.service
 sudo systemctl status xtquant-data-center.service --no-pager
 sudo ss -ltnp | rg ':58615\b'
 ```
 
-unit 的启动后检查最多等待 180 秒。服务主循环每 10 秒自检监听；监听消失时进程以失败状态退出，
-systemd 在 5 秒后重启。端口被其他进程占用时不会 kill 对方，而是启动失败。
+unit 的启动后检查最多等待 180 秒，并且必须完成 XtQuant 协议握手，避免 native listener 已打开但 SDK
+尚不可用的短暂假健康。服务主循环每 10 秒自检监听；监听消失时进程以失败状态退出，systemd 在 5 秒后
+重启。端口被其他进程占用时不会 kill 对方，而是启动失败。
 
 只查看最少日志，不复制 native SDK 的大段连接信息：
 

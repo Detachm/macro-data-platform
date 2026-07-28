@@ -177,6 +177,62 @@ def test_xtquant_check_cli_reports_only_readiness(
     assert json.loads(capsys.readouterr().out)["status"] == expected_status
 
 
+def test_xtquant_protocol_check_cli_waits_for_protocol_handshake(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    observed: dict[str, object] = {}
+
+    def fake_wait(
+        address: str,
+        port: int,
+        *,
+        timeout_seconds: float,
+        wait_seconds: float,
+        interval_seconds: float,
+    ) -> bool:
+        observed.update(
+            address=address,
+            port=port,
+            timeout_seconds=timeout_seconds,
+            wait_seconds=wait_seconds,
+            interval_seconds=interval_seconds,
+        )
+        return True
+
+    monkeypatch.setenv("XTQUANT_BIND_ADDRESS", "127.0.0.1")
+    monkeypatch.setenv("XTQUANT_PORT", "58615")
+    monkeypatch.setattr(host_server, "wait_until_protocol_ready", fake_wait)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "macro-data-xtquant-server",
+            "check",
+            "--protocol",
+            "--timeout-seconds",
+            "1",
+            "--wait-seconds",
+            "2",
+            "--interval-seconds",
+            "0.5",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as raised:
+        host_server.main()
+
+    assert raised.value.code == 0
+    assert observed == {
+        "address": "127.0.0.1",
+        "port": 58615,
+        "timeout_seconds": 1.0,
+        "wait_seconds": 2.0,
+        "interval_seconds": 0.5,
+    }
+    assert json.loads(capsys.readouterr().out)["status"] == "ready"
+
+
 def test_xtquant_serve_cli_delegates_to_supervisor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -297,6 +353,36 @@ def test_xtquant_tcp_helpers_wait_and_validate_durations(
             wait_seconds=1,
             interval_seconds=1,
         )
+
+
+def test_xtquant_protocol_readiness_connects_without_vendor_banner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Client:
+        enable_hello = True
+
+        def __init__(self) -> None:
+            self.connected: tuple[str, int, bool] | None = None
+            self.disconnected = False
+
+        def connect(self, address: str, port: int, remember_if_success: bool = True) -> object:
+            self.connected = (address, port, remember_if_success)
+            return object()
+
+        def disconnect(self) -> None:
+            self.disconnected = True
+
+    client = Client()
+    monkeypatch.setattr(host_server, "tcp_ready", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(host_server, "_load_xtdata_client", lambda: client)
+
+    assert host_server.protocol_ready("127.0.0.1", 58615, timeout_seconds=1) is True
+    assert client.connected == ("127.0.0.1", 58615, False)
+    assert client.enable_hello is False
+    assert client.disconnected is True
+
+    monkeypatch.setattr(client, "connect", lambda *_args, **_kwargs: 1 / 0)
+    assert host_server.protocol_ready("127.0.0.1", 58615, timeout_seconds=1) is False
 
 
 def test_xtquant_host_private_boundaries_fail_closed(

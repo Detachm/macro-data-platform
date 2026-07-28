@@ -1,0 +1,50 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: macro-archive
+provisioner: kubernetes.io/no-provisioner
+reclaimPolicy: Retain
+volumeBindingMode: WaitForFirstConsumer
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: macro-postgres-archive
+  labels:
+    app.kubernetes.io/name: postgres-backup-archive
+    app.kubernetes.io/part-of: macro-data-platform
+spec:
+  capacity:
+    storage: 25Ti
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: macro-archive
+  local:
+    path: /archive/macro-data-platform/postgres-backups
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: macro-data-platform/archive
+              operator: In
+              values:
+                - "true"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-backup-archive
+  namespace: macro-data-platform
+  labels:
+    app.kubernetes.io/name: postgres-backup-archive
+    app.kubernetes.io/part-of: macro-data-platform
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: macro-archive
+  volumeName: macro-postgres-archive
+  resources:
+    requests:
+      storage: 1Ti

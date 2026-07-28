@@ -2,7 +2,8 @@
 Description=Macro Data Platform XtQuant Data Centre
 Documentation=file:/home/hliu/macro-data-platform/docs/runbooks/xtquant-host-service.md
 Wants=network-online.target
-After=network-online.target
+BindsTo=xtquant-firewall.service
+After=network-online.target xtquant-firewall.service
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
@@ -13,7 +14,7 @@ Group=macro-data
 WorkingDirectory=/home/hliu/macro-data-platform
 EnvironmentFile=/etc/macro-data-platform/xtquant.env
 ExecStart=/home/hliu/macro-data-platform/.venv/bin/macro-data-xtquant-server serve
-ExecStartPost=/home/hliu/macro-data-platform/.venv/bin/macro-data-xtquant-server check --wait-seconds 180 --timeout-seconds 3
+ExecStartPost=/home/hliu/macro-data-platform/.venv/bin/macro-data-xtquant-server check --protocol --wait-seconds 180 --timeout-seconds 3
 Restart=on-failure
 RestartSec=5
 TimeoutStartSec=240

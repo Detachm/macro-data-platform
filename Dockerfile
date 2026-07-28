@@ -14,7 +14,7 @@ COPY alembic.ini ./
 COPY migrations ./migrations
 RUN python -m pip install --upgrade pip && python -m pip install .
 
-USER app
+USER 100:101
 
 EXPOSE 8000
 CMD ["uvicorn", "macro_platform.api.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
