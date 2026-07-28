@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from uuid import UUID, uuid4
 
+import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 
@@ -14,12 +15,36 @@ from macro_platform.api.exception_handlers import (
     provider_error_handler,
     validation_error_handler,
 )
-from macro_platform.api.routes import editor, health, instruments, macro, market, meta, news
+from macro_platform.api.routes import (
+    editor,
+    health,
+    instruments,
+    macro,
+    market,
+    meta,
+    news,
+    operations,
+)
 from macro_platform.config import Settings, get_settings
 from macro_platform.providers.base import ProviderError
 from macro_platform.providers.factory import create_provider_registry
 from macro_platform.providers.registry import ProviderRegistry
+from macro_platform.services.delivery_recovery import (
+    DeliveryRecoveryPort,
+    DeliveryRecoveryService,
+    PostgresDeliveryRecoveryAuditStore,
+)
 from macro_platform.services.editor_context_service import DataUnavailableError
+from macro_platform.services.report_delivery import (
+    ConfiguredFeishuDelivery,
+    PostgresReportDeliveryStore,
+)
+from macro_platform.services.workflow_operations import (
+    PostgresWorkerReadinessReader,
+    PostgresWorkflowOperationsReader,
+    WorkerReadinessReader,
+    WorkflowOperationsReader,
+)
 from macro_platform.storage.database import Database
 from macro_platform.storage.repositories import (
     DataRepository,
@@ -33,6 +58,9 @@ def create_app(
     settings: Settings | None = None,
     repository: DataRepository | None = None,
     provider_registry: ProviderRegistry | None = None,
+    workflow_operations: WorkflowOperationsReader | None = None,
+    worker_readiness: WorkerReadinessReader | None = None,
+    delivery_recovery: DeliveryRecoveryPort | None = None,
 ) -> FastAPI:
     resolved_settings = settings or get_settings()
     resolved_database = Database(resolved_settings.database_url)
@@ -56,15 +84,40 @@ def create_app(
         resolved_registry = ProviderRegistry()
     if resolved_settings.app_env == "production":
         resolved_registry.assert_production_safe()
+    resolved_workflow_operations = workflow_operations or PostgresWorkflowOperationsReader(
+        resolved_database
+    )
+    resolved_worker_readiness = worker_readiness or PostgresWorkerReadinessReader(
+        resolved_database, resolved_settings
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        owned_http_client: httpx.AsyncClient | None = None
+        resolved_delivery_recovery = delivery_recovery
+        if resolved_delivery_recovery is None and resolved_settings.feishu_delivery_enabled:
+            owned_http_client = httpx.AsyncClient()
+            resolved_delivery_recovery = DeliveryRecoveryService(
+                delivery=ConfiguredFeishuDelivery(
+                    settings=resolved_settings,
+                    client=owned_http_client,
+                    store=PostgresReportDeliveryStore(resolved_database),
+                ),
+                audit_store=PostgresDeliveryRecoveryAuditStore(resolved_database),
+            )
         app.state.database = resolved_database
         app.state.repository = resolved_repository
         app.state.provider_registry = resolved_registry
-        yield
-        await resolved_registry.close()
-        await resolved_database.dispose()
+        app.state.workflow_operations = resolved_workflow_operations
+        app.state.worker_readiness = resolved_worker_readiness
+        app.state.delivery_recovery = resolved_delivery_recovery
+        try:
+            yield
+        finally:
+            if owned_http_client is not None:
+                await owned_http_client.aclose()
+            await resolved_registry.close()
+            await resolved_database.dispose()
 
     app = FastAPI(
         title="Macro Data Platform",
@@ -98,6 +151,7 @@ def create_app(
     app.include_router(macro.router, dependencies=protected_dependencies)
     app.include_router(news.router, dependencies=protected_dependencies)
     app.include_router(editor.router, dependencies=protected_dependencies)
+    app.include_router(operations.router, dependencies=protected_dependencies)
     return app
 
 

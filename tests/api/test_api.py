@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from datetime import UTC, date, datetime
+from uuid import UUID, uuid4
+
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
@@ -7,9 +10,16 @@ from pydantic import SecretStr
 from macro_platform.api.app import create_app
 from macro_platform.config import Settings
 from macro_platform.contracts.provider import Dataset
+from macro_platform.services.delivery_recovery import DeliveryRecoveryResult
+from macro_platform.services.workflow_operations import (
+    DailyWorkflowOperationsStatus,
+    WorkerReadinessStatus,
+    WorkflowDeliveryView,
+)
 from macro_platform.storage.repositories import EmptyDataRepository, PostgresDataRepository
 
 TOKEN = "test-service-token"
+NOW = datetime(2026, 7, 28, 0, 30, tzinfo=UTC)
 
 
 def client() -> TestClient:
@@ -21,12 +31,187 @@ def auth() -> dict[str, str]:
     return {"Authorization": f"Bearer {TOKEN}"}
 
 
+class _WorkflowOperations:
+    def __init__(self) -> None:
+        self.report_dates: list[date] = []
+
+    async def load(self, report_date: date) -> DailyWorkflowOperationsStatus:
+        self.report_dates.append(report_date)
+        return DailyWorkflowOperationsStatus(
+            report_date=report_date,
+            status="delivered",
+            operator_attention_required=False,
+            deliveries=(
+                WorkflowDeliveryView(
+                    delivery_id=uuid4(),
+                    report_id=f"daily-report-{report_date.isoformat()}-v1",
+                    report_version="v1",
+                    status="succeeded",
+                    attempt_no=1,
+                    created_at=NOW,
+                    updated_at=NOW,
+                ),
+            ),
+            last_updated_at=NOW,
+        )
+
+
+class _WorkerReadiness:
+    def __init__(self, *, ready: bool) -> None:
+        self.ready = ready
+
+    async def check(self) -> WorkerReadinessStatus:
+        return WorkerReadinessStatus(
+            status="ready" if self.ready else "not_ready",
+            database_ready=self.ready,
+            schema_ready=self.ready,
+            provider_mode_live=self.ready,
+            us_provider_mode_live=self.ready,
+            us_credentials_configured=self.ready,
+            feishu_delivery_enabled=self.ready,
+            feishu_credentials_configured=self.ready,
+            daily_chat_configured=self.ready,
+            alert_chat_configured=self.ready,
+            chats_are_distinct=self.ready,
+            unmet_requirements=() if self.ready else ("DATABASE_UNAVAILABLE",),
+        )
+
+
+class _DeliveryRecovery:
+    def __init__(self, *, status: str) -> None:
+        self.status = status
+        self.calls: list[tuple[UUID, str, bool]] = []
+
+    async def retry(
+        self,
+        *,
+        request_id: UUID,
+        report_id: str,
+        confirmed_not_delivered: bool,
+    ) -> DeliveryRecoveryResult:
+        self.calls.append((request_id, report_id, confirmed_not_delivered))
+        return DeliveryRecoveryResult(
+            action_id=uuid4(),
+            request_id=request_id,
+            report_id=report_id,
+            status=self.status,  # type: ignore[arg-type]
+            delivery_status="succeeded" if self.status == "succeeded" else "failed",
+            error_code=None if self.status == "succeeded" else "FEISHU_SEND_FAILED",
+        )
+
+
 def test_api_019_liveness_and_request_id() -> None:
     with client() as api:
         response = api.get("/health/live")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
     assert response.headers["X-Request-ID"]
+
+
+def test_e2e_033_workflow_operations_are_protected_and_sanitized() -> None:
+    settings = Settings(app_env="test", service_token=SecretStr(TOKEN))
+    operations = _WorkflowOperations()
+    with TestClient(create_app(settings=settings, workflow_operations=operations)) as api:
+        unauthenticated = api.get("/v1/operations/daily-workflows/2026-07-28")
+        response = api.get(
+            "/v1/operations/daily-workflows/2026-07-28",
+            headers=auth(),
+        )
+
+    assert unauthenticated.status_code == 401
+    assert response.status_code == 200
+    assert operations.report_dates == [date(2026, 7, 28)]
+    payload = response.json()
+    assert payload["data"]["status"] == "delivered"
+    assert payload["data"]["deliveries"][0]["status"] == "succeeded"
+    serialized = response.text.lower()
+    assert "delivery_target" not in serialized
+    assert "request_payload" not in serialized
+    assert "response_payload" not in serialized
+    assert "message_id" not in serialized
+
+
+@pytest.mark.parametrize(
+    ("ready", "expected_status"),
+    [(True, 200), (False, 503)],
+)
+def test_e2e_033_worker_readiness_has_an_explicit_http_status(
+    ready: bool,
+    expected_status: int,
+) -> None:
+    settings = Settings(app_env="test", service_token=SecretStr(TOKEN))
+    with TestClient(
+        create_app(
+            settings=settings,
+            worker_readiness=_WorkerReadiness(ready=ready),
+        )
+    ) as api:
+        response = api.get("/v1/operations/worker-readiness", headers=auth())
+
+    assert response.status_code == expected_status
+    assert response.json()["data"]["status"] == ("ready" if ready else "not_ready")
+
+
+@pytest.mark.parametrize(
+    ("recovery_status", "expected_http_status"),
+    [
+        ("succeeded", 200),
+        ("pending", 202),
+        ("rejected", 409),
+        ("failed", 503),
+    ],
+)
+def test_e2e_033_delivery_recovery_is_protected_and_passes_request_id(
+    recovery_status: str,
+    expected_http_status: int,
+) -> None:
+    settings = Settings(app_env="test", service_token=SecretStr(TOKEN))
+    recovery = _DeliveryRecovery(status=recovery_status)
+    request_id = uuid4()
+    with TestClient(create_app(settings=settings, delivery_recovery=recovery)) as api:
+        unauthenticated = api.post(
+            "/v1/operations/daily-reports/daily-report-2026-07-28-v1/delivery-retry",
+            json={"confirmed_not_delivered": True},
+        )
+        response = api.post(
+            "/v1/operations/daily-reports/daily-report-2026-07-28-v1/delivery-retry",
+            headers={**auth(), "X-Request-ID": str(request_id)},
+            json={"confirmed_not_delivered": True},
+        )
+
+    assert unauthenticated.status_code == 401
+    assert response.status_code == expected_http_status
+    assert recovery.calls == [
+        (request_id, "daily-report-2026-07-28-v1", True),
+    ]
+    assert response.json()["data"]["request_id"] == str(request_id)
+
+
+def test_e2e_033_delivery_recovery_fails_closed_when_not_configured() -> None:
+    with client() as api:
+        response = api.post(
+            "/v1/operations/daily-reports/daily-report-2026-07-28-v1/delivery-retry",
+            headers=auth(),
+            json={"confirmed_not_delivered": False},
+        )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "DELIVERY_RECOVERY_NOT_CONFIGURED"
+
+
+def test_e2e_033_delivery_recovery_requires_a_client_request_id() -> None:
+    settings = Settings(app_env="test", service_token=SecretStr(TOKEN))
+    recovery = _DeliveryRecovery(status="succeeded")
+    with TestClient(create_app(settings=settings, delivery_recovery=recovery)) as api:
+        response = api.post(
+            "/v1/operations/daily-reports/daily-report-2026-07-28-v1/delivery-retry",
+            headers=auth(),
+            json={"confirmed_not_delivered": False},
+        )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "IDEMPOTENCY_REQUEST_ID_REQUIRED"
+    assert recovery.calls == []
 
 
 def test_rep_027_production_app_defaults_to_postgres_repository() -> None:

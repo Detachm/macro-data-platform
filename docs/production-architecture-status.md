@@ -135,6 +135,9 @@ PostgreSQL 设计：
 - 已增加 PostgreSQL + mocked provider/LLM/Feishu 的完整链路 E2E；同一报告日期复放时只调用一次
   LLM、只生成一份报告且只向日报群发送一次。
 - 单日手工恢复支持显式不可变 `--report-version`；同一日期/版本重放保持幂等。
+- 已增加受 Bearer token 保护的 worker readiness、按日脱敏状态查询和人工投递恢复 API；人工恢复以
+  `X-Request-ID` 和迁移 `0013` 的 `delivery_operator_actions` 永久审计，`uncertain` 必须人工确认
+  群内无消息，API 不接收 Chat ID。
 
 ### 尚未完成
 
@@ -144,8 +147,8 @@ PostgreSQL 设计：
 3. 实现周末/节假日宏观版，不把休市当作必需行情缺失。
 4. 按 #49 安装单节点 K3s，并落地 Namespace、Deployment、StatefulSet、Service、Job、
    CronJob、PVC 和 Secrets；当前仓库尚无 Kubernetes 清单。
-5. 补齐 worker 专用 readiness、状态查询和经过保护的 delivery retry 运维入口；当前已有 API
-   存活/数据库就绪检查、worker 指标和结构化日志。
+5. 在 #49 的 K8s 清单和最终运行手册中配置 readiness probe、NetworkPolicy、Secret、回滚和明确
+   ownership。
 6. 完成 provider 连续两个报告日验证和完整链路连续五个工作日 soak。
 
 GitHub 当前开放的生产任务是 #33、#49、#50 和 #51，分别跟踪编排、部署/存储、
@@ -159,7 +162,7 @@ Beast/HK 行情和新闻/日历/节假日策略；不重新打开已经完成的
    XtQuant HK 核心指数。
 2. 完成 #51：补齐 CN 新闻、HK/US 日历及节假日报告策略。
 3. 完成 #49：安装 K3s，完成 PostgreSQL PVC、Secret、迁移和 `/archive` 备份。
-4. 收口 #33 的 worker readiness、受保护运维入口和五工作日 soak；周末策略由 #51 提供输入。
+4. 收口 #33 的 K8s 运维所有权和五工作日 soak；周末策略由 #51 提供输入。
 5. 执行 E2E、两日报告日 provider 验证和五工作日生产式 soak。
 
 只有同时满足以下条件才称为生产可用：

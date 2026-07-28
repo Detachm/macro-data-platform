@@ -7,6 +7,7 @@ from uuid import UUID
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     Date,
     DateTime,
@@ -522,6 +523,42 @@ class WorkflowAlertAttemptRow(Base):
     request_payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     response_payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     message_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class DeliveryOperatorActionRow(Base):
+    __tablename__ = "delivery_operator_actions"
+    __table_args__ = (
+        UniqueConstraint("request_id", name="uq_delivery_operator_action_request"),
+        CheckConstraint(
+            "action IN ('retry')",
+            name="ck_delivery_operator_actions_action",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'succeeded', 'rejected', 'failed')",
+            name="ck_delivery_operator_actions_status",
+        ),
+        Index("ix_delivery_operator_actions_report", "report_id", "created_at"),
+    )
+
+    action_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    request_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    report_id: Mapped[str] = mapped_column(
+        ForeignKey("daily_reports.report_id", ondelete="RESTRICT"), nullable=False
+    )
+    delivery_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("delivery_attempts.delivery_id", ondelete="RESTRICT"), nullable=True
+    )
+    action: Mapped[str] = mapped_column(String(24), nullable=False)
+    confirmed_not_delivered: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    prior_status: Mapped[str] = mapped_column(String(24), nullable=False)
+    prior_attempt_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    result_delivery_status: Mapped[str | None] = mapped_column(String(24), nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

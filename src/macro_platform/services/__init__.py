@@ -1,3 +1,9 @@
+from macro_platform.services.delivery_recovery import (
+    DeliveryRecoveryError,
+    DeliveryRecoveryResult,
+    DeliveryRecoveryService,
+    PostgresDeliveryRecoveryAuditStore,
+)
 from macro_platform.services.editor_context_service import (
     DataUnavailableError,
     EditorContextService,
@@ -19,6 +25,7 @@ from macro_platform.services.report_delivery import (
     FeishuSendResult,
     FeishuTransport,
     FeishuTransportError,
+    ManualDeliveryRetryError,
     PostgresReportDeliveryStore,
     ReportDeliveryError,
     ReportDeliveryResult,
@@ -37,9 +44,19 @@ from macro_platform.services.report_validation import (
     ReportValidationService,
     ReportValidator,
 )
+from macro_platform.services.workflow_operations import (
+    DailyWorkflowOperationsStatus,
+    PostgresWorkerReadinessReader,
+    PostgresWorkflowOperationsReader,
+    WorkerReadinessStatus,
+)
 
 __all__ = [
     "DataUnavailableError",
+    "DeliveryRecoveryError",
+    "DeliveryRecoveryResult",
+    "DeliveryRecoveryService",
+    "PostgresDeliveryRecoveryAuditStore",
     "EditorContextService",
     "MacroService",
     "MarketService",
@@ -64,8 +81,13 @@ __all__ = [
     "FeishuSendResult",
     "FeishuTransport",
     "FeishuTransportError",
+    "ManualDeliveryRetryError",
     "PostgresReportDeliveryStore",
     "ReportDeliveryError",
     "ReportDeliveryResult",
     "ReportDeliveryService",
+    "DailyWorkflowOperationsStatus",
+    "PostgresWorkerReadinessReader",
+    "PostgresWorkflowOperationsReader",
+    "WorkerReadinessStatus",
 ]

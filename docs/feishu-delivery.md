@@ -39,6 +39,20 @@ provider run IDs 和安全重试指引。预警记录持久化在 `workflow_aler
 - 只对明确限流执行有界重试；模糊结果标记为 `uncertain`，禁止自动重发。
 - 正常日报永远只使用 `FEISHU_CHAT_ID`，预警永远只使用 `FEISHU_ALERT_CHAT_ID`。
 
+## 人工投递恢复
+
+受 Bearer token 保护的
+`POST /v1/operations/daily-reports/{report_id}/delivery-retry` 是唯一允许的人工投递恢复入口。
+它不会生成新报告，也不会接受目标 Chat ID：目标仍只来自运行时 `FEISHU_CHAT_ID`。调用者必须提供
+稳定的 `X-Request-ID`；迁移 `0013` 的 `delivery_operator_actions` 在网络发送前记录授权，并保证同一
+请求复放不会重复发送。
+
+- `failed` 可恢复一次；本次人工调用不再执行自动重试。
+- `uncertain` 只有在请求体显式设置 `confirmed_not_delivered=true` 后才可恢复。
+- `pending` 拒绝抢占；`succeeded` 返回既有成功结果，不发送网络请求。
+- 同一 `X-Request-ID` 若换用不同报告或确认参数会以冲突拒绝。
+- API 和状态查询不返回 Chat ID、卡片、飞书原始响应或 `message_id`。
+
 ## 联调前由部署方完成
 
 1. 在飞书开放平台创建或选用一个自建应用，启用机器人能力与“以应用身份发送消息”权限。
@@ -55,6 +69,7 @@ provider run IDs 和安全重试指引。预警记录持久化在 `workflow_aler
    FEISHU_API_BASE_URL=https://open.feishu.cn
    FEISHU_TIMEOUT_SECONDS=15
    FEISHU_DELIVERY_MAX_ATTEMPTS=3
+   FEISHU_DELIVERY_MAX_TOTAL_ATTEMPTS=10
    ```
 
 4. 先对一份已验证的报告执行 dry-run，确认卡片预览与目标群；再开启一次真实测试发送。

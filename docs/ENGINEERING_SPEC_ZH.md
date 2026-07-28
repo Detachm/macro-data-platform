@@ -831,6 +831,9 @@ class IngestJobResult(StrictModel):
 |---|---|---|---|
 | `GET` | `/health/live` | 无 | 进程状态 |
 | `GET` | `/health/ready` | 无 | 数据库/必要依赖状态 |
+| `GET` | `/v1/operations/worker-readiness` | Bearer token | Worker 配置与关键表 readiness |
+| `GET` | `/v1/operations/daily-workflows/{report_date}` | Bearer token | 脱敏工作流状态与审计链 |
+| `POST` | `/v1/operations/daily-reports/{report_id}/delivery-retry` | DeliveryRetryRequest + Bearer token + X-Request-ID | 幂等投递恢复结果 |
 | `GET` | `/v1/meta/capabilities` | 可选 region | ProviderCapabilities 列表 |
 | `GET` | `/v1/instruments` | InstrumentQuery | `items: Instrument[]` |
 | `GET` | `/v1/market/bars` | BarQuery | `items: MarketBar[]` |

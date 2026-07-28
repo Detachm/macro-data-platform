@@ -46,6 +46,7 @@ from macro_platform.jobs.ingestion_checkpoint import CommittedPage, IngestionChe
 from macro_platform.jobs.runner import IngestionExecutionContext, JobRunner
 from macro_platform.services.report_delivery import (
     FeishuSendResult,
+    FeishuTransportError,
     PostgresReportDeliveryStore,
     ReportDeliveryService,
 )
@@ -372,7 +373,7 @@ async def test_db_002_migration_upgrades_0002_to_current_schema(database: Databa
         )
         preserved_run = await session.get(ProviderRunRow, _previous_schema_run_id)
         preserved_instrument = await session.get(InstrumentRow, _previous_schema_instrument_id)
-    assert revision == "0012"
+    assert revision == "0013"
     assert tables == {
         "report_input_snapshots",
         "daily_reports",
@@ -788,6 +789,63 @@ async def test_rpt_032_postgres_delivery_store_commits_idempotency_before_send(
             first.delivery_attempt.delivery_id
         )
     assert persisted == first.delivery_attempt
+
+
+async def test_e2e_033_postgres_manual_delivery_retry_uses_a_cas_transition(
+    database: Database,
+) -> None:
+    token = uuid4().hex
+    snapshot, report, _ = _report_commands(token)
+    validated = report.model_copy(update={"lifecycle_status": "validated"})
+    async with UnitOfWork(database).transaction() as session:
+        repository = ReportRepository(session)
+        assert await repository.put_input_snapshot(snapshot)
+        assert await repository.put_report(report)
+        assert await repository.update_report_validation(
+            validated,
+            expected_lifecycle_status="generated",
+        )
+
+    class _RecoveringTransport:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def send_card(
+            self,
+            *,
+            chat_id: str,
+            card: Mapping[str, Any],
+            request_uuid: str,
+        ) -> FeishuSendResult:
+            del chat_id, card, request_uuid
+            self.calls += 1
+            if self.calls == 1:
+                raise FeishuTransportError("FEISHU_CHAT_UNAVAILABLE")
+            return FeishuSendResult(
+                message_id="om_manual_recovered",
+                response_payload={"code": 0},
+            )
+
+    transport = _RecoveringTransport()
+    store = PostgresReportDeliveryStore(database)
+    service = ReportDeliveryService(transport)
+    failed = await service.deliver(
+        store,
+        report_id=validated.report_id,
+        chat_id="oc_postgres_manual_retry",
+    )
+    recovered = await service.retry(
+        store,
+        report_id=validated.report_id,
+        chat_id="oc_postgres_manual_retry",
+        confirmed_not_delivered=False,
+    )
+
+    assert failed.status == "failed"
+    assert recovered.status == "succeeded"
+    assert recovered.delivery_attempt is not None
+    assert recovered.delivery_attempt.attempt_no == 2
+    assert transport.calls == 2
 
 
 async def test_e2e_033_postgres_workflow_alert_is_durable_and_idempotent(

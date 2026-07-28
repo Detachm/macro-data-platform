@@ -17,6 +17,7 @@ from macro_platform.services.report_delivery import (
     FeishuSendResult,
     FeishuTransport,
     FeishuTransportError,
+    ManualDeliveryRetryError,
     ReportDeliveryError,
     ReportDeliveryService,
 )
@@ -96,6 +97,34 @@ class _Store:
     async def retry_delivery_attempt(self, delivery_id: UUID) -> bool:
         current = self.attempts.get(delivery_id)
         if current is None or current.status != "retry_wait":
+            return False
+        self.attempts[delivery_id] = current.model_copy(
+            update={
+                "attempt_no": current.attempt_no + 1,
+                "status": "pending",
+                "response_payload": None,
+                "message_id": None,
+                "error_code": None,
+            }
+        )
+        return True
+
+    async def authorize_manual_retry(
+        self,
+        delivery_id: UUID,
+        *,
+        expected_attempt_no: int,
+        allow_uncertain: bool,
+    ) -> bool:
+        current = self.attempts.get(delivery_id)
+        allowed = {"failed", "retry_wait"}
+        if allow_uncertain:
+            allowed.add("uncertain")
+        if (
+            current is None
+            or current.attempt_no != expected_attempt_no
+            or current.status not in allowed
+        ):
             return False
         self.attempts[delivery_id] = current.model_copy(
             update={
@@ -279,6 +308,97 @@ async def test_report_delivery_persists_classified_failure_with_redacted_respons
         "error_code": "FEISHU_CARD_INVALID",
         "response": {"code": 230001, "tenantAccessToken": "[REDACTED]"},
     }
+
+
+async def test_manual_delivery_retry_sends_a_known_failed_attempt_once() -> None:
+    report = _report()
+    store = _Store(report)
+    transport = _Transport(
+        [
+            FeishuTransportError("FEISHU_CARD_INVALID"),
+            FeishuSendResult(message_id="om_manual_retry", response_payload={"code": 0}),
+        ]
+    )
+    service = ReportDeliveryService(transport)
+
+    failed = await service.deliver(store, report_id=report.report_id, chat_id="oc_test")
+    recovered = await service.retry(
+        store,
+        report_id=report.report_id,
+        chat_id="oc_test",
+        confirmed_not_delivered=False,
+    )
+
+    assert failed.status == "failed"
+    assert recovered.status == "succeeded"
+    assert recovered.delivery_attempt is not None
+    assert recovered.delivery_attempt.attempt_no == 2
+    assert len(transport.requests) == 2
+    assert transport.requests[0][2] == transport.requests[1][2]
+
+
+async def test_manual_delivery_retry_requires_confirmation_for_an_uncertain_attempt() -> None:
+    report = _report()
+    store = _Store(report)
+    transport = _Transport(
+        [
+            FeishuTransportError("FEISHU_SEND_OUTCOME_UNKNOWN", outcome_unknown=True),
+            FeishuSendResult(message_id="om_confirmed_retry", response_payload={"code": 0}),
+        ]
+    )
+    service = ReportDeliveryService(transport)
+    uncertain = await service.deliver(
+        store,
+        report_id=report.report_id,
+        chat_id="oc_test",
+    )
+
+    with pytest.raises(ManualDeliveryRetryError) as caught:
+        await service.retry(
+            store,
+            report_id=report.report_id,
+            chat_id="oc_test",
+            confirmed_not_delivered=False,
+        )
+    recovered = await service.retry(
+        store,
+        report_id=report.report_id,
+        chat_id="oc_test",
+        confirmed_not_delivered=True,
+    )
+
+    assert uncertain.status == "uncertain"
+    assert caught.value.code == "DELIVERY_ABSENCE_CONFIRMATION_REQUIRED"
+    assert len(transport.requests) == 2
+    assert recovered.status == "succeeded"
+
+
+async def test_manual_delivery_retry_stops_at_the_total_attempt_limit() -> None:
+    report = _report()
+    store = _Store(report)
+    transport = _Transport([FeishuTransportError("FEISHU_CHAT_UNAVAILABLE")])
+    service = ReportDeliveryService(
+        transport,
+        max_attempts=1,
+        max_total_attempts=1,
+    )
+    failed = await service.deliver(
+        store,
+        report_id=report.report_id,
+        chat_id="oc_test",
+    )
+
+    with pytest.raises(ManualDeliveryRetryError) as caught:
+        await service.retry(
+            store,
+            report_id=report.report_id,
+            chat_id="oc_test",
+            confirmed_not_delivered=False,
+        )
+
+    assert failed.status == "failed"
+    assert caught.value.code == "DELIVERY_RETRY_LIMIT_EXHAUSTED"
+    assert len(transport.requests) == 1
 
 
 async def test_feishu_transport_caches_token_and_sends_interactive_card() -> None:
@@ -571,6 +691,11 @@ def test_feishu_settings_are_required_only_when_delivery_is_enabled() -> None:
             feishu_app_secret=SecretStr("secret-test"),
             feishu_chat_id="oc_test",
             feishu_api_base_url="http://open.feishu.cn",
+        )
+    with pytest.raises(ValueError, match="MAX_TOTAL_ATTEMPTS"):
+        Settings(
+            feishu_delivery_max_attempts=3,
+            feishu_delivery_max_total_attempts=2,
         )
 
     settings = Settings(

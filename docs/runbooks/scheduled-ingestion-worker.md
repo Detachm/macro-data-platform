@@ -34,7 +34,7 @@
   无法覆盖的报告日会以 `unavailable` 阻断报告，待日历版本更新后再重跑。
 - 常规常驻：`macro-data-worker`。
 - 单日演练：`macro-data-worker --report-date 2026-07-28`。
-- 修复生成、校验或投递终态失败后，需要人工核对群消息与审计记录，再使用新的不可变版本执行：
+- 修复生成或校验终态失败后，需要人工核对审计记录，再使用新的不可变版本执行：
   `macro-data-worker --report-date 2026-07-28 --report-version v2-reviewed`。同一日期、同一版本的
   普通重放是幂等的；不要为了重试随意改版本。
 - 显式回填：`macro-data-worker --backfill-start 2026-07-20 --backfill-end 2026-07-28`。首尾日期均包含，
@@ -71,6 +71,27 @@ provider Issue 实现完成。
 不得写入 Git、日志或命令参数。
 
 恢复顺序：先按 `workflow_run_id` 核对 provider run、snapshot、generation attempt、delivery attempt 和
-alert attempt；再修复上游。采集/质量失败可重放同一版本。生成、校验或投递失败只有在确认日报群没有
-成功消息后才使用新的显式版本。`uncertain` 必须先人工核群，不能直接重发。回滚应用版本不得回滚
+alert attempt；再修复上游。采集/质量失败可重放同一版本，生成/校验失败使用新的显式版本。投递失败
+按下述受保护入口恢复。`uncertain` 必须先人工核群，不能直接重发。回滚应用版本不得回滚
 数据库迁移；部署前按 #49 的 K8s 部署运行手册备份并验证 PostgreSQL 可恢复。
+
+## 受保护的状态与投递恢复
+
+三个运维入口都要求 `Authorization: Bearer <service token>`，不会返回事实值、卡片内容、Chat ID、
+飞书响应或 `message_id`：
+
+- `GET /v1/operations/worker-readiness`：检查 live provider 模式、US provider 凭据、两个不同的
+  飞书群、数据库连通和 `0013` 所需关键表。全部满足返回 `200`，否则返回 `503` 和稳定的 unmet
+  requirement codes；它不代替 #50/#51 的真实 provider health/coverage 检查。
+- `GET /v1/operations/daily-workflows/2026-07-28`：返回 task、snapshot 质量、generation、report、
+  delivery、alert 和 operator action 的脱敏状态链。
+- `POST /v1/operations/daily-reports/{report_id}/delivery-retry`：只恢复既有 delivery attempt，不重新
+  生成报告。
+
+投递恢复必须由值班人员生成一个 UUID 作为 `X-Request-ID`，网络重试时复用同一个 UUID；数据库以该
+ID 永久幂等。明确 `failed` 可提交 `{"confirmed_not_delivered": false}`。`uncertain` 必须先在日报群
+确认消息不存在，再提交 `{"confirmed_not_delivered": true}`。`pending` 不可抢占，`succeeded` 只记录
+幂等 operator action 而不会再次发消息。每次授权、拒绝、失败和成功均写入
+`delivery_operator_actions`；迁移版本为 `0013`。
+自动重试和累计投递次数分别受 `FEISHU_DELIVERY_MAX_ATTEMPTS`（默认 3）与
+`FEISHU_DELIVERY_MAX_TOTAL_ATTEMPTS`（默认 10）限制，达到累计上限后必须先排查，不能继续换请求 ID。

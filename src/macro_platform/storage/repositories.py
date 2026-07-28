@@ -1427,6 +1427,36 @@ class ReportRepository:
         )
         return resumed.scalar_one_or_none() is not None
 
+    async def authorize_manual_delivery_retry(
+        self,
+        delivery_id: UUID,
+        *,
+        expected_attempt_no: int,
+        allow_uncertain: bool,
+    ) -> bool:
+        """CAS a reviewed terminal attempt back to pending for one manual send."""
+
+        retryable_statuses = ["failed", "retry_wait"]
+        if allow_uncertain:
+            retryable_statuses.append("uncertain")
+        resumed = await self._session.execute(
+            update(DeliveryAttemptRow)
+            .where(
+                DeliveryAttemptRow.delivery_id == delivery_id,
+                DeliveryAttemptRow.attempt_no == expected_attempt_no,
+                DeliveryAttemptRow.status.in_(retryable_statuses),
+            )
+            .values(
+                status="pending",
+                response_payload=None,
+                message_id=None,
+                error_code=None,
+                attempt_no=DeliveryAttemptRow.attempt_no + 1,
+            )
+            .returning(DeliveryAttemptRow.delivery_id)
+        )
+        return resumed.scalar_one_or_none() is not None
+
     async def load_report(self, report_id: str) -> StoredDailyReport | None:
         row = await self._session.get(DailyReportRow, report_id)
         if row is None:

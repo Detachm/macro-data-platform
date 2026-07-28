@@ -194,3 +194,19 @@ class WorkflowAlertAttempt(StrictModel):
     response_payload: dict[str, Any] | None = None
     message_id: str | None = Field(default=None, min_length=1, max_length=128)
     error_code: str | None = Field(default=None, min_length=1, max_length=64)
+
+
+class DeliveryOperatorAction(StrictModel):
+    """Idempotent audit record for one protected manual delivery action."""
+
+    action_id: UUID
+    request_id: UUID
+    report_id: str = Field(min_length=1, max_length=128)
+    delivery_id: UUID | None = None
+    action: Literal["retry"] = "retry"
+    confirmed_not_delivered: bool = False
+    prior_status: str = Field(min_length=1, max_length=24)
+    prior_attempt_no: int | None = Field(default=None, ge=1)
+    status: Literal["pending", "succeeded", "rejected", "failed"] = "pending"
+    result_delivery_status: str | None = Field(default=None, min_length=1, max_length=24)
+    error_code: str | None = Field(default=None, min_length=1, max_length=64)
