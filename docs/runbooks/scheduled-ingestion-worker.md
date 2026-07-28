@@ -1,7 +1,7 @@
 # Scheduled ingestion worker
 
-`macro-data-worker` 是 API 之外的独立进程。它提供 report-date advisory lock、有限重试、
-checkpoint 恢复、backfill 和质量门禁的公共执行边界；API 继续只读取已入库的数据。
+`macro-data-worker` 是 API 之外的独立进程。一个服务完成采集、质量门禁、报告生成、校验和
+飞书投递；report-date advisory lock 覆盖整条链路。API 继续只读取已入库的数据。
 
 ## 当前范围
 
@@ -10,6 +10,10 @@ checkpoint 恢复、backfill 和质量门禁的公共执行边界；API 继续�
   再重复抓取。checkpoint 使用 lease epoch/owner CAS；被重新认领前的 worker 无法再推进 cursor 或计数。
 - `backfill(start_date, end_date)` 逐个、包含首尾日期执行，且每一天复用相同的锁与任务幂等边界。
 - 必需任务失败为 `blocked`；用尽可重试预算为 `retryable`；可选任务失败为 `degraded`。
+- `08:15` 冻结的快照通过门禁后生成报告；未配置真实 LLM 时使用经过事实校验的确定性 fallback，
+  并把本次结果标记为 `degraded`。正常日报最早在 `08:30` 发到日报群。
+- `blocked`、重试预算耗尽、生成/校验失败和日报投递失败会向独立预警群发送持久化、幂等的红色
+  告警。飞书结果为 `uncertain` 时禁止自动重发。
 - `ReportInputQualityGate` 只检查完整性、时效、隔离、修订与临时错误。来源权利、引用权限和
   external-LLM 标记不是运行时 gate；历史 `denied` 标记被忽略；见 ADR 0005。
 
@@ -30,6 +34,9 @@ checkpoint 恢复、backfill 和质量门禁的公共执行边界；API 继续�
   无法覆盖的报告日会以 `unavailable` 阻断报告，待日历版本更新后再重跑。
 - 常规常驻：`macro-data-worker`。
 - 单日演练：`macro-data-worker --report-date 2026-07-28`。
+- 修复生成、校验或投递终态失败后，需要人工核对群消息与审计记录，再使用新的不可变版本执行：
+  `macro-data-worker --report-date 2026-07-28 --report-version v2-reviewed`。同一日期、同一版本的
+  普通重放是幂等的；不要为了重试随意改版本。
 - 显式回填：`macro-data-worker --backfill-start 2026-07-20 --backfill-end 2026-07-28`。首尾日期均包含，
   不可与单日模式混用。也可使用对应 `WORKER_RUN_ONCE_REPORT_DATE` 或 `WORKER_BACKFILL_*` 环境变量。
 
@@ -42,7 +49,8 @@ provider Issue 实现完成。
 
 日志事件 `scheduled_task_finished` 含 `service`、`report_date`、`task_id`、`run_id`、`provider_role`、
 `dataset`、`region`、`attempt_no`、`duration_ms`、`record_count`、`terminal` 和 `error_code`。
-Prometheus 指标为
+`scheduled_report_finished` 另含 `workflow_run_id`、`snapshot_id`、`report_id`、`quality_status`、
+`delivery_status`、`alert_status` 和 `terminal_stage`。Prometheus 指标为
 `scheduled_report_run_total` 与 `scheduled_task_run_total`。
 
 遇到 `locked` 时确认另一个 worker 是否仍健康；不要解除其他进程的 PostgreSQL session lock。
@@ -53,3 +61,16 @@ Prometheus 指标为
 
 报告生成时会再次检查已选择的 input snapshot。若质量为 `blocked` 或 `retryable`，系统仅记录
 `REPORT_INPUT_QUALITY_*` generation attempt，不会构建 prompt 或调用 LLM。
+
+## 生产配置与恢复边界
+
+生产环境必须同时设置 `PROVIDER_MODE=live`、`FEISHU_DELIVERY_ENABLED=true`、飞书应用凭据、日报群
+`FEISHU_CHAT_ID` 和预警群 `FEISHU_ALERT_CHAT_ID`；缺失完整投递工作流时进程拒绝启动。日常版本由
+`REPORT_WORKFLOW_VERSION=v1` 固定，生成模型、超时和尝试次数分别由 `REPORT_GENERATION_MODEL`、
+`REPORT_GENERATION_TIMEOUT_SECONDS`、`REPORT_GENERATION_MAX_ATTEMPTS` 设置。Secret 只进入 K8s Secret，
+不得写入 Git、日志或命令参数。
+
+恢复顺序：先按 `workflow_run_id` 核对 provider run、snapshot、generation attempt、delivery attempt 和
+alert attempt；再修复上游。采集/质量失败可重放同一版本。生成、校验或投递失败只有在确认日报群没有
+成功消息后才使用新的显式版本。`uncertain` 必须先人工核群，不能直接重发。回滚应用版本不得回滚
+数据库迁移；部署前按 #49 的 K8s 部署运行手册备份并验证 PostgreSQL 可恢复。

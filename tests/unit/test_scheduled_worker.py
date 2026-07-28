@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 from uuid import uuid4
@@ -12,10 +13,12 @@ import pytest
 from structlog.testing import capture_logs
 
 from macro_platform.config import Settings
+from macro_platform.jobs import scheduled_cli
 from macro_platform.jobs.scheduler import (
     RetryableScheduledTaskError,
     ScheduledIngestionWorker,
     ScheduledTaskResult,
+    ScheduledWorkerResult,
     SchedulerNotConfiguredError,
     _first_safe_run_time,
     _run_configured_schedule,
@@ -491,9 +494,138 @@ async def test_job_029_worker_persists_materialized_gate_evidence_and_blocks_the
 
 
 @pytest.mark.asyncio
+async def test_e2e_033_worker_completes_the_report_workflow_while_date_lock_is_held() -> None:
+    task = _Task(task_id="cn.daily-bars")
+
+    class _ActiveLock(_Lock):
+        active = False
+
+        @asynccontextmanager
+        async def hold(self, report_date: date) -> AsyncIterator[bool]:
+            self.report_dates.append(report_date)
+            self.active = True
+            try:
+                yield True
+            finally:
+                self.active = False
+
+    lock = _ActiveLock()
+
+    class _Workflow:
+        calls = 0
+
+        async def complete(self, result: ScheduledWorkerResult) -> ScheduledWorkerResult:
+            assert lock.active is True
+            self.calls += 1
+            return replace(
+                result,
+                workflow_run_id=uuid4(),
+                report_id="daily-report-2026-07-27-v1",
+                delivery_status="succeeded",
+                terminal_stage="completed",
+            )
+
+        async def notify_retry_exhausted(
+            self, result: ScheduledWorkerResult
+        ) -> ScheduledWorkerResult:
+            return result
+
+        async def notify_unhandled_failure(
+            self,
+            result: ScheduledWorkerResult,
+            *,
+            error_code: str,
+        ) -> ScheduledWorkerResult:
+            return replace(result, alert_status="succeeded", error_code=error_code)
+
+    workflow = _Workflow()
+    worker = ScheduledIngestionWorker(
+        tasks=[task],
+        report_date_lock=lock,
+        report_workflow=workflow,
+    )
+
+    result = await worker.run_for_date(date(2026, 7, 27))
+
+    assert workflow.calls == 1
+    assert result.delivery_status == "succeeded"
+    assert result.terminal_stage == "completed"
+    assert lock.active is False
+
+
+@pytest.mark.asyncio
+async def test_e2e_033_worker_alerts_when_the_workflow_boundary_raises() -> None:
+    task = _Task(task_id="cn.daily-bars")
+
+    class _Workflow:
+        notified: list[str] = []
+
+        async def complete(self, result: ScheduledWorkerResult) -> ScheduledWorkerResult:
+            del result
+            raise RuntimeError("configured workflow failure")
+
+        async def notify_retry_exhausted(
+            self, result: ScheduledWorkerResult
+        ) -> ScheduledWorkerResult:
+            return result
+
+        async def notify_unhandled_failure(
+            self,
+            result: ScheduledWorkerResult,
+            *,
+            error_code: str,
+        ) -> ScheduledWorkerResult:
+            self.notified.append(error_code)
+            return replace(result, alert_status="succeeded")
+
+    workflow = _Workflow()
+    worker = ScheduledIngestionWorker(
+        tasks=[task],
+        report_date_lock=_Lock(),
+        report_workflow=workflow,
+    )
+
+    result = await worker.run_for_date(date(2026, 7, 27))
+
+    assert workflow.notified == ["RuntimeError"]
+    assert result.status == "blocked"
+    assert result.terminal_stage == "scheduler"
+    assert result.alert_status == "succeeded"
+
+
+@pytest.mark.asyncio
 async def test_job_029_worker_entrypoint_fails_closed_without_registered_schedule() -> None:
     with pytest.raises(SchedulerNotConfiguredError, match="not configured"):
         await run_scheduler()
+
+
+def test_e2e_033_cli_passes_an_explicit_regeneration_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_run_scheduler(**kwargs: object) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr(scheduled_cli, "run_scheduler", fake_run_scheduler)
+    monkeypatch.setattr(scheduled_cli, "get_settings", lambda: Settings(_env_file=None))
+    monkeypatch.setattr(scheduled_cli, "configure_logging", lambda _level: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "macro-data-worker",
+            "--report-date",
+            "2026-07-27",
+            "--report-version",
+            "v2-reviewed",
+        ],
+    )
+
+    scheduled_cli.main()
+
+    assert captured["run_once_report_date"] == date(2026, 7, 27)
+    assert captured["report_version"] == "v2-reviewed"
 
 
 @pytest.mark.asyncio
@@ -572,10 +704,15 @@ async def test_job_029_configured_schedule_stops_at_the_report_retry_budget() ->
     class _Worker:
         def __init__(self) -> None:
             self.report_dates: list[date] = []
+            self.retry_exhausted: list[object] = []
 
         async def run_for_date(self, value: date) -> object:
             self.report_dates.append(value)
             return SimpleNamespace(status="retryable")
+
+        async def notify_retry_exhausted(self, result: object) -> object:
+            self.retry_exhausted.append(result)
+            return result
 
     async def advance_clock(delay: float) -> None:
         clock["now"] += timedelta(seconds=delay)
@@ -595,6 +732,7 @@ async def test_job_029_configured_schedule_stops_at_the_report_retry_budget() ->
     )
 
     assert worker.report_dates == [date(2026, 7, 27), date(2026, 7, 27)]
+    assert len(worker.retry_exhausted) == 1
 
 
 async def _record_delay(delays: list[float], delay: float) -> None:

@@ -18,6 +18,7 @@ from macro_platform.jobs.scheduled_tasks import (
 )
 from macro_platform.jobs.scheduled_types import (
     ReportInputMaterializer,
+    ScheduledReportWorkflow,
     ScheduledRequestFactory,
     ScheduledTask,
     ScheduledTaskCheckpointStore,
@@ -41,6 +42,7 @@ __all__ = [
     "PostgresScheduledTaskCheckpointStore",
     "ReportDateLock",
     "ReportInputMaterializer",
+    "ScheduledReportWorkflow",
     "RetryableScheduledTaskError",
     "ScheduledIngestionWorker",
     "ScheduledRequestFactory",

@@ -48,6 +48,17 @@ class Settings(BaseSettings):
     worker_retry_delay_seconds: float = Field(default=1.0, gt=0, le=300)
     worker_market_freshness_hours: int = Field(default=36, ge=1, le=720)
     worker_news_freshness_hours: int = Field(default=24, ge=1, le=720)
+    report_workflow_version: str = Field(
+        default="v1",
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$",
+    )
+    report_generation_model: str = Field(
+        default="deterministic-fallback",
+        min_length=1,
+        max_length=128,
+    )
+    report_generation_timeout_seconds: int = Field(default=30, ge=1, le=300)
+    report_generation_max_attempts: int = Field(default=1, ge=1, le=5)
     worker_run_once_report_date: date | None = None
     worker_backfill_start_date: date | None = None
     worker_backfill_end_date: date | None = None

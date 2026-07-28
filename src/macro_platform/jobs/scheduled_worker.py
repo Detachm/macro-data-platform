@@ -17,6 +17,7 @@ from sqlalchemy import text
 
 from macro_platform.jobs.scheduled_types import (
     ReportInputMaterializer,
+    ScheduledReportWorkflow,
     ScheduledTask,
     ScheduledTaskResult,
     ScheduledWorkerResult,
@@ -80,6 +81,7 @@ class ScheduledIngestionWorker:
         retry_delay_seconds: float = 1.0,
         sleeper: Callable[[float], Awaitable[None]] = asyncio.sleep,
         input_materializer: ReportInputMaterializer | None = None,
+        report_workflow: ScheduledReportWorkflow | None = None,
     ) -> None:
         if max_attempts < 1:
             raise ValueError("max_attempts must be at least one")
@@ -94,6 +96,7 @@ class ScheduledIngestionWorker:
         self._retry_delay_seconds = retry_delay_seconds
         self._sleeper = sleeper
         self._input_materializer = input_materializer
+        self._report_workflow = report_workflow
         self._logger = structlog.get_logger("scheduled_ingestion_worker")
 
     async def run_for_date(self, report_date: date) -> ScheduledWorkerResult:
@@ -144,12 +147,30 @@ class ScheduledIngestionWorker:
                 task_results=task_results,
                 snapshot_id=snapshot_id,
                 quality_status=quality_status,
+                error_code=materialization_error_code,
             )
+            if self._report_workflow is not None:
+                try:
+                    result = await self._report_workflow.complete(result)
+                except Exception as error:  # noqa: BLE001 - orchestration fails closed
+                    failed = replace(
+                        result,
+                        status="blocked",
+                        terminal_stage="scheduler",
+                        error_code=type(error).__name__,
+                    )
+                    try:
+                        result = await self._report_workflow.notify_unhandled_failure(
+                            failed,
+                            error_code=type(error).__name__,
+                        )
+                    except Exception:  # noqa: BLE001 - alert channel can also be unavailable
+                        result = replace(failed, alert_status="failed")
             SCHEDULED_REPORT_RUNS.labels(status=result.status).inc()
             await self._log_report_finished(
                 result,
                 started=started,
-                error_code=materialization_error_code,
+                error_code=result.error_code,
             )
             return result
 
@@ -181,7 +202,22 @@ class ScheduledIngestionWorker:
             run_ids=run_ids,
             snapshot_id=result.snapshot_id,
             quality_status=result.quality_status,
+            workflow_run_id=(
+                str(result.workflow_run_id) if result.workflow_run_id is not None else None
+            ),
+            report_id=result.report_id,
+            delivery_status=result.delivery_status,
+            alert_status=result.alert_status,
+            terminal_stage=result.terminal_stage,
         )
+
+    async def notify_retry_exhausted(
+        self,
+        result: ScheduledWorkerResult,
+    ) -> ScheduledWorkerResult:
+        if self._report_workflow is None:
+            return result
+        return await self._report_workflow.notify_retry_exhausted(result)
 
     async def backfill(self, start_date: date, end_date: date) -> tuple[ScheduledWorkerResult, ...]:
         if end_date < start_date:
@@ -189,7 +225,10 @@ class ScheduledIngestionWorker:
         results: list[ScheduledWorkerResult] = []
         report_date = start_date
         while report_date <= end_date:
-            results.append(await self.run_for_date(report_date))
+            result = await self.run_for_date(report_date)
+            if result.status == "retryable":
+                result = await self.notify_retry_exhausted(result)
+            results.append(result)
             from datetime import timedelta
 
             report_date += timedelta(days=1)
