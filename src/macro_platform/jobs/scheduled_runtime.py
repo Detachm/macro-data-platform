@@ -40,6 +40,10 @@ from macro_platform.providers.cn.baostock import BaoStockDailyBarsProvider
 from macro_platform.providers.cn.live import CnNbsNewsProvider, CnNbsReleaseProvider
 from macro_platform.providers.factory import create_provider_registry
 from macro_platform.providers.hk.live import HkmaPressReleaseProvider
+from macro_platform.providers.hk.release_calendar import (
+    HK_CENSTATD_CALENDAR_ROLE,
+    HkCenstatdReleaseCalendarProvider,
+)
 from macro_platform.providers.hk.xtquant import (
     HK_XTQUANT_CORE_INDEX_INSTRUMENTS,
     HK_XTQUANT_EQUITY_INSTRUMENTS,
@@ -47,6 +51,10 @@ from macro_platform.providers.hk.xtquant import (
     HkXtQuantDailyBarsProvider,
 )
 from macro_platform.providers.registry import ProviderRegistry
+from macro_platform.providers.us.release_calendar import (
+    US_OFFICIAL_CALENDAR_ROLE,
+    UsOfficialReleaseCalendarProvider,
+)
 from macro_platform.providers.us.twelve_data import TwelveDataDailyBarsProvider
 from macro_platform.services.daily_workflow import (
     DailyReportWorkflow,
@@ -74,9 +82,8 @@ def build_registered_tasks(
 ) -> tuple[ScheduledTask, ...]:
     """Bind all currently approved live report-input providers to durable tasks.
 
-    No synthetic source is registered for incomplete global macro calendar
-    coverage. Its absence remains explicit materialized quality evidence and
-    blocks a report rather than fabricating a successful input.
+    Every required calendar region has its own durable task so the aggregate
+    report-input gate can distinguish a legal empty window from a failed source.
     """
 
     if settings.provider_mode != "live":
@@ -105,6 +112,12 @@ def build_registered_tasks(
     hk_news_provider = provider_registry.resolve("hk.news.primary")
     if not isinstance(hk_news_provider, HkmaPressReleaseProvider):
         raise TypeError("hk.news.primary must resolve to HkmaPressReleaseProvider")
+    hk_calendar_provider = provider_registry.resolve(HK_CENSTATD_CALENDAR_ROLE)
+    if not isinstance(hk_calendar_provider, HkCenstatdReleaseCalendarProvider):
+        raise TypeError("hk.calendar.primary must resolve to HkCenstatdReleaseCalendarProvider")
+    us_calendar_provider = provider_registry.resolve(US_OFFICIAL_CALENDAR_ROLE)
+    if not isinstance(us_calendar_provider, UsOfficialReleaseCalendarProvider):
+        raise TypeError("us.calendar.primary must resolve to UsOfficialReleaseCalendarProvider")
     return (
         _daily_bar_task(
             task_id="cn.daily-bars",
@@ -182,6 +195,44 @@ def build_registered_tasks(
                     cn_macro_provider,
                     provider_role="cn.macro.primary",
                     region=Region.CN,
+                    timeout_seconds=settings.provider_timeout_seconds,
+                    now=now,
+                ),
+                database=database,
+                now=now,
+            ),
+            checkpoint_store=checkpoint_store,
+            calendar_timezone=calendar_timezone,
+            now=now,
+        ),
+        _macro_release_task(
+            task_id="hk.macro-release-calendar",
+            provider_role=HK_CENSTATD_CALENDAR_ROLE,
+            region=Region.HK,
+            executor=JobRunner(
+                MacroReleaseIngestHandler(
+                    hk_calendar_provider,
+                    provider_role=HK_CENSTATD_CALENDAR_ROLE,
+                    region=Region.HK,
+                    timeout_seconds=settings.provider_timeout_seconds,
+                    now=now,
+                ),
+                database=database,
+                now=now,
+            ),
+            checkpoint_store=checkpoint_store,
+            calendar_timezone=calendar_timezone,
+            now=now,
+        ),
+        _macro_release_task(
+            task_id="us.macro-release-calendar",
+            provider_role=US_OFFICIAL_CALENDAR_ROLE,
+            region=Region.US,
+            executor=JobRunner(
+                MacroReleaseIngestHandler(
+                    us_calendar_provider,
+                    provider_role=US_OFFICIAL_CALENDAR_ROLE,
+                    region=Region.US,
                     timeout_seconds=settings.provider_timeout_seconds,
                     now=now,
                 ),

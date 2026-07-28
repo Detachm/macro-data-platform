@@ -29,6 +29,7 @@ from macro_platform.providers.us.factory import (
     create_us_provider_registry_from_settings,
 )
 from macro_platform.providers.us.fixture import US_FIXTURE_CONTRACT_ROLE_BINDINGS
+from macro_platform.providers.us.release_calendar import US_OFFICIAL_CALENDAR_ROLE
 from macro_platform.providers.us.twelve_data import (
     TWELVE_DATA_PRIMARY_ROLE,
     TwelveDataDailyBarsProvider,
@@ -210,6 +211,9 @@ async def test_PRV_001_factory_makes_fixture_and_live_selection_explicit_by_envi
         assert live_registry.resolve(TWELVE_DATA_PRIMARY_ROLE).capabilities().provider_id == (
             "us.twelve-data.v1"
         )
+        assert live_registry.resolve(US_OFFICIAL_CALENDAR_ROLE).capabilities().provider_id == (
+            "us.official.release-calendar.v1"
+        )
     finally:
         await live_registry.close()
         await live_client.aclose()
@@ -242,6 +246,9 @@ async def test_PRV_001_factory_reads_live_secrets_from_runtime_settings() -> Non
     try:
         assert registry.resolve(TWELVE_DATA_PRIMARY_ROLE).capabilities().provider_id == (
             "us.twelve-data.v1"
+        )
+        assert registry.resolve(US_OFFICIAL_CALENDAR_ROLE).capabilities().provider_id == (
+            "us.official.release-calendar.v1"
         )
     finally:
         await registry.close()

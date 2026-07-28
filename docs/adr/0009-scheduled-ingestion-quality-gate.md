@@ -41,10 +41,10 @@ ADR 0005 已决定内部个人使用不设置运行时来源权利 gate。因此
   `retryable` 仅持久化失败 attempt，绝不触发 LLM。`degraded` snapshot 可继续进入既有验证流程。
 - 成功的 scheduled task 必须返回其 durable `run_id`；缺失时 worker 改记为
   `MISSING_DURABLE_RUN_ID` 并 fail closed。所有 live task 都经 checkpointed `JobRunner` 执行。
-- 已注册的 live 任务为 `cn.daily-bars`（BaoStock 三个 CN 核心指数）、可选的 `hk.daily-bars`
-  （XtQuant 审核的十个 HK 个股，仅作补充采集，不能满足冻结的 HK 核心指数输入）、
-  `us.daily-bars`（Twelve Data 的 SPY/QQQ/DIA）、
-  `cn.macro-release-calendar`（NBS 日历）和 `hk.official-headlines`（HKMA 标题）。日线请求取报告日
+- 当前已注册的 live 任务为 `cn.daily-bars`（BaoStock 三个 CN 核心指数）、必需的
+  `hk.core-index-bars`（XtQuant 三个 HK 核心指数）、可选的 `hk.equity-bars`（十个 HK 个股）、
+  `us.daily-bars`（Twelve Data 的 SPY/QQQ/DIA）、CN/HK/US 三个 `macro-release-calendar` 任务，
+  以及 CN/HK 两个 `official-headlines` 任务。日线请求取报告日
   上海当地午夜之前、可配置的 14 天回看窗口；新闻和日历分别请求 24 小时回看窗口与未来八天窗口。
 - 新增 `scheduled_task_checkpoints`。其主键是 `(report_date, task_id)`，保存稳定的 live request
   clock、下一页 opaque cursor、source watermark、最后的 durable run ID、接受/隔离计数以及 fencing
@@ -56,9 +56,9 @@ ADR 0005 已决定内部个人使用不设置运行时来源权利 gate。因此
   上海 07:50 抓取、08:15 截止；晚于 cutoff 到达的事实为 `late`，超过可配置窗口的事实为 `stale`。
   市场日线还必须覆盖 XSHG/XHKG/XNYS 交易日历的上一交易会话，不能因今天重新抓取旧 bar 而被误判为
   新鲜；日历覆盖不到的日期明确为 `unavailable`。snapshot 同时固化
-  `editor_context` 与有序 `source_ref_ids`，可直接作为报告生成输入。HK 核心指数、CN news 与冻结的全区域
-  `calendar.macro_releases_7d` 目前都不能证明完整 CN/HK/US 覆盖，因而明确标为 `missing` 并阻断报告；
-  历史行、fixture 或合成记录不能改变这个结论。CN NBS 日历只覆盖 CN，不能单独满足全区域日历输入。
+  `editor_context` 与有序 `source_ref_ids`，可直接作为报告生成输入。冻结的全区域
+  `calendar.macro_releases_7d` 必须同时具备 CN NBS、HK C&SD、US OMB/BLS + BEA 三个任务的 durable
+  evidence；历史行、fixture 或合成记录不能补齐失败区域。后续来源决策见 ADR 0012、0013。
 - 调度子系统按职责拆为 task checkpoint、report-date worker、live runtime composition 和公共 contract；
   PostgreSQL evidence reader 与 snapshot writer 也分离，避免将 worker、SQL 和报告合同耦合在超长模块中。
 - `macro-data-worker` 默认在可配置的时区、时刻和轮询间隔下每天运行一次。采集开始时刻必须早于

@@ -840,4 +840,5 @@ async def test_provider_factory_keeps_fixture_and_live_roles_separate() -> None:
     assert live_registry.resolve("cn.macro.primary").capabilities().datasets
     assert live_registry.resolve("cn.news.primary").capabilities().datasets
     assert live_registry.resolve("hk.news.primary").capabilities().datasets
+    assert live_registry.resolve("hk.calendar.primary").capabilities().datasets
     await live_registry.close()

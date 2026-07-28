@@ -7,6 +7,11 @@ from macro_platform.providers.us.fixture import (
     UsFixtureProvider,
     register_us_provider_roles,
 )
+from macro_platform.providers.us.release_calendar import (
+    US_OFFICIAL_CALENDAR_PROVIDER_ID,
+    US_OFFICIAL_CALENDAR_ROLE,
+    UsOfficialReleaseCalendarProvider,
+)
 from macro_platform.providers.us.twelve_data import (
     TWELVE_DATA_PRIMARY_ROLE,
     TWELVE_DATA_PROVIDER_ID,
@@ -19,6 +24,9 @@ __all__ = [
     "US_FIXTURE_CONTRACT_ROLE_BINDINGS",
     "US_PROVIDER_ID",
     "US_PRODUCTION_PRIMARY_ROLES",
+    "US_OFFICIAL_CALENDAR_PROVIDER_ID",
+    "US_OFFICIAL_CALENDAR_ROLE",
+    "UsOfficialReleaseCalendarProvider",
     "UsFixtureProvider",
     "register_us_provider_roles",
     "TWELVE_DATA_PRIMARY_ROLE",

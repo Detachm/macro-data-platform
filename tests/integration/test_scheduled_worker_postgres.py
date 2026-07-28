@@ -273,6 +273,36 @@ async def test_job_029_checkpointed_calendar_and_headline_tasks_persist_facts(
             ),
         }
     )
+    hk_release = release.model_copy(
+        update={
+            "release_id": "job-029-hk-release-1",
+            "series_id": "macro:HK:TEST:release_calendar",
+            "region": Region.HK,
+            "release_name": "Approved HK calendar release",
+            "source": release_source.model_copy(
+                update={
+                    "provider_id": "job-029.hk-release-provider",
+                    "provider_record_id": "hk-calendar-row-1",
+                    "checksum_sha256": "a" * 64,
+                }
+            ),
+        }
+    )
+    us_release = release.model_copy(
+        update={
+            "release_id": "job-029-us-release-1",
+            "series_id": "macro:US:TEST:release_calendar",
+            "region": Region.US,
+            "release_name": "Approved US calendar release",
+            "source": release_source.model_copy(
+                update={
+                    "provider_id": "job-029.us-release-provider",
+                    "provider_record_id": "us-calendar-row-1",
+                    "checksum_sha256": "b" * 64,
+                }
+            ),
+        }
+    )
 
     class _ReleaseProvider:
         def capabilities(self) -> ProviderCapabilities:
@@ -342,6 +372,27 @@ async def test_job_029_checkpointed_calendar_and_headline_tasks_persist_facts(
         ) -> ProviderPage[MacroRelease]:
             return ProviderPage(items=[unapproved_us_release], fetched_at=NOW, complete=True)
 
+    class _RegionalReleaseProvider:
+        def __init__(self, item: MacroRelease) -> None:
+            self._item = item
+
+        def capabilities(self) -> ProviderCapabilities:
+            return ProviderCapabilities(
+                provider_id=self._item.source.provider_id,
+                regions={self._item.region},
+                datasets={Dataset.MACRO_RELEASES},
+                max_page_size=1000,
+                supports_point_in_time=False,
+                supports_revisions=True,
+                supports_full_text=False,
+                external_llm_allowed=True,
+            )
+
+        async def fetch_macro_releases(
+            self, _query: object, _context: FetchContext
+        ) -> ProviderPage[MacroRelease]:
+            return ProviderPage(items=[self._item], fetched_at=NOW, complete=True)
+
     request_as_of = NOW + timedelta(days=1)
     hk_index_provider = HkXtQuantDailyBarsProvider(
         instruments=HK_XTQUANT_CORE_INDEX_INSTRUMENTS,
@@ -384,6 +435,46 @@ async def test_job_029_checkpointed_calendar_and_headline_tasks_persist_facts(
             provider_role="cn.macro.primary",
             dataset=Dataset.MACRO_RELEASES,
             regions={Region.CN},
+            start=NOW,
+            end=NOW + timedelta(days=8),
+            as_of=request_as_of,
+        )
+    )
+    hk_release_result = await JobRunner(
+        MacroReleaseIngestHandler(
+            _RegionalReleaseProvider(hk_release),
+            provider_role="hk.calendar.primary",
+            region=Region.HK,
+            timeout_seconds=30,
+            now=lambda: NOW,
+        ),
+        database=database,
+        now=lambda: NOW,
+    ).execute(
+        IngestJobRequest(
+            provider_role="hk.calendar.primary",
+            dataset=Dataset.MACRO_RELEASES,
+            regions={Region.HK},
+            start=NOW,
+            end=NOW + timedelta(days=8),
+            as_of=request_as_of,
+        )
+    )
+    us_release_result = await JobRunner(
+        MacroReleaseIngestHandler(
+            _RegionalReleaseProvider(us_release),
+            provider_role="us.calendar.primary",
+            region=Region.US,
+            timeout_seconds=30,
+            now=lambda: NOW,
+        ),
+        database=database,
+        now=lambda: NOW,
+    ).execute(
+        IngestJobRequest(
+            provider_role="us.calendar.primary",
+            dataset=Dataset.MACRO_RELEASES,
+            regions={Region.US},
             start=NOW,
             end=NOW + timedelta(days=8),
             as_of=request_as_of,
@@ -472,11 +563,13 @@ async def test_job_029_checkpointed_calendar_and_headline_tasks_persist_facts(
 
     assert (
         release_result.records_inserted,
+        hk_release_result.records_inserted,
+        us_release_result.records_inserted,
         hk_market_result.records_inserted,
         cn_news_result.records_inserted,
         news_result.records_inserted,
         unapproved_us_result.records_inserted,
-    ) == (1, 3, 1, 1, 1)
+    ) == (1, 1, 1, 3, 1, 1, 1)
     assert replayed_news_result.run_id != news_result.run_id
     assert replayed_news_result.records_accepted == 1
     async with database.session() as session:
@@ -509,6 +602,22 @@ async def test_job_029_checkpointed_calendar_and_headline_tasks_persist_facts(
                 run_id=release_result.run_id,
             ),
             ScheduledTaskResult(
+                task_id="hk.macro-release-calendar",
+                provider_role="hk.calendar.primary",
+                dataset=Dataset.MACRO_RELEASES,
+                region=Region.HK,
+                status="succeeded",
+                run_id=hk_release_result.run_id,
+            ),
+            ScheduledTaskResult(
+                task_id="us.macro-release-calendar",
+                provider_role="us.calendar.primary",
+                dataset=Dataset.MACRO_RELEASES,
+                region=Region.US,
+                status="succeeded",
+                run_id=us_release_result.run_id,
+            ),
+            ScheduledTaskResult(
                 task_id="cn.official-headlines",
                 provider_role="cn.news.primary",
                 dataset=Dataset.NEWS,
@@ -527,7 +636,13 @@ async def test_job_029_checkpointed_calendar_and_headline_tasks_persist_facts(
         ),
     )
     by_input_id = {item.input_id: item for item in evidence}
-    assert by_input_id["calendar.macro_releases_7d"].status == "missing"
+    calendar = by_input_id["calendar.macro_releases_7d"]
+    assert calendar.status == "available"
+    assert {fact["release_id"] for fact in calendar.facts} == {
+        release.release_id,
+        hk_release.release_id,
+        us_release.release_id,
+    }
     hk_market = by_input_id["market.hk.core_indices.previous_close"]
     assert hk_market.status == "available"
     assert {fact["instrument_id"] for fact in hk_market.facts} == {

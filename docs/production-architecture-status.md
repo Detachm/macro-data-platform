@@ -64,13 +64,13 @@ Delivery audit + message_id + metrics + backup
 ### 已接入
 
 - CN：BaoStock 核心指数日线、NBS 发布日历、NBS 数据发布官方标题 metadata。
-- HK：XtQuant 的 HSI/HSCEI/HSTECH 核心指数日线、十个已审核个股日线、HKMA 官方标题。
-- US：Twelve Data 的 SPY/QQQ/DIA 日线。
+- HK：XtQuant 的 HSI/HSCEI/HSTECH 核心指数日线、十个已审核个股日线、HKMA 官方标题、C&SD
+  官方年度宏观发布日历。
+- US：Twelve Data 的 SPY/QQQ/DIA 日线、OMB/BLS PFEI 与 BEA 官方宏观发布日历。
 - fixture 仅用于离线测试，生产环境禁止回退到 fixture。
 
 ### 尚需补齐
 
-- HK/US 宏观发布日历。
 - 宿主机 XtQuant `58615` 常驻服务及健康检查。
 
 质量门禁对必需输入执行缺失、过期、迟到、隔离、revision 和可用性检查。缺口必须显式记录，禁止用历史行、合成数据或 fixture 冒充 live 数据。
@@ -142,33 +142,32 @@ PostgreSQL 设计：
   `HSI.HK`、`HSCEI.HK`、`HSTECH.HK` 唯一身份，并通过三项 `1d raw` live smoke；必需核心指数任务、
   独立可选个股任务和质量证据已接入。正式防火墙、systemd 常驻和重启验收仍需现场完成。
 - #51 已定义并持久化单一 `report_day_policy`：周末/区域交易所休市不会把对应 market input 误报为
-  必需缺失，新闻和宏观日历仍 fail closed；CN 官方新闻已接入，HK/US 发布日历及连续两日报告日 live
-  验收未完成。
+  必需缺失，新闻和宏观日历仍 fail closed；CN 官方新闻、HK C&SD 日历、US OMB/BLS + BEA 日历均已
+  接入。三个区域分别要求成功的 durable task/page，合法空窗口可证明，任一区域失败仍阻断；HK/US
+  已完成连续两个 report date 的真实官方源验证。
 
 ### 尚未完成
 
-1. 按 #51 补齐 HK/US 宏观发布日历。
-2. 按 #50 将已验证 XtQuant 服务安装为受限 systemd 常驻服务，完成防火墙、Pod 连通、SIGKILL 和
+1. 按 #50 将已验证 XtQuant 服务安装为受限 systemd 常驻服务，完成防火墙、Pod 连通、SIGKILL 和
    宿主机重启验收。
-3. #49 的三阶段 K3s 清单和详细运行手册已经进入仓库：包括 Namespace、Deployment、
+2. #49 的三阶段 K3s 清单和详细运行手册已经进入仓库：包括 Namespace、Deployment、
    StatefulSet、Service、migration Job、CronJob、100 Gi PVC、readiness、NetworkPolicy、运行时
    Secret 创建流程、`/archive` 备份、70%/85% 幂等预警和隔离恢复演练；尚未在本机安装 K3s 或执行
    真实 PVC/重启/恢复验收。
-4. 安装固定版本 K3s，执行 #49 的宿主机验收，并确认最终值班 ownership。
-5. 完成 provider 连续两个报告日验证和完整链路连续五个工作日 soak。
+3. 安装固定版本 K3s，执行 #49 的宿主机验收，并确认最终值班 ownership。
+4. 完成完整链路连续五个工作日 soak。
 
-GitHub 当前开放的生产任务是 #33、#49、#50 和 #51，分别跟踪编排、部署/存储、
-Beast/HK 行情和新闻/日历/节假日策略；不重新打开已经完成的旧 provider issue。
+合并本次 #51 后，剩余生产任务是 #33、#49 和 #50，分别跟踪编排收口、部署/存储和
+Beast/XtQuant 宿主机常驻验收；不重新打开已经完成的旧 provider issue。
 
 ## 9. 落地顺序与上线门槛
 
 推荐顺序：
 
-1. 完成 #51：补齐 HK/US 日历。
-2. 完成 #50：把已通过权限及日线验证的 XtQuant 服务托管为宿主机 `58615` 常驻服务。
-3. 完成 #49：安装 K3s，完成 PostgreSQL PVC、Secret、迁移和 `/archive` 备份。
-4. 收口 #33 的 K8s 运维所有权和五工作日 soak；周末策略由 #51 提供输入。
-5. 执行 E2E、两日报告日 provider 验证和五工作日生产式 soak。
+1. 完成 #50：把已通过权限及日线验证的 XtQuant 服务托管为宿主机 `58615` 常驻服务。
+2. 完成 #49：安装 K3s，完成 PostgreSQL PVC、Secret、迁移和 `/archive` 备份。
+3. 收口 #33 的 K8s 运维所有权和五工作日 soak；周末策略由 #51 提供输入。
+4. 执行 E2E 和五工作日生产式 soak。
 
 只有同时满足以下条件才称为生产可用：
 

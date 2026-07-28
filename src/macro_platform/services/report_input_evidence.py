@@ -126,13 +126,40 @@ class PostgresReportInputEvidenceStore(ReportInputEvidenceStore):
                     results_by_task_id.get("cn.macro-release-calendar"), rejections
                 ),
             )
+            hk_macro = await self._macro_evidence(
+                session,
+                input_id="calendar.macro_releases_7d",
+                region=Region.HK,
+                report_date=report_date,
+                as_of=as_of,
+                cutoff_at=cutoff_at,
+                task_result=results_by_task_id.get("hk.macro-release-calendar"),
+                rejection_count=task_rejection_count(
+                    results_by_task_id.get("hk.macro-release-calendar"), rejections
+                ),
+            )
+            us_macro = await self._macro_evidence(
+                session,
+                input_id="calendar.macro_releases_7d",
+                region=Region.US,
+                report_date=report_date,
+                as_of=as_of,
+                cutoff_at=cutoff_at,
+                task_result=results_by_task_id.get("us.macro-release-calendar"),
+                rejection_count=task_rejection_count(
+                    results_by_task_id.get("us.macro-release-calendar"), rejections
+                ),
+            )
         return (
             *market,
             cn_news,
             hk_news,
             _global_calendar_evidence(
-                cn_macro,
-                missing_regions=(Region.HK, Region.US),
+                (
+                    (Region.CN, cn_macro),
+                    (Region.HK, hk_macro),
+                    (Region.US, us_macro),
+                )
             ),
         )
 
@@ -411,7 +438,7 @@ class PostgresReportInputEvidenceStore(ReportInputEvidenceStore):
                 ),
                 facts=(
                     {
-                        "fact_id": f"fact.{input_id}.empty",
+                        "fact_id": f"fact.{input_id}.{region.value.lower()}.empty",
                         "input_id": input_id,
                         "fact_type": "macro_release_calendar",
                         "label": f"{region.value} macro releases in next seven days",
@@ -472,22 +499,35 @@ def _source_ref_id(source: SourceRef) -> str:
 
 
 def _global_calendar_evidence(
-    cn_evidence: InputQualityEvidence,
-    *,
-    missing_regions: tuple[Region, ...],
+    regional_evidence: tuple[tuple[Region, InputQualityEvidence], ...],
 ) -> InputQualityEvidence:
-    """Keep the frozen v1 aggregate calendar input fail-closed by region."""
+    """Aggregate independently materialized calendars while remaining fail-closed."""
 
-    if cn_evidence.status not in {"available", "revised"}:
-        return cn_evidence
+    for region, evidence in regional_evidence:
+        if evidence.status not in {"available", "revised"}:
+            return InputQualityEvidence(
+                input_id=evidence.input_id,
+                status=evidence.status,
+                required=True,
+                reason=f"{region.value} calendar: {evidence.reason}",
+            )
+    revised = any(evidence.status == "revised" for _, evidence in regional_evidence)
+    sources_by_id = {
+        str(source["source_ref_id"]): source
+        for _, evidence in regional_evidence
+        for source in evidence.source_references
+    }
     return InputQualityEvidence(
-        input_id=cn_evidence.input_id,
-        status="missing",
+        input_id=regional_evidence[0][1].input_id,
+        status="revised" if revised else "available",
         required=True,
         reason=(
-            "no approved live macro-release calendar provider for "
-            + ", ".join(region.value for region in missing_regions)
+            "one or more regional calendars have a later source revision"
+            if revised
+            else "CN, HK, and US calendar coverage is materialized before cutoff"
         ),
+        facts=tuple(fact for _, evidence in regional_evidence for fact in evidence.facts),
+        source_references=tuple(sources_by_id.values()),
     )
 
 

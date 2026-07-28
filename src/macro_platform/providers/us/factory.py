@@ -10,8 +10,13 @@ import httpx
 from pydantic import SecretStr
 
 from macro_platform.config import Settings
+from macro_platform.contracts.provider import Dataset
 from macro_platform.providers.registry import ProviderRegistry
 from macro_platform.providers.us.fixture import UsFixtureProvider, register_us_provider_roles
+from macro_platform.providers.us.release_calendar import (
+    US_OFFICIAL_CALENDAR_ROLE,
+    UsOfficialReleaseCalendarProvider,
+)
 from macro_platform.providers.us.twelve_data import (
     TWELVE_DATA_DEFAULT_INSTRUMENTS,
     TwelveDataDailyBarsProvider,
@@ -67,6 +72,24 @@ def create_us_provider_registry(
         clock=clock,
     )
     register_us_twelve_data_provider_roles(resolved_registry, live_provider)
+    calendar_provider = (
+        UsOfficialReleaseCalendarProvider(
+            client=client,
+            cursor_signing_secret=cursor_signing_secret,
+        )
+        if clock is None
+        else UsOfficialReleaseCalendarProvider(
+            client=client,
+            cursor_signing_secret=cursor_signing_secret,
+            clock=clock,
+        )
+    )
+    resolved_registry.register(calendar_provider)
+    resolved_registry.bind_role(
+        US_OFFICIAL_CALENDAR_ROLE,
+        calendar_provider.provider_id,
+        required_dataset=Dataset.MACRO_RELEASES,
+    )
     return resolved_registry
 
 

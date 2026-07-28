@@ -4,7 +4,7 @@ Owner: @Nouzee
 Issue: #1 P0
 状态: review，冻结草案，已进入实习生 B 交叉评审
 区域: CN / HK
-Provider roles: `cn.instruments.primary`, `cn.bars.primary`, `cn.macro.primary`, `cn.news.primary`, `hk.instruments.primary`, `hk.bars.primary`, `hk.equity-bars.supplemental`, `hk.macro.primary`, `hk.news.primary`
+Provider roles: `cn.instruments.primary`, `cn.bars.primary`, `cn.macro.primary`, `cn.news.primary`, `hk.instruments.primary`, `hk.bars.primary`, `hk.equity-bars.supplemental`, `hk.macro.primary`, `hk.calendar.primary`, `hk.news.primary`
 数据集: instruments / bars / macro_series / macro_observations / macro_releases / news
 采购/合同负责人: 项目负责人
 账号负责人: 项目负责人；两日 MVP 仅允许无凭据公开 API 或合成/脱敏 fixture
@@ -26,7 +26,7 @@ Provider roles: `cn.instruments.primary`, `cn.bars.primary`, `cn.macro.primary`,
 | CN | news/announcements | NBS 数据发布标题 metadata live-ready；交易所/公司公告仍 fixture-only；禁止保存正文 | NBS 数据发布 | SSE/SZSE/CNINFO 公告检索页 | NBS 无 token；只读取标题、链接和发布日期 |
 | HK | instruments | fixture-only；HKEX 公共证券列表可人工 fixture，付费 master file 未采购 | HKEX Securities Lists | HKEX Securities Master File | 无 Data Marketplace/Historical Data 订阅 |
 | HK | daily bars | `live-ready`，覆盖 HSI/HSCEI/HSTECH 三项必需核心指数及 10 个可选港股；其他标的仍为 gap | 项目托管 XtQuant data-centre（迅投）`1d` | HKEX Data Marketplace | macro worker 不持有 token；只连接已运行的 XtQuant 服务 |
-| HK | macro/releases | allowlisted C&SD adapter live-ready；release-calendar coverage requires a separately approved source | DATA.GOV.HK/C&SD API、HKMA Open API | HKMA Economic & Financial Data page | 无需申请、注册或认证 |
+| HK | macro/releases | C&SD observation API 与年度 release calendar 均 live-ready | DATA.GOV.HK/C&SD API、C&SD regular press release XLSX | HKMA Economic & Financial Data page | 无需申请、注册或认证 |
 | HK | news/announcements | HKMA press releases live-ready；HKEX issuer announcements fixture-only | HKMA Press Releases API；HKEXnews title search | HKEX IIS paid feed | HKMA 无需凭据；HKEX IIS 无凭据 |
 
 `live-ready` 只表示两日内可在不写入 secret 的前提下实现在线 smoke。`fixture-only` 表示只能用合成或脱敏 fixture 验证 parser/normalizer，不得让 worker 在生产调度中调用该来源。
@@ -305,7 +305,7 @@ Provider roles: `cn.instruments.primary`, `cn.bars.primary`, `cn.macro.primary`,
 |---|---|---|
 | Provider role | `hk.macro.primary` | `hk.macro.fallback` |
 | 来源 | C&SD open data via DATA.GOV.HK/C&SD API；HKMA Open API | HKMA Economic & Financial Data page |
-| 状态 | allowlisted C&SD adapter live-ready；release-calendar coverage requires a separately approved source | fixture-only for manual validation |
+| 状态 | allowlisted C&SD observation adapter live-ready；release calendar 由独立 `hk.calendar.primary` 提供 | fixture-only for manual validation |
 | 官方文档 | DATA.GOV.HK API spec、C&SD resource pages、HKMA API docs | HKMA data page |
 | Base URL/端点 | C&SD: `https://www.censtatd.gov.hk/api/get.php`; HKMA: `https://api.hkma.gov.hk/public/...` | `https://www.hkma.gov.hk/eng/data-publications-and-research/data-and-statistics/economic-financial-data-for-hong-kong/` |
 | 请求参数 | C&SD: `id`, `lang`, `full_series`; HKMA: dataset parameters plus `pagesize`, `offset`, `fields`, `choose/from/to`, `sortby/sortorder` | HTML table |
@@ -316,6 +316,10 @@ Provider roles: `cn.instruments.primary`, `cn.bars.primary`, `cn.macro.primary`,
 | 更新时间 | C&SD resource `Update Frequency`；HKMA API 自动更新，具体按 dataset | 页面声明按发布日更新 |
 | available_at basis | API response 无明确发布时间时用 `first_seen`; 有 release/update date 可用 `provider_disseminated` | `first_seen` |
 | 凭据 | 无需申请、注册或认证 | 无需凭据 |
+
+发布日历另由 `hk.calendar.primary` 读取 C&SD 年度
+`Regular_Press_Releases_Schedule_<year>.xlsx`。官方常规发布时间为 16:30 HKT；首次抓取时间作为
+`available_at`，改期保持事件身份并新增 revision。详细决策见 ADR 0013。
 
 ### 上游字段到公共 contracts 映射
 
@@ -436,6 +440,7 @@ Issue #28 的 live 选择通过 `PROVIDER_MODE` 显式控制：`live` 才会由�
 | `BaoStockDailyBarsProvider` | BaoStock `query_history_k_data_plus` | `bars` | 仅 `sh.000001`、`sh.000300`、`sz.399001`；`1d raw`，`available_at=first_seen` |
 | `HkXtQuantDailyBarsProvider` | 项目托管 XtQuant data-centre | `bars` | 三个批准 HK 核心指数 + 十个批准 HK equity mappings；`1d raw`，`available_at=first_seen`，不启动或配置 data-centre |
 | `HkCsdProvider` | C&SD `510-60004` API | `macro_series`, `macro_observations` | 以 API 首次可见时间作为 `available_at`，不声称 PIT 或 revision history |
+| `HkCenstatdReleaseCalendarProvider` | C&SD annual regular press release XLSX | `macro_releases` | 官方标题与 16:30 HKT 日程；首次抓取为 `available_at`，改期保存 revision |
 | `HkmaPressReleaseProvider` | HKMA press-releases API | `news` | 只输出标题/链接；正文请求明确拒绝 |
 
 C&SD `510-60004` 当前批准 `sv=SCC_CM`、`SA_CM`、`SB_CM`、`SC_CM`，它们分别映射为
@@ -460,7 +465,8 @@ Adapter authors must register capabilities according to this matrix:
 | `cn.news.primary` | news | CN | live-ready for NBS data-release headline metadata; body prohibited |
 | `hk.instruments.primary` | instruments | HK | fixture-only, no live capability |
 | `hk.bars.primary` | bars | HK | live-ready for ten XtQuant HK equity mappings only; no historical PIT |
-| `hk.macro.primary` | macro_series/macro_observations | HK | live-ready for the allowlisted C&SD table API; release-calendar coverage requires a separately approved source |
+| `hk.macro.primary` | macro_series/macro_observations | HK | live-ready for the allowlisted C&SD table API |
+| `hk.calendar.primary` | macro_releases | HK | live-ready for C&SD annual regular press release schedule; 16:30 HKT |
 | `hk.news.primary` | news | HK | live-ready for HKMA press-release metadata; HKEXnews fixture-only |
 
 ## 失败与降级
