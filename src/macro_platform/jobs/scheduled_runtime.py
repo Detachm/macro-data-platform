@@ -37,7 +37,7 @@ from macro_platform.jobs.scheduled_worker import (
 from macro_platform.jobs.us_twelve_data_ingestion import UsTwelveDataIngestHandler
 from macro_platform.normalization.common import utc_now
 from macro_platform.providers.cn.baostock import BaoStockDailyBarsProvider
-from macro_platform.providers.cn.live import CnNbsReleaseProvider
+from macro_platform.providers.cn.live import CnNbsNewsProvider, CnNbsReleaseProvider
 from macro_platform.providers.factory import create_provider_registry
 from macro_platform.providers.hk.live import HkmaPressReleaseProvider
 from macro_platform.providers.hk.xtquant import HkXtQuantDailyBarsProvider
@@ -69,10 +69,9 @@ def build_registered_tasks(
 ) -> tuple[ScheduledTask, ...]:
     """Bind all currently approved live report-input providers to durable tasks.
 
-    No synthetic source is registered for CN news or incomplete global macro
-    calendar coverage.
-    Their absence remains explicit materialized quality evidence and blocks a
-    report rather than fabricating a successful input.
+    No synthetic source is registered for incomplete global macro calendar
+    coverage. Its absence remains explicit materialized quality evidence and
+    blocks a report rather than fabricating a successful input.
     """
 
     if settings.provider_mode != "live":
@@ -92,6 +91,9 @@ def build_registered_tasks(
     cn_macro_provider = provider_registry.resolve("cn.macro.primary")
     if not isinstance(cn_macro_provider, CnNbsReleaseProvider):
         raise TypeError("cn.macro.primary must resolve to CnNbsReleaseProvider")
+    cn_news_provider = provider_registry.resolve("cn.news.primary")
+    if not isinstance(cn_news_provider, CnNbsNewsProvider):
+        raise TypeError("cn.news.primary must resolve to CnNbsNewsProvider")
     hk_news_provider = provider_registry.resolve("hk.news.primary")
     if not isinstance(hk_news_provider, HkmaPressReleaseProvider):
         raise TypeError("hk.news.primary must resolve to HkmaPressReleaseProvider")
@@ -141,6 +143,25 @@ def build_registered_tasks(
                 MacroReleaseIngestHandler(
                     cn_macro_provider,
                     provider_role="cn.macro.primary",
+                    region=Region.CN,
+                    timeout_seconds=settings.provider_timeout_seconds,
+                    now=now,
+                ),
+                database=database,
+                now=now,
+            ),
+            checkpoint_store=checkpoint_store,
+            calendar_timezone=calendar_timezone,
+            now=now,
+        ),
+        _news_task(
+            task_id="cn.official-headlines",
+            provider_role="cn.news.primary",
+            region=Region.CN,
+            executor=JobRunner(
+                NewsIngestHandler(
+                    cn_news_provider,
+                    provider_role="cn.news.primary",
                     region=Region.CN,
                     timeout_seconds=settings.provider_timeout_seconds,
                     now=now,

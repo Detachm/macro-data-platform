@@ -206,6 +206,20 @@ async def test_job_029_checkpointed_calendar_and_headline_tasks_persist_facts(
             ),
         }
     )
+    cn_news_event = news.model_copy(
+        update={
+            "news_id": "job-029-cn-news-1",
+            "regions": [Region.CN],
+            "source": SourceRef(
+                provider_id="job-029.cn-news-provider",
+                provider_record_id="cn-headline-row-1",
+                source_name="Test CN official headlines",
+                source_url="https://example.com/cn-headline/1",
+                retrieved_at=NOW,
+                checksum_sha256="f" * 64,
+            ),
+        }
+    )
     unapproved_us_release = release.model_copy(
         update={
             "release_id": "job-029-unapproved-us-release-1",
@@ -256,6 +270,22 @@ async def test_job_029_checkpointed_calendar_and_headline_tasks_persist_facts(
 
         async def fetch_news(self, _query: object, _context: FetchContext) -> ProviderPage[object]:
             return ProviderPage(items=[news], fetched_at=NOW, complete=True)
+
+    class _CnNewsProvider:
+        def capabilities(self) -> ProviderCapabilities:
+            return ProviderCapabilities(
+                provider_id=cn_news_event.source.provider_id,
+                regions={Region.CN},
+                datasets={Dataset.NEWS},
+                max_page_size=1000,
+                supports_point_in_time=False,
+                supports_revisions=False,
+                supports_full_text=False,
+                external_llm_allowed=True,
+            )
+
+        async def fetch_news(self, _query: object, _context: FetchContext) -> ProviderPage[object]:
+            return ProviderPage(items=[cn_news_event], fetched_at=NOW, complete=True)
 
     class _UnapprovedUsFixtureProvider:
         def capabilities(self) -> ProviderCapabilities:
@@ -316,6 +346,26 @@ async def test_job_029_checkpointed_calendar_and_headline_tasks_persist_facts(
             as_of=request_as_of,
         )
     )
+    cn_news_result = await JobRunner(
+        NewsIngestHandler(
+            _CnNewsProvider(),  # type: ignore[arg-type]
+            provider_role="cn.news.primary",
+            region=Region.CN,
+            timeout_seconds=30,
+            now=lambda: NOW,
+        ),
+        database=database,
+        now=lambda: NOW,
+    ).execute(
+        IngestJobRequest(
+            provider_role="cn.news.primary",
+            dataset=Dataset.NEWS,
+            regions={Region.CN},
+            start=NOW - timedelta(days=1),
+            end=NOW + timedelta(days=1),
+            as_of=request_as_of,
+        )
+    )
     replayed_news_result = await JobRunner(
         NewsIngestHandler(
             _NewsProvider(),  # type: ignore[arg-type]
@@ -359,9 +409,10 @@ async def test_job_029_checkpointed_calendar_and_headline_tasks_persist_facts(
 
     assert (
         release_result.records_inserted,
+        cn_news_result.records_inserted,
         news_result.records_inserted,
         unapproved_us_result.records_inserted,
-    ) == (1, 1, 1)
+    ) == (1, 1, 1, 1)
     assert replayed_news_result.run_id != news_result.run_id
     assert replayed_news_result.records_accepted == 1
     async with database.session() as session:
@@ -386,6 +437,14 @@ async def test_job_029_checkpointed_calendar_and_headline_tasks_persist_facts(
                 run_id=release_result.run_id,
             ),
             ScheduledTaskResult(
+                task_id="cn.official-headlines",
+                provider_role="cn.news.primary",
+                dataset=Dataset.NEWS,
+                region=Region.CN,
+                status="succeeded",
+                run_id=cn_news_result.run_id,
+            ),
+            ScheduledTaskResult(
                 task_id="hk.official-headlines",
                 provider_role="hk.news.primary",
                 dataset=Dataset.NEWS,
@@ -400,7 +459,9 @@ async def test_job_029_checkpointed_calendar_and_headline_tasks_persist_facts(
     hk_market = by_input_id["market.hk.core_indices.previous_close"]
     assert hk_market.status == "missing"
     assert "HK equities" in hk_market.reason
-    assert by_input_id["news.cn.official_headlines_24h"].status == "missing"
+    cn_news = by_input_id["news.cn.official_headlines_24h"]
+    assert cn_news.status == "available"
+    assert cn_news.facts[0]["news_id"] == cn_news_event.news_id
     hk_news = by_input_id["news.hk.official_headlines_24h"]
     assert hk_news.status == "available"
     assert hk_news.facts == (

@@ -104,7 +104,7 @@ freshness 是相对于本次快照 cutoff 的数据年龄，而不是抓取完�
 | `macro.*.latest_key_observations` | CN/HK/US | 宏观背景补充 | 否 |
 | `market.us.core_indices.previous_close` | US | 美国 highlights、摘要、关键变动 | 是 |
 
-必需输入必须在 cutoff 前存在、通过公共 contract 并满足 freshness 规则。可选输入缺失时可以发布 `degraded` 报告，但必须在 `data_quality_notice` 中披露。`calendar.macro_releases_7d` 可以是合法的空列表，但抓取失败或无法证明 CN/HK/US 全部覆盖窗口时是 `unavailable`。CN news 或任一地区宏观日历尚无获批 live provider 时，必须以对应冻结输入的 `missing` 证据阻断；不得用 fixture、历史行或合成记录代替。
+必需输入必须在 cutoff 前存在、通过公共 contract 并满足 freshness 规则。可选输入缺失时可以发布 `degraded` 报告，但必须在 `data_quality_notice` 中披露。`calendar.macro_releases_7d` 可以是合法的空列表，但抓取失败或无法证明 CN/HK/US 全部覆盖窗口时是 `unavailable`。CN news 只接受 NBS 官方数据发布任务已提交的最近 24 小时标题 metadata；任务缺失、无记录或失败时阻断。任一地区宏观日历尚无获批 live provider 时同样以对应冻结输入的 `missing` 证据阻断；不得用 fixture、历史行或合成记录代替。
 
 上表的 market input “必需”指普通交易报告日。经 `report_day_policy` 明确为周末或区域休市时，对应
 market input 为 optional，缺失只使报告 `degraded`，且 section 必须显示休市原因；非休市日仍按必需

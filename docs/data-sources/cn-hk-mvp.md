@@ -23,7 +23,7 @@ Provider roles: `cn.instruments.primary`, `cn.bars.primary`, `cn.macro.primary`,
 | CN | instruments | fixture-only；可用官方网页建立脱敏/合成 fixture，暂不承诺自动 live 抓取 | SSE/SZSE 股票列表 | CNINFO 公司要览，仅校验 alias | 无 token；无自动抓取授权审批 |
 | CN | daily bars | `live-ready`，但只覆盖 3 个批准的核心指数；个股、行业和其他指数仍为 gap | BaoStock `query_history_k_data_plus` | SSE/SZSE 授权 EOD 产品用于扩展覆盖 | BaoStock 无需注册；无 API token |
 | CN | macro/releases | release calendar live-ready；macro observation 先 fixture-only | NBS 发布日程、NBS 数据发布库 | NBS 新闻稿页面 | 无 token；EasyQuery 无官方外部 API 文档，observation 不 live-ready |
-| CN | news/announcements | headline/url fixture-only；禁止保存受限正文 | SSE/SZSE/CNINFO 公告检索页 | CSRC/NBS 官方新闻页，仅政策新闻 | 无 token；无正文/批量抓取授权 |
+| CN | news/announcements | NBS 数据发布标题 metadata live-ready；交易所/公司公告仍 fixture-only；禁止保存正文 | NBS 数据发布 | SSE/SZSE/CNINFO 公告检索页 | NBS 无 token；只读取标题、链接和发布日期 |
 | HK | instruments | fixture-only；HKEX 公共证券列表可人工 fixture，付费 master file 未采购 | HKEX Securities Lists | HKEX Securities Master File | 无 Data Marketplace/Historical Data 订阅 |
 | HK | daily bars | `live-ready`，仅覆盖 10 个批准的核心港股；其他标的仍为 gap | 项目托管 XtQuant data-centre（迅投）`1d` | HKEX Data Marketplace | macro worker 不持有 token；只连接已运行的 XtQuant 服务 |
 | HK | macro/releases | allowlisted C&SD adapter live-ready；release-calendar coverage requires a separately approved source | DATA.GOV.HK/C&SD API、HKMA Open API | HKMA Economic & Financial Data page | 无需申请、注册或认证 |
@@ -43,6 +43,7 @@ Provider roles: `cn.instruments.primary`, `cn.bars.primary`, `cn.macro.primary`,
 - CNINFO: https://www.cninfo.com.cn/new/index.jsp
 - NBS 数据发布日程: https://www.stats.gov.cn/sj/fbrc/bnxxfb/
 - NBS 数据发布库: https://data.stats.gov.cn/
+- NBS 最新数据发布: https://www.stats.gov.cn/sj/zxfb/
 - NBS 服务条款: https://www.stats.gov.cn/wzgl/202302/t20230217_1912857.html
 - HKEX Securities Lists: https://www.hkex.com.hk/services/trading/securities/securities-lists?sc_lang=en
 - HKEX Historical Data Products: https://www.hkex.com.hk/eng/ods/historicalData.aspx
@@ -202,27 +203,28 @@ Provider roles: `cn.instruments.primary`, `cn.bars.primary`, `cn.macro.primary`,
 | 项 | primary | fallback |
 |---|---|---|
 | Provider role | `cn.news.primary` | `cn.news.fallback` |
-| 来源 | SSE/SZSE/CNINFO 公告检索页 | CSRC/NBS 官方新闻页，仅政策新闻 |
-| 状态 | headline/url fixture-only | fixture-only 或低频手工 fixture |
-| 官方文档 | SSE/SZSE 法律声明、CNINFO 关于说明 | CSRC/NBS 法律声明和服务条款 |
-| Base URL/端点 | SSE/SZSE 公告页、`https://www.cninfo.com.cn/new/index.jsp` | `https://www.csrc.gov.cn/`, `https://www.stats.gov.cn/` |
-| 请求参数 | 证券代码、公告类型、开始/结束日期、关键词；不得保存 Cookie | 栏目、日期、关键词 |
-| 分页 | 网页分页；必须检测空页循环和重复页 | 网页分页 |
-| 限流 | 未公布；fixture-only 不在线调用。后续批准 live 默认 0.2 rps、工作时段外调度 | 0.2 rps |
-| 历史深度 | 以网站搜索可查范围为准，不承诺完整 | 以栏目归档为准 |
+| 来源 | NBS 数据发布 | SSE/SZSE/CNINFO 公告检索页 |
+| 状态 | headline metadata live-ready | fixture-only |
+| 官方文档 | NBS 最新数据发布、NBS 服务条款 | SSE/SZSE 法律声明、CNINFO 关于说明 |
+| Base URL/端点 | `https://www.stats.gov.cn/sj/zxfb/` | SSE/SZSE 公告页、`https://www.cninfo.com.cn/new/index.jsp` |
+| 请求参数 | 无 API 参数；每日读取最新发布列表首页 | 证券代码、公告类型、开始/结束日期、关键词；不得保存 Cookie |
+| 分页 | 上游按 `index_N.html` 归档；日报 24 小时窗口只读取最新列表快照，公共 cursor 仅对该快照切页 | 网页分页；必须检测空页循环和重复页 |
+| 限流 | 每个调度任务一次 GET；超时 30 秒 | fixture-only 不在线调用 |
+| 历史深度 | 当前列表页；不承诺历史 PIT，回填请求拒绝 | 以网站搜索可查范围为准，不承诺完整 |
 | 时区 | `Asia/Shanghai` | `Asia/Shanghai` |
-| 更新时间 | 公告披露时间/页面发布时间 | 页面发布时间 |
-| available_at basis | 有披露时间用 `exchange_published`; 仅抓到页面时用 `first_seen` | `first_seen` |
-| 凭据 | 无 token；无正文批量保存和外部 LLM 授权 | 无 token；不保存正文 |
+| 更新时间 | 页面发布日期只有日期精度 | 公告披露时间/页面发布时间 |
+| available_at basis | `first_seen`；`published_date` 不冒充可见时刻 | 有披露时间用 `exchange_published`; 否则 `first_seen` |
+| 凭据 | 无 token；只保存标题、官方链接、发布日期和首次发现时间；正文与摘要均为 `null` | 无 token；不保存正文 |
 
 ### 上游字段到公共 contracts 映射
 
 | 上游字段 | 公共字段 | 变换/口径 | 必填 | 缺失策略 |
 |---|---|---|---:|---|
-| 公告标题 | `NewsEvent.title` | 原文保留；去 tracking 噪声 | 是 | 缺失拒绝 |
+| 发布标题 | `NewsEvent.title` | 优先使用桌面版 anchor 的完整 `title` 属性；原文保留 | 是 | 缺失拒绝并标记 schema drift |
 | 公告摘要 | `summary` | 仅有授权 snippet 时填；否则 `null` | 否 | `null` |
 | PDF/正文 | `body` | MVP 一律 `null` | 否 | 不保存 |
-| 披露时间 | `published_at` / `published_date`, `first_seen_at`, `available_at` | 北京时间转 UTC；只有日期时填 `published_date`、`time_precision=date`，无法证明则 `available_at=first_seen_at` | 是 | 无时间拒绝或隔离 |
+| 发布日期 | `published_date`, `first_seen_at`, `available_at` | ISO 日期写入 `published_date`、`time_precision=date`；`available_at=first_seen_at` | 是 | 日期非法时拒绝整个快照 |
+| 官方文章链接 | `canonical_url`, `source.source_url`, `provider_record_id` | 相对链接基于列表页解析，只允许 `https://www.stats.gov.cn`；稳定 ID 由 canonical URL 生成 | 是 | 越过 host allowlist 时阻断快照 |
 | 股票代码 | `entities[]` | 解析为 instrument entity，confidence=`1` | 否 | 未解析则仅保留 mention |
 | 来源名称 | `source_name`, `source_tier` | SSE/SZSE/CNINFO=`official` | 是 | 缺失拒绝 |
 | URL | `canonical_url`, `source.source_url` | canonicalize URL，去 tracking 参数 | 是 | 缺失拒绝 |
@@ -430,6 +432,7 @@ Issue #28 的 live 选择通过 `PROVIDER_MODE` 显式控制：`live` 才会由�
 | adapter | allowlisted endpoint | live datasets | 数据边界 |
 |---|---|---|---|
 | `CnNbsReleaseProvider` | NBS release calendar | `macro_releases` | 只输出发布日程 metadata，不保存正文 |
+| `CnNbsNewsProvider` | NBS `数据发布` listing | `news` | 只输出标题、官方链接、发布日期和 `first_seen`；摘要/正文请求明确拒绝 |
 | `BaoStockDailyBarsProvider` | BaoStock `query_history_k_data_plus` | `bars` | 仅 `sh.000001`、`sh.000300`、`sz.399001`；`1d raw`，`available_at=first_seen` |
 | `HkXtQuantDailyBarsProvider` | 项目托管 XtQuant data-centre | `bars` | 十个批准 HK equity mappings；`1d raw`，`available_at=first_seen`，不启动或配置 data-centre |
 | `HkCsdProvider` | C&SD `510-60004` API | `macro_series`, `macro_observations` | 以 API 首次可见时间作为 `available_at`，不声称 PIT 或 revision history |
@@ -454,7 +457,7 @@ Adapter authors must register capabilities according to this matrix:
 | `cn.bars.primary` | bars | CN | live-ready for three BaoStock core-index mappings only; no historical PIT |
 | `cn.macro.primary` | macro_releases | CN | live-ready for release calendar only |
 | `cn.macro.primary` | macro_observations | CN | fixture-only |
-| `cn.news.primary` | news | CN | fixture-only for headline/url; body prohibited |
+| `cn.news.primary` | news | CN | live-ready for NBS data-release headline metadata; body prohibited |
 | `hk.instruments.primary` | instruments | HK | fixture-only, no live capability |
 | `hk.bars.primary` | bars | HK | live-ready for ten XtQuant HK equity mappings only; no historical PIT |
 | `hk.macro.primary` | macro_series/macro_observations | HK | live-ready for the allowlisted C&SD table API; release-calendar coverage requires a separately approved source |
@@ -486,11 +489,12 @@ Adapter authors must register capabilities according to this matrix:
 在线 smoke 最小请求和成本:
 
 - CN release calendar: 每日一次 GET NBS 发布日程页面；无 token；成本为公共网页请求。
+- CN official headlines: 每日一次 GET NBS 数据发布列表首页；无 token；只存 metadata，不请求文章正文。
 - CN core-index bars: BaoStock client 查询 `sh.000300` 最近 10 个日历日；无 token；成本为公共客户端请求。
 - HK daily bars: 已配置的 XtQuant data-centre 查询 `00700.HK` 最近 10 个日历日；worker 无 token；成本计入内部 XtQuant 账户/缓存。
 - HK macro: 每日一次 C&SD table API 或 HKMA Open API，`pagesize<=100`; 无 token；成本为公共 API 请求。
 - HKMA press releases: 每日一次 `lang=en&offset=0`; 无 token；成本为公共 API 请求。
-- 所有未列为 `live-ready` 的 `fixture-only` 和 `gap` 来源在线 smoke 禁止运行。XtQuant smoke 还必须显式设置 `RUN_XTQUANT_LIVE_SMOKE=1`，避免没有 vendor runtime 或共享数据中心时误跑。
+- 所有未列为 `live-ready` 的 `fixture-only` 和 `gap` 来源在线 smoke 禁止运行。NBS 新闻 smoke 与其他公共来源一样必须显式设置 `RUN_LIVE_SMOKE=1`；XtQuant smoke 还必须设置 `RUN_XTQUANT_LIVE_SMOKE=1`，避免没有 vendor runtime 或共享数据中心时误跑。
 
 ## 运行指标与退出方案
 

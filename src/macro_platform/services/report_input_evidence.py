@@ -102,6 +102,18 @@ class PostgresReportInputEvidenceStore(ReportInputEvidenceStore):
                     results_by_task_id.get(news_task_id(Region.HK)), rejections
                 ),
             )
+            cn_news = await self._news_evidence(
+                session,
+                input_id="news.cn.official_headlines_24h",
+                region=Region.CN,
+                report_date=report_date,
+                as_of=as_of,
+                cutoff_at=cutoff_at,
+                task_result=results_by_task_id.get(news_task_id(Region.CN)),
+                rejection_count=task_rejection_count(
+                    results_by_task_id.get(news_task_id(Region.CN)), rejections
+                ),
+            )
             cn_macro = await self._macro_evidence(
                 session,
                 input_id="calendar.macro_releases_7d",
@@ -121,10 +133,7 @@ class PostgresReportInputEvidenceStore(ReportInputEvidenceStore):
                 "XtQuant live coverage contains approved HK equities, not the required "
                 "HK core-index input",
             ),
-            _unsupported_live_input(
-                "news.cn.official_headlines_24h",
-                "CN official headlines have no approved live provider",
-            ),
+            cn_news,
             hk_news,
             _global_calendar_evidence(
                 cn_macro,
