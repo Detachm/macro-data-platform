@@ -67,6 +67,7 @@ def _snapshot() -> ReportInputSnapshot:
                 "news.hk.official_headlines_24h",
                 "market.us.core_indices.previous_close",
                 "calendar.macro_releases_7d",
+                "calendar.us_macro_releases_7d",
             )
         },
     }

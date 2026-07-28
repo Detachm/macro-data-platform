@@ -9,10 +9,10 @@ from macro_platform.contracts.common import Region
 from macro_platform.jobs.scheduler import ScheduledTaskResult
 from macro_platform.services.report_generator import ReportPromptBuilder
 from macro_platform.services.report_input_materializer import (
+    ExchangeMarketSessionCalendar,
     InputQualityEvidence,
     MaterializedReportInput,
     ReportInputSnapshotMaterializer,
-    WeekdayMarketSessionCalendar,
     _unexpected_trading_dates,
 )
 from macro_platform.storage.reporting import ReportInputSnapshot
@@ -93,6 +93,7 @@ async def test_rpt_029_materializer_derives_quality_and_persists_an_immutable_sn
                     "news.cn.official_headlines_24h",
                     "news.hk.official_headlines_24h",
                     "calendar.macro_releases_7d",
+                    "calendar.us_macro_releases_7d",
                 )
             ),
         )
@@ -137,19 +138,19 @@ async def test_rpt_029_materializer_derives_quality_and_persists_an_immutable_sn
 
 
 @pytest.mark.parametrize(
-    ("report_date", "expected_session"),
+    ("region", "report_date", "expected_session"),
     [
-        (date(2026, 7, 28), date(2026, 7, 27)),
-        (date(2026, 7, 27), date(2026, 7, 24)),
-        (date(2026, 7, 26), date(2026, 7, 24)),
+        (Region.CN, date(2026, 10, 8), date(2026, 9, 30)),
+        (Region.HK, date(2026, 4, 7), date(2026, 4, 2)),
+        (Region.US, date(2026, 7, 6), date(2026, 7, 2)),
     ],
 )
-def test_rpt_029_weekday_market_calendar_uses_the_previous_effective_session(
-    report_date: date, expected_session: date
+def test_rpt_029_exchange_market_calendar_uses_the_previous_actual_session(
+    region: Region, report_date: date, expected_session: date
 ) -> None:
     assert (
-        WeekdayMarketSessionCalendar().previous_session(
-            region=Region.CN,
+        ExchangeMarketSessionCalendar().previous_session(
+            region=region,
             report_date=report_date,
         )
         == expected_session

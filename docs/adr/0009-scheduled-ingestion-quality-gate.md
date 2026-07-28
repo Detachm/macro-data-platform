@@ -53,9 +53,11 @@ ADR 0005 已决定内部个人使用不设置运行时来源权利 gate。因此
 - `ReportInputSnapshotMaterializer` 从 PostgreSQL 规范化事实、revision、`ingest_rejections` 和
   task 终态派生 `facts`、`source_references` 与 `input_quality`，随后写入不可变 snapshot。默认
   上海 07:50 抓取、08:15 截止；晚于 cutoff 到达的事实为 `late`，超过可配置窗口的事实为 `stale`。
-  市场日线还必须覆盖上一有效工作日，不能因今天重新抓取旧 bar 而被误判为新鲜。snapshot 同时固化
+  市场日线还必须覆盖 XSHG/XHKG/XNYS 交易日历的上一交易会话，不能因今天重新抓取旧 bar 而被误判为
+  新鲜；日历覆盖不到的日期明确为 `unavailable`。snapshot 同时固化
   `editor_context` 与有序 `source_ref_ids`，可直接作为报告生成输入。CN news 与 US macro calendar
-  目前没有获批的 live provider，因而没有已入库事实时明确标为 `missing` 并阻断报告，而不是伪造成功。
+  目前没有获批的 live provider，因而无条件明确标为 `missing` 并阻断报告；历史行、fixture 或合成记录
+  不能改变这个结论。CN NBS 日历可作为 `calendar.macro_releases_7d` 的覆盖证据，但不能替代 US 日历。
 - 调度子系统按职责拆为 task checkpoint、report-date worker、live runtime composition 和公共 contract；
   PostgreSQL evidence reader 与 snapshot writer 也分离，避免将 worker、SQL 和报告合同耦合在超长模块中。
 - `macro-data-worker` 默认在可配置的时区、时刻和轮询间隔下每天运行一次。运维可使用

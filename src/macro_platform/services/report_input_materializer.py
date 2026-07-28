@@ -11,10 +11,10 @@ from macro_platform.jobs.scheduler import ScheduledTaskResult
 from macro_platform.normalization.common import canonical_json_checksum, stable_id, utc_now
 from macro_platform.services.report_input_evidence import PostgresReportInputEvidenceStore
 from macro_platform.services.report_input_evidence_support import (
+    ExchangeMarketSessionCalendar,
     InputQualityEvidence,
     MarketSessionCalendar,
     ReportInputEvidenceStore,
-    WeekdayMarketSessionCalendar,
 )
 from macro_platform.services.report_input_evidence_support import (
     unexpected_trading_dates as _unexpected_trading_dates,
@@ -201,12 +201,12 @@ def _isoformat(value: datetime) -> str:
 
 __all__ = [
     "InputQualityEvidence",
+    "ExchangeMarketSessionCalendar",
     "MarketSessionCalendar",
     "MaterializedReportInput",
     "PostgresReportInputEvidenceStore",
     "PostgresReportInputSnapshotStore",
     "ReportInputEvidenceStore",
     "ReportInputSnapshotMaterializer",
-    "WeekdayMarketSessionCalendar",
     "_unexpected_trading_dates",
 ]

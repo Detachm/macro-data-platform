@@ -39,6 +39,7 @@ from macro_platform.jobs.scheduler import (
     PostgresReportDateLock,
     PostgresScheduledTaskCheckpointStore,
     ScheduledIngestionWorker,
+    ScheduledTaskResult,
 )
 from macro_platform.normalization.common import canonical_json_checksum
 from macro_platform.services.report_input_materializer import (
@@ -202,6 +203,22 @@ async def test_job_029_checkpointed_calendar_and_headline_tasks_persist_facts(
             ),
         }
     )
+    unapproved_us_release = release.model_copy(
+        update={
+            "release_id": "job-029-unapproved-us-release-1",
+            "series_id": "macro:US:TEST:release_calendar",
+            "region": Region.US,
+            "release_name": "Unapproved US fixture calendar",
+            "source": SourceRef(
+                provider_id="job-029.unapproved-us-macro-fixture",
+                provider_record_id="unapproved-us-calendar-row-1",
+                source_name="Unapproved US fixture calendar",
+                source_url="https://example.com/unapproved-us-calendar/1",
+                retrieved_at=NOW,
+                checksum_sha256="e" * 64,
+            ),
+        }
+    )
 
     class _ReleaseProvider:
         def capabilities(self) -> ProviderCapabilities:
@@ -236,6 +253,24 @@ async def test_job_029_checkpointed_calendar_and_headline_tasks_persist_facts(
 
         async def fetch_news(self, _query: object, _context: FetchContext) -> ProviderPage[object]:
             return ProviderPage(items=[news], fetched_at=NOW, complete=True)
+
+    class _UnapprovedUsFixtureProvider:
+        def capabilities(self) -> ProviderCapabilities:
+            return ProviderCapabilities(
+                provider_id=unapproved_us_release.source.provider_id,
+                regions={Region.US},
+                datasets={Dataset.MACRO_RELEASES},
+                max_page_size=1000,
+                supports_point_in_time=False,
+                supports_revisions=False,
+                supports_full_text=False,
+                external_llm_allowed=True,
+            )
+
+        async def fetch_macro_releases(
+            self, _query: object, _context: FetchContext
+        ) -> ProviderPage[MacroRelease]:
+            return ProviderPage(items=[unapproved_us_release], fetched_at=NOW, complete=True)
 
     request_as_of = NOW + timedelta(days=1)
     release_result = await JobRunner(
@@ -278,8 +313,32 @@ async def test_job_029_checkpointed_calendar_and_headline_tasks_persist_facts(
             as_of=request_as_of,
         )
     )
+    unapproved_us_result = await JobRunner(
+        MacroReleaseIngestHandler(
+            _UnapprovedUsFixtureProvider(),
+            provider_role="test.us.macro.fixture",
+            region=Region.US,
+            timeout_seconds=30,
+            now=lambda: NOW,
+        ),
+        database=database,
+        now=lambda: NOW,
+    ).execute(
+        IngestJobRequest(
+            provider_role="test.us.macro.fixture",
+            dataset=Dataset.MACRO_RELEASES,
+            regions={Region.US},
+            start=NOW,
+            end=NOW + timedelta(days=8),
+            as_of=request_as_of,
+        )
+    )
 
-    assert (release_result.records_inserted, news_result.records_inserted) == (1, 1)
+    assert (
+        release_result.records_inserted,
+        news_result.records_inserted,
+        unapproved_us_result.records_inserted,
+    ) == (1, 1, 1)
     async with database.session() as session:
         stored_release = await session.get(MacroReleaseRow, release.release_id)
         stored_series = await session.get(MacroSeriesRow, release.series_id)
@@ -287,6 +346,33 @@ async def test_job_029_checkpointed_calendar_and_headline_tasks_persist_facts(
     assert stored_release is not None
     assert stored_series is not None
     assert stored_news is not None
+    evidence = await PostgresReportInputEvidenceStore(database).collect(
+        report_date=NOW.date(),
+        as_of=NOW,
+        cutoff_at=NOW,
+        task_results=(
+            ScheduledTaskResult(
+                task_id="cn.macro-release-calendar",
+                provider_role="cn.macro.primary",
+                dataset=Dataset.MACRO_RELEASES,
+                region=Region.CN,
+                status="succeeded",
+                run_id=release_result.run_id,
+            ),
+            ScheduledTaskResult(
+                task_id="hk.official-headlines",
+                provider_role="hk.news.primary",
+                dataset=Dataset.NEWS,
+                region=Region.HK,
+                status="succeeded",
+                run_id=news_result.run_id,
+            ),
+        ),
+    )
+    by_input_id = {item.input_id: item for item in evidence}
+    assert by_input_id["calendar.macro_releases_7d"].status == "available"
+    assert by_input_id["news.cn.official_headlines_24h"].status == "missing"
+    assert by_input_id["calendar.us_macro_releases_7d"].status == "missing"
 
 
 NOW = datetime(2026, 7, 28, 0, 0, tzinfo=UTC)

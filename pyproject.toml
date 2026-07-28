@@ -13,6 +13,7 @@ dependencies = [
   "alembic>=1.13,<2",
   "asyncpg>=0.29,<1",
   "baostock>=0.9.3,<0.10",
+  "exchange-calendars>=4.13,<5",
   "fastapi[standard]>=0.115,<1",
   "httpx>=0.27,<1",
   "opencc-python-reimplemented>=0.1.7,<1",
@@ -59,7 +60,16 @@ plugins = ["pydantic.mypy"]
 packages = ["macro_platform"]
 
 [[tool.mypy.overrides]]
-module = ["alembic.*", "baostock", "baostock.*", "testcontainers.*", "xtquant", "xtquant.*"]
+module = [
+  "alembic.*",
+  "baostock",
+  "baostock.*",
+  "exchange_calendars",
+  "exchange_calendars.*",
+  "testcontainers.*",
+  "xtquant",
+  "xtquant.*",
+]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

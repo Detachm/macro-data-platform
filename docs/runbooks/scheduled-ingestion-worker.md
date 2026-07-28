@@ -23,14 +23,16 @@ checkpoint 恢复、backfill 和质量门禁的公共执行边界；API 继续�
   访问 provider。normalized facts 仍由 page commit 和事实表唯一约束去重。
 - 默认上海 07:50 开始，08:15 为 input cutoff。通过 `WORKER_SCHEDULE_*`、
   `WORKER_REPORT_CUTOFF_*`、`WORKER_*_FRESHNESS_*` 配置时区、时刻、轮询和时效阈值。
+- 市场日线 freshness 使用 XSHG、XHKG、XNYS 的交易日历来确定上一交易会话，不以工作日近似；日历
+  无法覆盖的报告日会以 `unavailable` 阻断报告，待日历版本更新后再重跑。
 - 常规常驻：`macro-data-worker`。
 - 单日演练：`macro-data-worker --report-date 2026-07-28`。
 - 显式回填：`macro-data-worker --backfill-start 2026-07-20 --backfill-end 2026-07-28`。首尾日期均包含，
   不可与单日模式混用。也可使用对应 `WORKER_RUN_ONCE_REPORT_DATE` 或 `WORKER_BACKFILL_*` 环境变量。
 
-CN news 和 US macro calendar 尚无获批的 live provider。materializer 若不能从事实库得到它们的合格
-数据，会将相关必需输入写为 `missing`，报告质量为 `blocked`；这是预期的安全状态，直到其各自的
-provider Issue 实现完成。不可使用 fixture 或其他未登记来源填充这些输入。
+CN news 和 US macro calendar 尚无获批的 live provider。materializer 无条件将相关必需输入写为
+`missing`，报告质量为 `blocked`；历史行、fixture 或其他未登记来源也不能填充这些输入。这是预期的
+安全状态，直到其各自的 provider Issue 实现完成。
 
 ## 观测与故障处理
 

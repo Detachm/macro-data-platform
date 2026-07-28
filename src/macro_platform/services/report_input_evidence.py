@@ -14,11 +14,12 @@ from macro_platform.contracts.news import NewsEvent
 from macro_platform.jobs.scheduler import ScheduledTaskResult
 from macro_platform.services.report_input_evidence_support import (
     MARKET_INPUT_SPECS,
+    ExchangeMarketSessionCalendar,
     InputQualityEvidence,
     MarketInputSpec,
     MarketSessionCalendar,
+    MarketSessionCalendarUnavailableError,
     ReportInputEvidenceStore,
-    WeekdayMarketSessionCalendar,
     news_task_id,
     rejections_by_run_id,
     source_reference,
@@ -56,7 +57,7 @@ class PostgresReportInputEvidenceStore(ReportInputEvidenceStore):
         self._market_max_age = market_max_age
         self._news_max_age = news_max_age
         self._macro_max_age = macro_max_age
-        self._market_session_calendar = market_session_calendar or WeekdayMarketSessionCalendar()
+        self._market_session_calendar = market_session_calendar or ExchangeMarketSessionCalendar()
 
     async def collect(
         self,
@@ -85,23 +86,22 @@ class PostgresReportInputEvidenceStore(ReportInputEvidenceStore):
                 )
                 for spec in MARKET_INPUT_SPECS
             ]
-            news = [
-                await self._news_evidence(
-                    session,
-                    input_id=f"news.{region.value.lower()}.official_headlines_24h",
-                    region=region,
-                    report_date=report_date,
-                    as_of=as_of,
-                    cutoff_at=cutoff_at,
-                    task_result=results_by_task_id.get(news_task_id(region)),
-                    rejection_count=task_rejection_count(
-                        results_by_task_id.get(news_task_id(region)), rejections
-                    ),
-                )
-                for region in (Region.CN, Region.HK)
-            ]
-            macro = await self._macro_evidence(
+            hk_news = await self._news_evidence(
                 session,
+                input_id="news.hk.official_headlines_24h",
+                region=Region.HK,
+                report_date=report_date,
+                as_of=as_of,
+                cutoff_at=cutoff_at,
+                task_result=results_by_task_id.get(news_task_id(Region.HK)),
+                rejection_count=task_rejection_count(
+                    results_by_task_id.get(news_task_id(Region.HK)), rejections
+                ),
+            )
+            cn_macro = await self._macro_evidence(
+                session,
+                input_id="calendar.macro_releases_7d",
+                region=Region.CN,
                 report_date=report_date,
                 as_of=as_of,
                 cutoff_at=cutoff_at,
@@ -110,7 +110,19 @@ class PostgresReportInputEvidenceStore(ReportInputEvidenceStore):
                     results_by_task_id.get("cn.macro-release-calendar"), rejections
                 ),
             )
-        return tuple([*market, *news, macro])
+        return (
+            *market,
+            _unsupported_live_input(
+                "news.cn.official_headlines_24h",
+                "CN official headlines have no approved live provider",
+            ),
+            hk_news,
+            cn_macro,
+            _unsupported_live_input(
+                "calendar.us_macro_releases_7d",
+                "US macro release calendar has no approved live provider",
+            ),
+        )
 
     async def _market_evidence(
         self,
@@ -156,9 +168,17 @@ class PostgresReportInputEvidenceStore(ReportInputEvidenceStore):
                 reason=f"missing expected instruments: {', '.join(missing)}",
             )
         bars = tuple(selected[instrument_id] for instrument_id in sorted(selected))
-        expected = self._market_session_calendar.previous_session(
-            region=spec.region, report_date=report_date
-        )
+        try:
+            expected = self._market_session_calendar.previous_session(
+                region=spec.region, report_date=report_date
+            )
+        except MarketSessionCalendarUnavailableError as exc:
+            return InputQualityEvidence(
+                input_id=spec.input_id,
+                status="unavailable",
+                required=True,
+                reason=str(exc),
+            )
         stale_dates = unexpected_trading_dates(
             (bar.trading_date for bar in bars), expected_trading_date=expected
         )
@@ -284,15 +304,15 @@ class PostgresReportInputEvidenceStore(ReportInputEvidenceStore):
         self,
         session: AsyncSession,
         *,
+        input_id: str,
+        region: Region,
         report_date: date,
         as_of: datetime,
         cutoff_at: datetime,
         task_result: ScheduledTaskResult | None,
         rejection_count: int,
     ) -> InputQualityEvidence:
-        problem = task_problem(
-            "calendar.macro_releases_7d", task_result, rejection_count=rejection_count
-        )
+        problem = task_problem(input_id, task_result, rejection_count=rejection_count)
         if problem is not None:
             return problem
         end_date = report_date + timedelta(days=7)
@@ -300,7 +320,7 @@ class PostgresReportInputEvidenceStore(ReportInputEvidenceStore):
             await session.scalars(
                 select(MacroReleaseRow)
                 .where(
-                    MacroReleaseRow.region.in_([Region.CN.value, Region.US.value]),
+                    MacroReleaseRow.region == region.value,
                     MacroReleaseRow.available_at <= as_of,
                     or_(
                         (MacroReleaseRow.scheduled_at >= cutoff_at)
@@ -314,10 +334,24 @@ class PostgresReportInputEvidenceStore(ReportInputEvidenceStore):
         ).all()
         if not rows:
             return InputQualityEvidence(
-                input_id="calendar.macro_releases_7d",
-                status="missing",
+                input_id=input_id,
+                status="available",
                 required=True,
-                reason="no CN or US macro releases materialized for the next seven days",
+                reason=(
+                    f"{region.value} calendar coverage completed with no releases in the next "
+                    "seven days"
+                ),
+                facts=(
+                    {
+                        "fact_id": f"fact.{input_id}",
+                        "label": f"{region.value} macro releases in next seven days",
+                        "display_text": "No macro releases are scheduled in the next seven days.",
+                        "value": 0,
+                        "unit": "events",
+                        "report_date": report_date.isoformat(),
+                        "source_ref_ids": [],
+                    },
+                ),
             )
         releases = tuple(MacroRelease.model_validate(row.payload) for row in rows)
         revised = set(
@@ -341,14 +375,14 @@ class PostgresReportInputEvidenceStore(ReportInputEvidenceStore):
         )
         sources = tuple(source_reference(release.source) for release in releases)
         return InputQualityEvidence(
-            input_id="calendar.macro_releases_7d",
+            input_id=input_id,
             status=status,
             required=True,
             reason=reason,
             facts=(
                 {
-                    "fact_id": "fact.calendar.macro_releases_7d",
-                    "label": "CN and US macro releases in next seven days",
+                    "fact_id": f"fact.{input_id}",
+                    "label": f"{region.value} macro releases in next seven days",
                     "display_text": f"{len(releases)} macro releases materialized.",
                     "value": len(releases),
                     "unit": "events",
@@ -363,3 +397,14 @@ class PostgresReportInputEvidenceStore(ReportInputEvidenceStore):
 
 def _isoformat(value: datetime) -> str:
     return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _unsupported_live_input(input_id: str, reason: str) -> InputQualityEvidence:
+    """Make an unapproved provider gap visible instead of trusting old rows."""
+
+    return InputQualityEvidence(
+        input_id=input_id,
+        status="missing",
+        required=True,
+        reason=reason,
+    )

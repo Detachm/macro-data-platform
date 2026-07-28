@@ -5,9 +5,11 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
-from typing import Literal, Protocol
+from typing import Literal, Protocol, cast
 from uuid import UUID
 
+import exchange_calendars as exchange_calendars
+from exchange_calendars.errors import CalendarError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -58,15 +60,38 @@ class MarketSessionCalendar(Protocol):
     def previous_session(self, *, region: Region, report_date: date) -> date: ...
 
 
-class WeekdayMarketSessionCalendar:
-    """Conservative default pending a venue-holiday calendar integration."""
+class MarketSessionCalendarUnavailableError(ValueError):
+    """Raised when the approved venue calendar cannot resolve a report date."""
+
+
+_VENUE_CALENDAR_BY_REGION: dict[Region, str] = {
+    Region.CN: "XSHG",
+    Region.HK: "XHKG",
+    Region.US: "XNYS",
+}
+
+
+class ExchangeMarketSessionCalendar:
+    """Resolve prior sessions through reviewed exchange holiday calendars.
+
+    The mapping deliberately uses XSHG, XHKG and XNYS rather than a weekday
+    approximation. Calendar coverage gaps fail closed so an unreviewed future
+    holiday cannot be mistaken for a market session.
+    """
 
     def previous_session(self, *, region: Region, report_date: date) -> date:
-        del region
-        candidate = report_date - timedelta(days=1)
-        while candidate.weekday() >= 5:
-            candidate -= timedelta(days=1)
-        return candidate
+        calendar_name = _VENUE_CALENDAR_BY_REGION[region]
+        try:
+            calendar = exchange_calendars.get_calendar(calendar_name)
+            if calendar.is_session(report_date):
+                previous = calendar.previous_session(report_date)
+            else:
+                previous = calendar.date_to_session(report_date, direction="previous")
+        except (CalendarError, ValueError) as exc:
+            raise MarketSessionCalendarUnavailableError(
+                f"{calendar_name} cannot resolve a previous session for {report_date.isoformat()}"
+            ) from exc
+        return cast(date, previous.date())
 
 
 @dataclass(frozen=True, slots=True)

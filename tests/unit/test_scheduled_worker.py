@@ -130,6 +130,25 @@ def test_rpt_029_missing_required_quality_result_blocks_the_report() -> None:
     assert {issue.code for issue in result.issues} == {"REQUIRED_INPUT_UNAVAILABLE"}
 
 
+def test_rpt_029_unapproved_us_macro_calendar_remains_a_required_blocker() -> None:
+    result = ReportInputQualityGate().evaluate(
+        _snapshot(
+            {
+                "calendar.us_macro_releases_7d": {
+                    "status": "missing",
+                    "required": True,
+                    "reason": "US macro release calendar has no approved live provider",
+                }
+            }
+        )
+    )
+
+    assert result.status == "blocked"
+    assert [(issue.input_id, issue.code) for issue in result.issues] == [
+        ("calendar.us_macro_releases_7d", "MISSING_REQUIRED_INPUT")
+    ]
+
+
 def test_rpt_029_empty_fact_set_blocks_even_when_inputs_are_available() -> None:
     snapshot = _snapshot({}).model_copy(
         update={
