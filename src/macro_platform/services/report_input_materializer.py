@@ -10,6 +10,11 @@ from typing import Protocol
 
 from macro_platform.jobs.scheduler import ScheduledTaskResult
 from macro_platform.normalization.common import canonical_json_checksum, stable_id, utc_now
+from macro_platform.services.report_day_policy import (
+    ExchangeReportDayPolicy,
+    ReportDayPolicy,
+    ReportDayPolicyResult,
+)
 from macro_platform.services.report_input_evidence import PostgresReportInputEvidenceStore
 from macro_platform.services.report_input_evidence_support import (
     ExchangeMarketSessionCalendar,
@@ -63,6 +68,7 @@ class ReportInputSnapshotMaterializer:
         cutoff_at: Callable[[date], datetime],
         sleeper: Callable[[float], Awaitable[None]] = asyncio.sleep,
         snapshot_version: str = "1.0",
+        report_day_policy: ReportDayPolicy | None = None,
     ) -> None:
         if not snapshot_version.strip():
             raise ValueError("snapshot version must not be empty")
@@ -72,6 +78,7 @@ class ReportInputSnapshotMaterializer:
         self._cutoff_at = cutoff_at
         self._sleeper = sleeper
         self._snapshot_version = snapshot_version
+        self._report_day_policy = report_day_policy or ExchangeReportDayPolicy()
         self._quality_gate = ReportInputQualityGate()
 
     async def materialize(
@@ -93,12 +100,15 @@ class ReportInputSnapshotMaterializer:
             cutoff_at=cutoff_at,
             task_results=task_results,
         )
+        report_day_policy = self._report_day_policy.evaluate(report_date)
+        policy_evidence = _apply_report_day_policy(evidence, report_day_policy)
         snapshot = _snapshot_from_evidence(
             report_date=report_date,
             as_of=as_of,
             cutoff_at=cutoff_at,
             snapshot_version=self._snapshot_version,
-            evidence=evidence,
+            evidence=policy_evidence,
+            report_day_policy=report_day_policy,
         )
         quality = self._quality_gate.evaluate(snapshot)
         await self._snapshot_store.put(snapshot)
@@ -112,6 +122,7 @@ def _snapshot_from_evidence(
     cutoff_at: datetime,
     snapshot_version: str,
     evidence: tuple[InputQualityEvidence, ...],
+    report_day_policy: ReportDayPolicyResult,
 ) -> ReportInputSnapshot:
     by_input_id = {item.input_id: item for item in evidence}
     if len(by_input_id) != len(evidence):
@@ -151,7 +162,9 @@ def _snapshot_from_evidence(
         facts=facts,
         source_references=source_references,
         input_quality=input_quality,
+        report_day_policy=report_day_policy.to_payload(),
     )
+    report_day_policy_payload = report_day_policy.to_payload()
     body = {
         "report_date": report_date.isoformat(),
         "as_of": _isoformat(as_of),
@@ -162,6 +175,7 @@ def _snapshot_from_evidence(
         "source_ref_ids": source_ref_ids,
         "source_references": source_references,
         "input_quality": input_quality,
+        "report_day_policy": report_day_policy_payload,
         "editor_context": editor_context,
     }
     fingerprint = canonical_json_checksum(body)
@@ -177,6 +191,7 @@ def _snapshot_from_evidence(
         "source_ref_ids": source_ref_ids,
         "source_references": source_references,
         "input_quality": input_quality,
+        "report_day_policy": report_day_policy_payload,
         "editor_context": editor_context,
     }
     return ReportInputSnapshot(
@@ -196,6 +211,7 @@ def _editor_context(
     facts: list[dict[str, object]],
     source_references: list[dict[str, object]],
     input_quality: Mapping[str, Mapping[str, object]],
+    report_day_policy: Mapping[str, object],
 ) -> dict[str, object]:
     """Build the fixed provenance-preserving payload sent to report generation."""
 
@@ -203,7 +219,62 @@ def _editor_context(
         "facts": facts,
         "source_references": source_references,
         "input_quality": input_quality,
+        "report_day_policy": report_day_policy,
     }
+
+
+def _apply_report_day_policy(
+    evidence: tuple[InputQualityEvidence, ...],
+    policy: ReportDayPolicyResult,
+) -> tuple[InputQualityEvidence, ...]:
+    required = frozenset(policy.required_input_ids)
+    closed_market_inputs = {
+        region.market_input_id: region
+        for region in policy.regions
+        if not region.market_input_required
+    }
+    adjusted: list[InputQualityEvidence] = []
+    observed_input_ids: set[str] = set()
+    for item in evidence:
+        observed_input_ids.add(item.input_id)
+        if item.input_id in required:
+            adjusted.append(replace(item, required=True))
+            continue
+        closed = closed_market_inputs.get(item.input_id)
+        if closed is None:
+            adjusted.append(item)
+            continue
+        if item.status in {"available", "revised"}:
+            adjusted.append(replace(item, required=False))
+            continue
+        adjusted.append(
+            replace(
+                item,
+                status="unavailable",
+                required=False,
+                reason=_closed_market_reason(closed.region, closed.status),
+                facts=(),
+                source_references=(),
+            )
+        )
+    for input_id, closed in sorted(closed_market_inputs.items()):
+        if input_id not in observed_input_ids:
+            adjusted.append(
+                InputQualityEvidence(
+                    input_id=input_id,
+                    status="unavailable",
+                    required=False,
+                    reason=_closed_market_reason(closed.region, closed.status),
+                )
+            )
+    return tuple(adjusted)
+
+
+def _closed_market_reason(region: str, status: str) -> str:
+    return (
+        f"{region} market is closed ({status}); "
+        "current-session market input is optional for this report date"
+    )
 
 
 def _exclude_after_cutoff_evidence(

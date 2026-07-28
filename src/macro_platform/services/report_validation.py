@@ -16,6 +16,7 @@ from macro_platform.contracts.report import (
     ReportStatus,
     ReportValidationIssue,
 )
+from macro_platform.services.report_day_policy import report_calendar_payload
 from macro_platform.services.report_input_quality import (
     QualityGateIssue,
     ReportInputQualityGate,
@@ -447,10 +448,9 @@ class ReportFallbackBuilder:
             "report_date": snapshot.report_date.isoformat(),
             "timezone": "Asia/Shanghai",
             "schedule": _default_schedule(),
-            "calendar": {
-                "day_type": "weekend" if snapshot.report_date.weekday() >= 5 else "business_day",
-                "holiday_notice": None,
-            },
+            "calendar": report_calendar_payload(
+                snapshot.payload.get("report_day_policy"), report_date=snapshot.report_date
+            ),
             "generated_at": generated_at.astimezone(UTC).isoformat().replace("+00:00", "Z"),
             "input_snapshot": {
                 "snapshot_id": snapshot.snapshot_id,

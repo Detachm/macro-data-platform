@@ -40,9 +40,11 @@
 - 显式回填：`macro-data-worker --backfill-start 2026-07-20 --backfill-end 2026-07-28`。首尾日期均包含，
   不可与单日模式混用。也可使用对应 `WORKER_RUN_ONCE_REPORT_DATE` 或 `WORKER_BACKFILL_*` 环境变量。
 
-HK 核心指数、CN news 和冻结的全区域 `calendar.macro_releases_7d` 尚不能证明完整获批 live 覆盖。materializer
-将相应必需输入写为 `missing`，报告质量为 `blocked`；历史行、fixture 或其他未登记来源也不能填充
-这些输入。CN NBS 日历只覆盖 CN，不能单独满足该全区域输入。这是预期的安全状态，直到各地区
+HK 核心指数、CN news 和冻结的全区域 `calendar.macro_releases_7d` 尚不能证明完整获批 live 覆盖。
+materializer 会把相应必需输入写为 `missing`，报告质量为 `blocked`；历史行、fixture 或其他未登记
+来源也不能填充这些输入。它同时把一次确定性的 `report_day_policy` 固化进 snapshot：正常交易日缺失
+仍阻断；周末/区域休市只把对应 market input 降为 optional，新闻和宏观日历绝不降级。完整规则见
+ADR 0010。CN NBS 日历只覆盖 CN，不能单独满足该全区域输入。这是预期的安全状态，直到各地区
 provider Issue 实现完成。
 
 ## 观测与故障处理

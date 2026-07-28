@@ -16,6 +16,7 @@ from macro_platform.services.llm import (
     LlmStructuredOutputError,
     LlmTimeoutError,
 )
+from macro_platform.services.report_day_policy import ExchangeReportDayPolicy
 from macro_platform.services.report_generator import (
     DailyReportInputPreset,
     ReportGenerationService,
@@ -151,6 +152,28 @@ def test_rpt_030_input_preset_is_point_in_time_and_versioned() -> None:
     assert request.require_point_in_time is True
     assert request.regions == {Region.CN, Region.HK, Region.US}
     assert request.market.instrument_ids == ["ins_cn_csi300", "ins_hk_hsi", "ins_us_spx"]
+
+
+def test_rpt_051_report_generation_overrides_model_calendar_with_persisted_policy() -> None:
+    report_date = date(2026, 7, 26)
+    snapshot = _snapshot().model_copy(deep=True, update={"report_date": report_date})
+    snapshot.payload["report_day_policy"] = (
+        ExchangeReportDayPolicy().evaluate(report_date).to_payload()
+    )
+    model_output = _success_payload()
+    model_output["calendar"] = {"day_type": "business_day", "holiday_notice": None}
+
+    payload = ReportGenerationService(_FakeLlm([]), clock=lambda: NOW)._materialize_report(
+        LlmResponse(structured_output=model_output),
+        snapshot=snapshot,
+        report_id="daily-report-2026-07-26-v1",
+        generated_at=NOW,
+    )
+
+    assert payload["calendar"] == {
+        "day_type": "weekend",
+        "holiday_notice": "周末，CN/HK/US 市场休市；本期发布宏观消息、日历和分析。",
+    }
 
 
 def test_rpt_030_prompt_builder_ignores_legacy_external_llm_rights() -> None:

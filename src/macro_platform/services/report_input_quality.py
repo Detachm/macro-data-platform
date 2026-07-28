@@ -8,21 +8,20 @@ provenance metadata and never influence a runtime quality decision.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from typing import Any, Literal
 
+from macro_platform.services.report_day_policy import (
+    ALWAYS_REQUIRED_REPORT_INPUT_IDS,
+    MARKET_INPUT_ID_BY_REGION,
+    REPORT_DAY_POLICY_ID,
+)
 from macro_platform.storage.reporting import ReportInputSnapshot
 
 QualityGateStatus = Literal["passed", "degraded", "blocked", "retryable"]
 
-REQUIRED_REPORT_INPUT_IDS = frozenset(
-    {
-        "market.cn.core_indices.previous_close",
-        "news.cn.official_headlines_24h",
-        "market.hk.core_indices.previous_close",
-        "news.hk.official_headlines_24h",
-        "market.us.core_indices.previous_close",
-        "calendar.macro_releases_7d",
-    }
+REQUIRED_REPORT_INPUT_IDS = ALWAYS_REQUIRED_REPORT_INPUT_IDS | frozenset(
+    MARKET_INPUT_ID_BY_REGION.values()
 )
 
 _BLOCKING_STATUSES = frozenset(
@@ -52,8 +51,11 @@ class ReportInputQualityGate:
         raw_quality = snapshot.payload.get("input_quality", {})
         quality = raw_quality if isinstance(raw_quality, dict) else {}
         issues: list[QualityGateIssue] = []
+        required_input_ids, optional_input_ids, policy_issue = _inputs_for_snapshot(snapshot)
+        if policy_issue is not None:
+            issues.append(policy_issue)
 
-        for input_id in sorted(REQUIRED_REPORT_INPUT_IDS - set(quality)):
+        for input_id in sorted(required_input_ids - set(quality)):
             issues.append(
                 QualityGateIssue(
                     input_id=input_id,
@@ -62,12 +64,32 @@ class ReportInputQualityGate:
                     required=True,
                 )
             )
+        for input_id in sorted(optional_input_ids - set(quality)):
+            issues.append(
+                QualityGateIssue(
+                    input_id=input_id,
+                    code="OPTIONAL_INPUT_UNAVAILABLE",
+                    message="closed-market input has no explicit quality-gate result",
+                    required=False,
+                )
+            )
+        for input_id in sorted(optional_input_ids & set(quality)):
+            raw = quality[input_id]
+            if isinstance(raw, dict) and raw.get("status") == "available":
+                issues.append(
+                    QualityGateIssue(
+                        input_id=input_id,
+                        code="SCHEDULED_MARKET_CLOSURE",
+                        message="market is closed for this report date; latest facts are optional",
+                        required=False,
+                    )
+                )
 
         for input_id in sorted(key for key in quality if isinstance(key, str)):
             raw = quality[input_id]
-            required = _is_required(input_id, raw)
+            required = _is_required(input_id, raw, required_input_ids=required_input_ids)
             if (
-                input_id in REQUIRED_REPORT_INPUT_IDS
+                input_id in required_input_ids
                 and isinstance(raw, dict)
                 and raw.get("required", True) is not True
             ):
@@ -115,10 +137,109 @@ class ReportInputQualityGate:
         return QualityGateResult(status=_decision(issues), issues=tuple(issues))
 
 
-def _is_required(input_id: str, raw: Any) -> bool:
-    if input_id in REQUIRED_REPORT_INPUT_IDS:
+def _is_required(
+    input_id: str,
+    raw: Any,
+    *,
+    required_input_ids: frozenset[str],
+) -> bool:
+    if input_id in required_input_ids:
         return True
     return not isinstance(raw, dict) or raw.get("required", False) is True
+
+
+def _inputs_for_snapshot(
+    snapshot: ReportInputSnapshot,
+) -> tuple[frozenset[str], frozenset[str], QualityGateIssue | None]:
+    raw = snapshot.payload.get("report_day_policy")
+    if raw is None:
+        return REQUIRED_REPORT_INPUT_IDS, frozenset(), None
+    invalid = QualityGateIssue(
+        input_id="report.day_policy",
+        code="REPORT_DAY_POLICY_INVALID",
+        message="report-day policy is incomplete or inconsistent with the input contract",
+        required=True,
+    )
+    if not isinstance(raw, dict) or raw.get("report_date") != snapshot.report_date.isoformat():
+        return REQUIRED_REPORT_INPUT_IDS, frozenset(), invalid
+    if (
+        raw.get("policy_id") != REPORT_DAY_POLICY_ID
+        or not isinstance(raw.get("calendar_version"), str)
+        or not raw.get("calendar_version")
+    ):
+        return REQUIRED_REPORT_INPUT_IDS, frozenset(), invalid
+    raw_required = raw.get("required_input_ids")
+    raw_optional = raw.get("optional_input_ids")
+    if not isinstance(raw_required, (list, tuple)) or not isinstance(raw_optional, (list, tuple)):
+        return REQUIRED_REPORT_INPUT_IDS, frozenset(), invalid
+    if not all(isinstance(item, str) for item in (*raw_required, *raw_optional)):
+        return REQUIRED_REPORT_INPUT_IDS, frozenset(), invalid
+    required = frozenset(raw_required)
+    optional = frozenset(raw_optional)
+    if (
+        required & optional
+        or required | optional != REQUIRED_REPORT_INPUT_IDS
+        or not required >= ALWAYS_REQUIRED_REPORT_INPUT_IDS
+        or not _policy_regions_match(
+            raw,
+            report_date=snapshot.report_date,
+            optional_input_ids=optional,
+        )
+    ):
+        return REQUIRED_REPORT_INPUT_IDS, frozenset(), invalid
+    return required, optional, None
+
+
+def _policy_regions_match(
+    raw_policy: dict[str, Any],
+    *,
+    report_date: date,
+    optional_input_ids: frozenset[str],
+) -> bool:
+    day_type = raw_policy.get("day_type")
+    regions = raw_policy.get("regions")
+    if day_type not in {"regular", "weekend", "regional_holiday"} or not isinstance(
+        regions, (list, tuple)
+    ):
+        return False
+    expected_market_ids = {
+        region.value: input_id for region, input_id in MARKET_INPUT_ID_BY_REGION.items()
+    }
+    observed_statuses: dict[str, object] = {}
+    derived_optional: set[str] = set()
+    for item in regions:
+        if not isinstance(item, dict):
+            return False
+        region = item.get("region")
+        if region not in expected_market_ids or region in observed_statuses:
+            return False
+        market_input_id = item.get("market_input_id")
+        status = item.get("status")
+        required = item.get("market_input_required")
+        if (
+            market_input_id != expected_market_ids[region]
+            or status not in {"scheduled_session", "weekend_closed", "exchange_holiday"}
+            or not isinstance(required, bool)
+            or required != (status == "scheduled_session")
+        ):
+            return False
+        observed_statuses[region] = status
+        if not required:
+            derived_optional.add(market_input_id)
+    if set(observed_statuses) != set(expected_market_ids) or derived_optional != optional_input_ids:
+        return False
+    statuses = set(observed_statuses.values())
+    weekday = report_date.weekday()
+    return (
+        (day_type == "regular" and weekday < 5 and statuses == {"scheduled_session"})
+        or (day_type == "weekend" and weekday >= 5 and statuses == {"weekend_closed"})
+        or (
+            day_type == "regional_holiday"
+            and weekday < 5
+            and "exchange_holiday" in statuses
+            and statuses <= {"scheduled_session", "exchange_holiday"}
+        )
+    )
 
 
 def _issue_for_status(
