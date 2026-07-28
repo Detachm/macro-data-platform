@@ -23,15 +23,14 @@
 - `PostgresReportDeliveryStore` 会在任何网络发送前独立提交 `pending` 预留，并独立提交每次
   终态变更；进程在飞书已接收但本地未更新时重启，只会看到既有 `pending`，不会自动重发。
 
-完整自动交付编排尚由 #33 接入。因此在该任务完成前，保持
-`FEISHU_DELIVERY_ENABLED=false`；服务本身不会在启动时发送任何消息。#33 应创建并持有
-HTTP client，并构造每次状态变更独立提交的 `PostgresReportDeliveryStore`，再通过
-`ConfiguredFeishuDelivery(settings=..., client=..., store=...).deliver(...)` 执行投递，
-使目标群、超时、重试次数和持久化边界始终来自运行时组合根。
+完整自动交付已接入 `macro-data-worker`：组合根持有 HTTP client，构造独立事务的
+`PostgresReportDeliveryStore` 和 `PostgresWorkflowAlertStore`，在质量门禁、生成和校验通过后于
+配置的发布时间执行投递。开发环境仍默认 `FEISHU_DELIVERY_ENABLED=false`；生产环境未启用完整的
+日报与预警投递时，worker 拒绝启动。
 
 ## 独立预警群
 
-#33 使用 `FEISHU_ALERT_CHAT_ID` 指向与日报群不同的私有群。终态失败预警通过
+`FEISHU_ALERT_CHAT_ID` 指向与日报群不同的私有群。终态失败预警通过
 `ConfiguredFeishuAlerts` 投递红色卡片，包含报告日期、workflow run ID、阶段、稳定错误码、
 provider run IDs 和安全重试指引。预警记录持久化在 `workflow_alert_attempts`（迁移 `0012`）：
 

@@ -8,6 +8,7 @@ from datetime import UTC, date, datetime, timedelta
 from datetime import time as time_of_day
 from zoneinfo import ZoneInfo
 
+import httpx
 import structlog
 
 from macro_platform.config import Settings, get_settings
@@ -22,6 +23,7 @@ from macro_platform.jobs.scheduled_tasks import (
     PostgresScheduledTaskCheckpointStore,
 )
 from macro_platform.jobs.scheduled_types import (
+    ScheduledReportWorkflow,
     ScheduledRequestFactory,
     ScheduledTask,
     ScheduledTaskCheckpointStore,
@@ -41,6 +43,20 @@ from macro_platform.providers.hk.live import HkmaPressReleaseProvider
 from macro_platform.providers.hk.xtquant import HkXtQuantDailyBarsProvider
 from macro_platform.providers.registry import ProviderRegistry
 from macro_platform.providers.us.twelve_data import TwelveDataDailyBarsProvider
+from macro_platform.services.daily_workflow import (
+    DailyReportWorkflow,
+    PostgresReportGenerationStore,
+    build_generation_service,
+)
+from macro_platform.services.llm import LlmClient
+from macro_platform.services.report_delivery import (
+    ConfiguredFeishuDelivery,
+    PostgresReportDeliveryStore,
+)
+from macro_platform.services.workflow_alerts import (
+    ConfiguredFeishuAlerts,
+    PostgresWorkflowAlertStore,
+)
 from macro_platform.storage.database import Database
 
 
@@ -303,6 +319,10 @@ async def run_scheduler(
     settings: Settings | None = None,
     database: Database | None = None,
     provider_registry: ProviderRegistry | None = None,
+    llm_client: LlmClient | None = None,
+    http_client: httpx.AsyncClient | None = None,
+    report_workflow: ScheduledReportWorkflow | None = None,
+    report_version: str | None = None,
     now: Callable[[], datetime] = utc_now,
     sleeper: Callable[[float], Awaitable[None]] = asyncio.sleep,
     max_schedule_runs: int | None = None,
@@ -331,6 +351,8 @@ async def run_scheduler(
     resolved_database = database or Database(resolved_settings.database_url)
     owns_registry = provider_registry is None
     resolved_registry = provider_registry or create_provider_registry(resolved_settings)
+    owns_http_client = False
+    resolved_http_client = http_client
     try:
         registered_tasks = build_registered_tasks(
             settings=resolved_settings,
@@ -363,12 +385,56 @@ async def run_scheduler(
         )
 
         schedule_timezone = ZoneInfo(resolved_settings.worker_schedule_timezone)
+        resolved_report_version = (
+            resolved_settings.report_workflow_version if report_version is None else report_version
+        )
+        resolved_report_workflow = report_workflow
+        if resolved_report_workflow is None and resolved_settings.feishu_delivery_enabled:
+            if resolved_settings.feishu_alert_chat_id is None:
+                raise SchedulerNotConfiguredError(
+                    "FEISHU_ALERT_CHAT_ID is required for the complete daily workflow"
+                )
+            if resolved_http_client is None:
+                resolved_http_client = httpx.AsyncClient()
+                owns_http_client = True
+            generation_store = PostgresReportGenerationStore(resolved_database)
+            resolved_report_workflow = DailyReportWorkflow(
+                generation_service=build_generation_service(
+                    llm=llm_client,
+                    now=now,
+                    timeout_seconds=resolved_settings.report_generation_timeout_seconds,
+                    max_attempts=resolved_settings.report_generation_max_attempts,
+                ),
+                store=generation_store,
+                report_delivery=ConfiguredFeishuDelivery(
+                    settings=resolved_settings,
+                    client=resolved_http_client,
+                    store=PostgresReportDeliveryStore(resolved_database),
+                ),
+                alert_delivery=ConfiguredFeishuAlerts(
+                    settings=resolved_settings,
+                    client=resolved_http_client,
+                    store=PostgresWorkflowAlertStore(resolved_database),
+                ),
+                model=resolved_settings.report_generation_model,
+                report_version=resolved_report_version,
+                timezone=schedule_timezone,
+                publish_hour=resolved_settings.worker_report_publish_hour_local,
+                publish_minute=resolved_settings.worker_report_publish_minute_local,
+                now=now,
+                sleeper=sleeper,
+            )
+        if resolved_settings.app_env == "production" and resolved_report_workflow is None:
+            raise SchedulerNotConfiguredError(
+                "production requires enabled Feishu report and alert delivery"
+            )
         worker = ScheduledIngestionWorker(
             tasks=registered_tasks,
             report_date_lock=PostgresReportDateLock(resolved_database),
             max_attempts=resolved_settings.worker_max_task_attempts,
             retry_delay_seconds=resolved_settings.worker_retry_delay_seconds,
             sleeper=sleeper,
+            report_workflow=resolved_report_workflow,
             input_materializer=ReportInputSnapshotMaterializer(
                 evidence_store=PostgresReportInputEvidenceStore(
                     resolved_database,
@@ -390,7 +456,9 @@ async def run_scheduler(
             await worker.backfill(resolved_backfill_start, resolved_backfill_end)
             return
         if resolved_run_once_date is not None:
-            await worker.run_for_date(resolved_run_once_date)
+            result = await worker.run_for_date(resolved_run_once_date)
+            if result.status == "retryable":
+                await worker.notify_retry_exhausted(result)
             return
         execution_time = _first_safe_run_time(
             schedule_hour=resolved_settings.worker_schedule_hour_local,
@@ -411,6 +479,8 @@ async def run_scheduler(
             max_schedule_runs=max_schedule_runs,
         )
     finally:
+        if owns_http_client and resolved_http_client is not None:
+            await resolved_http_client.aclose()
         if owns_registry:
             await resolved_registry.close()
         if owns_database:
@@ -453,6 +523,7 @@ async def _run_configured_schedule(
                     attempt_no = retry_attempts.get(report_date, 0) + 1
                     retry_attempts[report_date] = attempt_no
                     if attempt_no >= max_report_attempts:
+                        await worker.notify_retry_exhausted(result)
                         completed_dates.add(report_date)
                         next_attempt_at.pop(report_date, None)
                         continue

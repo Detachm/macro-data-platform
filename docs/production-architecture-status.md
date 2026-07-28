@@ -128,21 +128,25 @@ PostgreSQL 设计：
   dry-run 不落库，首次发送成功并保存 `message_id`，重复调用没有再次发送，数据库仅有一条
   delivery attempt。
 - PR #47 已合并并关闭 #32。
+- PR #52 已合并：新增独立预警群、红色终态告警、迁移 `0012`、永久幂等和模糊结果禁止重发；
+  真实预警群验收确认重复调用只产生一条消息和一条审计记录。
+- `macro-data-worker` 已串起 ingest → quality → generate/fallback → validate → 08:30 deliver；
+  workflow run、snapshot、report、delivery 和 alert ID 已进入结构化日志。
+- 已增加 PostgreSQL + mocked provider/LLM/Feishu 的完整链路 E2E；同一报告日期复放时只调用一次
+  LLM、只生成一份报告且只向日报群发送一次。
+- 单日手工恢复支持显式不可变 `--report-version`；同一日期/版本重放保持幂等。
 
 ### 尚未完成
 
-1. 新增 `FEISHU_ALERT_CHAT_ID` 运行时配置、预警消息合同和所有终态失败的预警群投递；现有
-   `FEISHU_CHAT_ID` 只用于正常日报。
-2. 按 #50 轮换 Beast 明文 XtQuant token，恢复并托管 `58615` 数据中心，同时扩展 HK
+1. 按 #50 轮换 Beast 明文 XtQuant token，恢复并托管 `58615` 数据中心，同时扩展 HK
    核心指数。
-3. 按 #51 补齐 CN 新闻、HK/US 日历和节假日报告策略。
-4. 实现 #33 的 ingest → quality → generate → validate → deliver 完整状态机。
-5. 实现周末/节假日宏观版，不把休市当作必需行情缺失。
-6. 按 #49 安装单节点 K3s，并落地 Namespace、Deployment、StatefulSet、Service、Job、
+2. 按 #51 补齐 CN 新闻、HK/US 日历和节假日报告策略。
+3. 实现周末/节假日宏观版，不把休市当作必需行情缺失。
+4. 按 #49 安装单节点 K3s，并落地 Namespace、Deployment、StatefulSet、Service、Job、
    CronJob、PVC 和 Secrets；当前仓库尚无 Kubernetes 清单。
-7. 增加运行相关 ID、结构化日志、指标、健康检查、终态告警和受保护运维入口。
-8. 增加 PostgreSQL + mocked providers/LLM/Feishu 的 CI E2E。
-9. 完成 provider 连续两个报告日验证和完整链路连续五个工作日 soak。
+5. 补齐 worker 专用 readiness、状态查询和经过保护的 delivery retry 运维入口；当前已有 API
+   存活/数据库就绪检查、worker 指标和结构化日志。
+6. 完成 provider 连续两个报告日验证和完整链路连续五个工作日 soak。
 
 GitHub 当前开放的生产任务是 #33、#49、#50 和 #51，分别跟踪编排、部署/存储、
 Beast/HK 行情和新闻/日历/节假日策略；不重新打开已经完成的旧 provider issue。
@@ -155,7 +159,7 @@ Beast/HK 行情和新闻/日历/节假日策略；不重新打开已经完成的
    XtQuant HK 核心指数。
 2. 完成 #51：补齐 CN 新闻、HK/US 日历及节假日报告策略。
 3. 完成 #49：安装 K3s，完成 PostgreSQL PVC、Secret、迁移和 `/archive` 备份。
-4. 完成 #33 编排、双群告警、周末策略和运维入口。
+4. 收口 #33 的 worker readiness、受保护运维入口和五工作日 soak；周末策略由 #51 提供输入。
 5. 执行 E2E、两日报告日 provider 验证和五工作日生产式 soak。
 
 只有同时满足以下条件才称为生产可用：
@@ -180,7 +184,9 @@ Beast/HK 行情和新闻/日历/节假日策略；不重新打开已经完成的
 - 在一次性 PostgreSQL 上从空库迁移至 `0012`，使用项目正式投递类执行 dry-run、真实 interactive
   card 发送和同报告重复调用。首次投递为 `succeeded`，重复调用复用同一成功记录，数据库记录数
   严格为 `1`。
+- 使用项目正式预警类向预警群发送终态测试卡片并复放，群消息和 PostgreSQL alert attempt 均严格
+  为 `1`。
 
 Chat ID、App ID、App Secret、token 和 `message_id` 不写入本文。当前本机
-`FEISHU_DELIVERY_ENABLED=false`，防止 #33 完成前开发环境自动误发；生产开关最终由 K8s Secret
+`FEISHU_DELIVERY_ENABLED=false`，防止开发环境自动误发；生产开关最终由 K8s Secret
 和部署配置控制。

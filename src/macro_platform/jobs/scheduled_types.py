@@ -48,6 +48,27 @@ class ScheduledWorkerResult:
     task_results: tuple[ScheduledTaskResult, ...]
     snapshot_id: str | None = None
     quality_status: Literal["passed", "degraded", "blocked", "retryable"] | None = None
+    workflow_run_id: UUID | None = None
+    report_id: str | None = None
+    delivery_status: str | None = None
+    alert_status: str | None = None
+    terminal_stage: str | None = None
+    error_code: str | None = None
+
+
+class ScheduledReportWorkflow(Protocol):
+    async def complete(self, result: ScheduledWorkerResult) -> ScheduledWorkerResult: ...
+
+    async def notify_retry_exhausted(
+        self, result: ScheduledWorkerResult
+    ) -> ScheduledWorkerResult: ...
+
+    async def notify_unhandled_failure(
+        self,
+        result: ScheduledWorkerResult,
+        *,
+        error_code: str,
+    ) -> ScheduledWorkerResult: ...
 
 
 class ScheduledTask(Protocol):
