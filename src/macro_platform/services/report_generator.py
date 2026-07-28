@@ -21,6 +21,7 @@ from macro_platform.services.llm import (
     LlmStructuredOutputError,
     LlmTimeoutError,
 )
+from macro_platform.services.report_input_quality import ReportInputQualityGate
 from macro_platform.services.report_validation import (
     ReportValidationError,
     ReportValidationService,
@@ -163,6 +164,7 @@ class ReportGenerationService:
         clock: Callable[[], datetime],
         prompt_builder: ReportPromptBuilder | None = None,
         validation_service: ReportValidationService | None = None,
+        quality_gate: ReportInputQualityGate | None = None,
         timeout_seconds: float = 30,
         max_attempts: int = 2,
     ) -> None:
@@ -174,6 +176,7 @@ class ReportGenerationService:
         self._clock = clock
         self._prompt_builder = prompt_builder or ReportPromptBuilder()
         self._validation_service = validation_service or ReportValidationService()
+        self._quality_gate = quality_gate or ReportInputQualityGate()
         self._timeout_seconds = timeout_seconds
         self._max_attempts = max_attempts
 
@@ -190,6 +193,31 @@ class ReportGenerationService:
         snapshot = await store.load_input_snapshot(snapshot_id)
         if snapshot is None:
             raise ReportGenerationError(f"input snapshot does not exist: {snapshot_id}")
+        quality = self._quality_gate.evaluate(snapshot)
+        if quality.status in {"blocked", "retryable"}:
+            attempt = ReportGenerationAttempt(
+                generation_id=_generation_id(),
+                report_id=report_id,
+                report_version=report_version,
+                input_snapshot_id=snapshot.snapshot_id,
+                lifecycle_status="failed",
+                prompt_version=self._prompt_builder.prompt_version,
+                model=model,
+                model_parameters=dict(parameters),
+                input_fingerprint_sha256=snapshot.fingerprint_sha256,
+                source_ref_ids=_attempt_source_ref_ids(snapshot),
+                error_code=(
+                    "REPORT_INPUT_QUALITY_BLOCKED"
+                    if quality.status == "blocked"
+                    else "REPORT_INPUT_QUALITY_RETRYABLE"
+                ),
+            )
+            if not await store.put_generation_attempt(attempt):
+                raise ReportGenerationError(
+                    "report generation already exists; use a new report ID, version, "
+                    "and input snapshot"
+                )
+            return ReportGenerationResult(report=None, attempt=attempt)
         request = self._prompt_builder.build(
             snapshot,
             model=model,
@@ -426,6 +454,21 @@ def _source_references(
     if len(set(source_ref_ids)) != len(source_ref_ids):
         raise ReportGenerationError("input snapshot source_ref_ids must be unique")
     return references
+
+
+def _attempt_source_ref_ids(snapshot: ReportInputSnapshot) -> list[str]:
+    """Read auditable source references without building an LLM request.
+
+    A blocked snapshot must never reach ``ReportPromptBuilder``.  Its attempt
+    still records any already-materialized source IDs for operator diagnosis.
+    """
+
+    source_ref_ids = snapshot.payload.get("source_ref_ids")
+    if not isinstance(source_ref_ids, list) or not all(
+        isinstance(source_ref_id, str) for source_ref_id in source_ref_ids
+    ):
+        return []
+    return list(source_ref_ids)
 
 
 def _scheduled_publish_at(snapshot: ReportInputSnapshot) -> datetime:

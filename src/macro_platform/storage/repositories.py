@@ -837,6 +837,8 @@ class ScheduledTaskCheckpoint:
     run_id: UUID | None
     records_accepted: int
     records_rejected: int
+    lease_epoch: int
+    lease_owner_id: UUID | None
 
 
 class ScheduledTaskCheckpointRepository:
@@ -854,8 +856,9 @@ class ScheduledTaskCheckpointRepository:
         dataset: Dataset,
         region: str,
         request_as_of: datetime,
+        lease_owner_id: UUID,
     ) -> ScheduledTaskCheckpoint:
-        await self._session.execute(
+        claimed = await self._session.execute(
             insert(ScheduledTaskCheckpointRow)
             .values(
                 report_date=report_date,
@@ -867,15 +870,25 @@ class ScheduledTaskCheckpointRepository:
                 status="active",
                 records_accepted=0,
                 records_rejected=0,
+                lease_epoch=1,
+                lease_owner_id=lease_owner_id,
             )
-            .on_conflict_do_nothing(
+            .on_conflict_do_update(
                 index_elements=(
                     ScheduledTaskCheckpointRow.report_date,
                     ScheduledTaskCheckpointRow.task_id,
-                )
+                ),
+                set_={
+                    "lease_epoch": ScheduledTaskCheckpointRow.lease_epoch + 1,
+                    "lease_owner_id": lease_owner_id,
+                },
+                where=ScheduledTaskCheckpointRow.status == "active",
             )
+            .returning(ScheduledTaskCheckpointRow)
         )
-        row = await self._session.get(ScheduledTaskCheckpointRow, (report_date, task_id))
+        row = claimed.scalar_one_or_none()
+        if row is None:
+            row = await self._session.get(ScheduledTaskCheckpointRow, (report_date, task_id))
         if row is None:
             raise RuntimeError("scheduled task checkpoint was not persisted")
         if (
@@ -905,6 +918,8 @@ class ScheduledTaskCheckpointRepository:
                 ScheduledTaskCheckpointRow.report_date == checkpoint.report_date,
                 ScheduledTaskCheckpointRow.task_id == checkpoint.task_id,
                 ScheduledTaskCheckpointRow.status == "active",
+                ScheduledTaskCheckpointRow.lease_epoch == checkpoint.lease_epoch,
+                ScheduledTaskCheckpointRow.lease_owner_id == checkpoint.lease_owner_id,
             )
             .values(
                 status="completed" if completed else "active",
@@ -938,6 +953,8 @@ def _scheduled_task_checkpoint(row: ScheduledTaskCheckpointRow) -> ScheduledTask
         run_id=row.run_id,
         records_accepted=row.records_accepted,
         records_rejected=row.records_rejected,
+        lease_epoch=row.lease_epoch,
+        lease_owner_id=row.lease_owner_id,
     )
 
 

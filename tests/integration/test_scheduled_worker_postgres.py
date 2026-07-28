@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from alembic import command
@@ -14,6 +15,7 @@ from sqlalchemy import func, select
 from testcontainers.postgres import PostgresContainer
 
 from macro_platform.contracts.common import AssetClass, AvailabilityBasis, Region, SourceRef
+from macro_platform.contracts.macro import MacroRelease
 from macro_platform.contracts.market import (
     Adjustment,
     Instrument,
@@ -21,8 +23,16 @@ from macro_platform.contracts.market import (
     Interval,
     MarketBar,
 )
-from macro_platform.contracts.provider import Dataset, IngestJobRequest, IngestJobResult
+from macro_platform.contracts.provider import (
+    Dataset,
+    FetchContext,
+    IngestJobRequest,
+    IngestJobResult,
+    ProviderCapabilities,
+    ProviderPage,
+)
 from macro_platform.jobs.ingestion_checkpoint import CommittedPage, IngestionCheckpointService
+from macro_platform.jobs.news_macro_ingestion import MacroReleaseIngestHandler, NewsIngestHandler
 from macro_platform.jobs.runner import IngestionExecutionContext, JobRunner
 from macro_platform.jobs.scheduler import (
     CheckpointedScheduledTask,
@@ -37,9 +47,16 @@ from macro_platform.services.report_input_materializer import (
     ReportInputSnapshotMaterializer,
 )
 from macro_platform.storage.database import Database
-from macro_platform.storage.models import MarketBarRow, ReportInputSnapshotRow
+from macro_platform.storage.models import (
+    MacroReleaseRow,
+    MacroSeriesRow,
+    MarketBarRow,
+    NewsEventRow,
+    ReportInputSnapshotRow,
+)
 from macro_platform.storage.repositories import IngestionCheckpointRepository
 from macro_platform.storage.unit_of_work import UnitOfWork
+from tests.helpers import news_event
 
 pytestmark = pytest.mark.integration
 
@@ -97,6 +114,179 @@ async def test_job_029_postgres_advisory_lock_excludes_the_second_worker(
     finally:
         await first_database.dispose()
         await second_database.dispose()
+
+
+async def test_job_029_reclaimed_checkpoint_fences_a_stale_worker(database: Database) -> None:
+    checkpoint_store = PostgresScheduledTaskCheckpointStore(database)
+    report_date = date(2026, 8, 3)
+    original = await checkpoint_store.begin_or_load(
+        report_date=report_date,
+        task_id="cn.daily-bars.fence",
+        provider_role="cn.bars.primary",
+        dataset=Dataset.BARS,
+        region=Region.CN.value,
+        request_as_of=NOW + timedelta(days=1),
+        lease_owner_id=uuid4(),
+    )
+    runner = JobRunner(_ThreePageHandler(), database=database, now=lambda: NOW)
+    result = await runner.execute(_request(report_date, original.request_as_of, None))
+    reclaimed = await checkpoint_store.begin_or_load(
+        report_date=report_date,
+        task_id="cn.daily-bars.fence",
+        provider_role="cn.bars.primary",
+        dataset=Dataset.BARS,
+        region=Region.CN.value,
+        request_as_of=NOW + timedelta(days=1),
+        lease_owner_id=uuid4(),
+    )
+
+    assert reclaimed.lease_epoch == original.lease_epoch + 1
+    assert reclaimed.lease_owner_id != original.lease_owner_id
+    with pytest.raises(RuntimeError, match="lost before it advanced"):
+        await checkpoint_store.advance(
+            original,
+            run_id=result.run_id,
+            next_cursor=result.next_cursor,
+            source_watermark=result.source_watermark,
+            records_accepted=result.records_accepted,
+            records_rejected=result.records_rejected,
+        )
+
+    advanced = await checkpoint_store.advance(
+        reclaimed,
+        run_id=result.run_id,
+        next_cursor=result.next_cursor,
+        source_watermark=result.source_watermark,
+        records_accepted=result.records_accepted,
+        records_rejected=result.records_rejected,
+    )
+    assert advanced.status == "active"
+    assert advanced.lease_epoch == reclaimed.lease_epoch
+
+
+async def test_job_029_checkpointed_calendar_and_headline_tasks_persist_facts(
+    database: Database,
+) -> None:
+    release_source = SourceRef(
+        provider_id="job-029.release-provider",
+        provider_record_id="calendar-row-1",
+        source_name="Test release calendar",
+        source_url="https://example.com/calendar/1",
+        retrieved_at=NOW,
+        checksum_sha256="c" * 64,
+    )
+    release = MacroRelease(
+        release_id="job-029-release-1",
+        series_id="macro:CN:TEST:release_calendar",
+        region=Region.CN,
+        release_name="Test calendar release",
+        scheduled_at=NOW + timedelta(days=1),
+        available_at=NOW,
+        period_start=date(2026, 7, 1),
+        period_end=date(2026, 7, 31),
+        unit="index",
+        status="scheduled",
+        source=release_source,
+    )
+    news = news_event().model_copy(
+        update={
+            "news_id": "job-029-news-1",
+            "regions": [Region.HK],
+            "source": SourceRef(
+                provider_id="job-029.news-provider",
+                provider_record_id="headline-row-1",
+                source_name="Test official headlines",
+                source_url="https://example.com/headline/1",
+                retrieved_at=NOW,
+                checksum_sha256="d" * 64,
+            ),
+        }
+    )
+
+    class _ReleaseProvider:
+        def capabilities(self) -> ProviderCapabilities:
+            return ProviderCapabilities(
+                provider_id=release_source.provider_id,
+                regions={Region.CN},
+                datasets={Dataset.MACRO_RELEASES},
+                max_page_size=1000,
+                supports_point_in_time=False,
+                supports_revisions=False,
+                supports_full_text=False,
+                external_llm_allowed=True,
+            )
+
+        async def fetch_macro_releases(
+            self, _query: object, _context: FetchContext
+        ) -> ProviderPage[MacroRelease]:
+            return ProviderPage(items=[release], fetched_at=NOW, complete=True)
+
+    class _NewsProvider:
+        def capabilities(self) -> ProviderCapabilities:
+            return ProviderCapabilities(
+                provider_id=news.source.provider_id,
+                regions={Region.HK},
+                datasets={Dataset.NEWS},
+                max_page_size=1000,
+                supports_point_in_time=False,
+                supports_revisions=False,
+                supports_full_text=False,
+                external_llm_allowed=True,
+            )
+
+        async def fetch_news(self, _query: object, _context: FetchContext) -> ProviderPage[object]:
+            return ProviderPage(items=[news], fetched_at=NOW, complete=True)
+
+    request_as_of = NOW + timedelta(days=1)
+    release_result = await JobRunner(
+        MacroReleaseIngestHandler(
+            _ReleaseProvider(),
+            provider_role="cn.macro.primary",
+            region=Region.CN,
+            timeout_seconds=30,
+            now=lambda: NOW,
+        ),
+        database=database,
+        now=lambda: NOW,
+    ).execute(
+        IngestJobRequest(
+            provider_role="cn.macro.primary",
+            dataset=Dataset.MACRO_RELEASES,
+            regions={Region.CN},
+            start=NOW,
+            end=NOW + timedelta(days=8),
+            as_of=request_as_of,
+        )
+    )
+    news_result = await JobRunner(
+        NewsIngestHandler(
+            _NewsProvider(),  # type: ignore[arg-type]
+            provider_role="hk.news.primary",
+            region=Region.HK,
+            timeout_seconds=30,
+            now=lambda: NOW,
+        ),
+        database=database,
+        now=lambda: NOW,
+    ).execute(
+        IngestJobRequest(
+            provider_role="hk.news.primary",
+            dataset=Dataset.NEWS,
+            regions={Region.HK},
+            start=NOW - timedelta(days=1),
+            end=NOW + timedelta(days=1),
+            as_of=request_as_of,
+        )
+    )
+
+    assert (release_result.records_inserted, news_result.records_inserted) == (1, 1)
+    async with database.session() as session:
+        stored_release = await session.get(MacroReleaseRow, release.release_id)
+        stored_series = await session.get(MacroSeriesRow, release.series_id)
+        stored_news = await session.get(NewsEventRow, news.news_id)
+    assert stored_release is not None
+    assert stored_series is not None
+    assert stored_news is not None
 
 
 NOW = datetime(2026, 7, 28, 0, 0, tzinfo=UTC)
@@ -259,6 +449,7 @@ async def test_job_029_postgres_worker_resumes_pages_materializes_quality_and_ba
         dataset=Dataset.BARS,
         region=Region.CN.value,
         request_as_of=NOW + timedelta(days=1),
+        lease_owner_id=uuid4(),
     )
     first_result = await runner.execute(
         _request(REPORT_DATE, first_checkpoint.request_as_of, first_checkpoint.next_cursor)
@@ -323,7 +514,16 @@ async def test_job_029_postgres_worker_resumes_pages_materializes_quality_and_ba
         bar_count = await session.scalar(
             select(func.count())
             .select_from(MarketBarRow)
-            .where(MarketBarRow.provider_id == _ThreePageHandler.provider_id)
+            .where(
+                MarketBarRow.provider_id == _ThreePageHandler.provider_id,
+                MarketBarRow.trading_date.in_(
+                    [
+                        REPORT_DATE - timedelta(days=1),
+                        REPORT_DATE,
+                        REPORT_DATE + timedelta(days=1),
+                    ]
+                ),
+            )
         )
         snapshot_dates = (
             await session.scalars(

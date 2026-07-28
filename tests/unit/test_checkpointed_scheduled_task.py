@@ -69,6 +69,7 @@ class _CheckpointStore:
         dataset: Dataset,
         region: str,
         request_as_of: datetime,
+        lease_owner_id: UUID,
     ) -> ScheduledTaskCheckpoint:
         assert (report_date, task_id, provider_role, dataset, region) == (
             REPORT_DATE,
@@ -77,6 +78,7 @@ class _CheckpointStore:
             Dataset.BARS,
             Region.US.value,
         )
+        assert lease_owner_id
         return self.checkpoint
 
     async def advance(
@@ -120,6 +122,8 @@ def _checkpoint(*, cursor: str | None = None, completed: bool = False) -> Schedu
         run_id=None,
         records_accepted=0,
         records_rejected=0,
+        lease_epoch=1,
+        lease_owner_id=uuid4(),
     )
 
 

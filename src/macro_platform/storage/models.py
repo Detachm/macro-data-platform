@@ -375,6 +375,8 @@ class ScheduledTaskCheckpointRow(Base):
     )
     records_accepted: Mapped[int] = mapped_column(Integer, default=0)
     records_rejected: Mapped[int] = mapped_column(Integer, default=0)
+    lease_epoch: Mapped[int] = mapped_column(BigInteger, default=1)
+    lease_owner_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

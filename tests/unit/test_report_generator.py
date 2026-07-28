@@ -225,6 +225,43 @@ async def test_rpt_030_generation_retries_timeout_and_records_trace() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("input_status", "error_code"),
+    [
+        ("missing", "REPORT_INPUT_QUALITY_BLOCKED"),
+        ("quarantined", "REPORT_INPUT_QUALITY_BLOCKED"),
+        ("retryable", "REPORT_INPUT_QUALITY_RETRYABLE"),
+    ],
+)
+async def test_rpt_029_quality_gate_rejects_required_input_before_calling_llm(
+    input_status: str, error_code: str
+) -> None:
+    snapshot = _snapshot().model_copy(deep=True)
+    snapshot.payload["input_quality"]["market.us.core_indices.previous_close"] = {
+        "status": input_status,
+        "required": True,
+        "reason": "scheduled quality evidence requires a stop",
+    }
+    llm = _FakeLlm([AssertionError("quality-blocked snapshot must not reach the LLM")])
+    store = _FakeReportStore(snapshot)
+
+    result = await ReportGenerationService(llm, clock=lambda: NOW).generate(
+        store,
+        snapshot_id=snapshot.snapshot_id,
+        report_id=f"daily-report-quality-{input_status}",
+        report_version="v1",
+        model="test-model",
+        parameters={},
+    )
+
+    assert result.report is None
+    assert result.attempt.lifecycle_status == "failed"
+    assert result.attempt.error_code == error_code
+    assert result.attempt.source_ref_ids == snapshot.payload["source_ref_ids"]
+    assert llm.requests == []
+
+
+@pytest.mark.asyncio
 async def test_rpt_030_malformed_output_is_persisted_as_failed() -> None:
     snapshot = _snapshot()
     llm = _FakeLlm(

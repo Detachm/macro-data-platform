@@ -3,9 +3,10 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -14,6 +15,7 @@ from macro_platform.jobs.scheduler import (
     ScheduledIngestionWorker,
     ScheduledTaskResult,
     SchedulerNotConfiguredError,
+    _run_configured_schedule,
     run_scheduler,
 )
 from macro_platform.services.report_input_quality import (
@@ -377,6 +379,42 @@ async def test_job_029_worker_persists_materialized_gate_evidence_and_blocks_the
 async def test_job_029_worker_entrypoint_fails_closed_without_registered_schedule() -> None:
     with pytest.raises(SchedulerNotConfiguredError, match="not configured"):
         await run_scheduler()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first_status", ["retryable", "blocked", "locked"])
+async def test_job_029_configured_schedule_retries_nonterminal_report_dates(
+    first_status: str,
+) -> None:
+    report_date = date(2026, 7, 27)
+    clock = {"now": datetime(2026, 7, 27, 8, 0, tzinfo=UTC)}
+
+    class _Worker:
+        def __init__(self) -> None:
+            self.report_dates: list[date] = []
+
+        async def run_for_date(self, value: date) -> object:
+            self.report_dates.append(value)
+            status = first_status if len(self.report_dates) == 1 else "succeeded"
+            return SimpleNamespace(status=status)
+
+    async def advance_clock(delay: float) -> None:
+        clock["now"] += timedelta(seconds=delay)
+
+    worker = _Worker()
+    await _run_configured_schedule(
+        worker,  # type: ignore[arg-type]
+        timezone=ZoneInfo("UTC"),
+        hour=8,
+        minute=0,
+        poll_seconds=1,
+        now=lambda: clock["now"],
+        sleeper=advance_clock,
+        retry_delay_seconds=1,
+        max_schedule_runs=2,
+    )
+
+    assert worker.report_dates == [report_date, report_date]
 
 
 async def _record_delay(delays: list[float], delay: float) -> None:

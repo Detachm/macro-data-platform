@@ -5,11 +5,15 @@ from datetime import UTC, date, datetime
 
 import pytest
 
+from macro_platform.contracts.common import Region
 from macro_platform.jobs.scheduler import ScheduledTaskResult
+from macro_platform.services.report_generator import ReportPromptBuilder
 from macro_platform.services.report_input_materializer import (
     InputQualityEvidence,
     MaterializedReportInput,
     ReportInputSnapshotMaterializer,
+    WeekdayMarketSessionCalendar,
+    _unexpected_trading_dates,
 )
 from macro_platform.storage.reporting import ReportInputSnapshot
 
@@ -119,5 +123,45 @@ async def test_rpt_029_materializer_derives_quality_and_persists_an_immutable_sn
         result.snapshot.payload["input_quality"]["market.cn.core_indices.previous_close"]["status"]
         == "available"
     )
+    assert result.snapshot.payload["source_ref_ids"] == ["source-cn-1"]
+    assert result.snapshot.payload["editor_context"] == {
+        "facts": result.snapshot.payload["facts"],
+        "source_references": result.snapshot.payload["source_references"],
+        "input_quality": result.snapshot.payload["input_quality"],
+    }
+    prompt = ReportPromptBuilder().build(result.snapshot, model="test-model", parameters={})
+    assert prompt.source_ref_ids == ["source-cn-1"]
+    assert prompt.input_payload["editor_context"] == result.snapshot.payload["editor_context"]
     assert "usage_rights" not in result.snapshot.payload
     assert snapshot_store.saved == [result.snapshot]
+
+
+@pytest.mark.parametrize(
+    ("report_date", "expected_session"),
+    [
+        (date(2026, 7, 28), date(2026, 7, 27)),
+        (date(2026, 7, 27), date(2026, 7, 24)),
+        (date(2026, 7, 26), date(2026, 7, 24)),
+    ],
+)
+def test_rpt_029_weekday_market_calendar_uses_the_previous_effective_session(
+    report_date: date, expected_session: date
+) -> None:
+    assert (
+        WeekdayMarketSessionCalendar().previous_session(
+            region=Region.CN,
+            report_date=report_date,
+        )
+        == expected_session
+    )
+
+
+def test_rpt_029_recent_retrieval_cannot_mask_an_old_market_trading_session() -> None:
+    expected_session = date(2026, 7, 27)
+
+    stale_dates = _unexpected_trading_dates(
+        (date(2026, 7, 24), date(2026, 7, 24), date(2026, 7, 24)),
+        expected_trading_date=expected_session,
+    )
+
+    assert stale_dates == [date(2026, 7, 24)]

@@ -6,11 +6,14 @@ import pytest
 from pydantic import SecretStr
 
 from macro_platform.config import Settings
+from macro_platform.contracts.provider import Dataset
 from macro_platform.jobs.scheduler import build_registered_tasks
 from macro_platform.providers.cn.baostock import (
     BaoStockDailyBarsProvider,
     register_cn_baostock_provider_roles,
 )
+from macro_platform.providers.cn.live import CnNbsReleaseProvider
+from macro_platform.providers.hk.live import HkmaPressReleaseProvider
 from macro_platform.providers.hk.xtquant import (
     HkXtQuantDailyBarsProvider,
     register_hk_xtquant_provider_roles,
@@ -27,7 +30,7 @@ NOW = datetime(2026, 7, 28, 0, 0, tzinfo=UTC)
 
 
 @pytest.mark.asyncio
-async def test_job_029_registers_only_reviewed_live_daily_bar_tasks() -> None:
+async def test_job_029_registers_all_available_reviewed_live_tasks() -> None:
     registry = ProviderRegistry()
     register_cn_baostock_provider_roles(
         registry,
@@ -45,6 +48,14 @@ async def test_job_029_registers_only_reviewed_live_daily_bar_tasks() -> None:
             cursor_signing_secret="test-cursor-secret",
         ),
     )
+    cn_macro = CnNbsReleaseProvider(cursor_signing_secret="test-cursor-secret")
+    registry.register(cn_macro)
+    registry.bind_role(
+        "cn.macro.primary", cn_macro.provider_id, required_dataset=Dataset.MACRO_RELEASES
+    )
+    hk_news = HkmaPressReleaseProvider(cursor_signing_secret="test-cursor-secret")
+    registry.register(hk_news)
+    registry.bind_role("hk.news.primary", hk_news.provider_id, required_dataset=Dataset.NEWS)
     database = Database("postgresql+asyncpg://macro:macro@127.0.0.1:5432/macro_data")
     try:
         tasks = build_registered_tasks(
@@ -58,6 +69,8 @@ async def test_job_029_registers_only_reviewed_live_daily_bar_tasks() -> None:
             ("cn.daily-bars", "cn.bars.primary"),
             ("hk.daily-bars", "hk.bars.primary"),
             ("us.daily-bars", "us.market.primary"),
+            ("cn.macro-release-calendar", "cn.macro.primary"),
+            ("hk.official-headlines", "hk.news.primary"),
         ]
     finally:
         await registry.close()
