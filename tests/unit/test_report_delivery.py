@@ -561,9 +561,9 @@ async def test_configured_feishu_delivery_rejects_disabled_configuration() -> No
 
 
 def test_feishu_settings_are_required_only_when_delivery_is_enabled() -> None:
-    assert Settings().feishu_delivery_enabled is False
+    assert Settings(_env_file=None).feishu_delivery_enabled is False
     with pytest.raises(ValueError, match="FEISHU_APP_ID"):
-        Settings(feishu_delivery_enabled=True)
+        Settings(_env_file=None, feishu_delivery_enabled=True)
     with pytest.raises(ValueError, match="must use HTTPS"):
         Settings(
             feishu_delivery_enabled=True,

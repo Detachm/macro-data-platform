@@ -177,7 +177,7 @@ Beast/HK 行情和新闻/日历/节假日策略；不重新打开已经完成的
   输出布尔状态，不输出 Secret 或 token。
 - 新应用 `tenant_access_token` 鉴权返回 HTTP `200`、业务码 `0`，token 有效期 `7200` 秒。
 - 新建日报群与预警群并加入授权用户；两个群的测试消息均返回业务码 `0` 和 `message_id`。
-- 在一次性 PostgreSQL 上从空库迁移至 `0011`，使用项目正式投递类执行 dry-run、真实 interactive
+- 在一次性 PostgreSQL 上从空库迁移至 `0012`，使用项目正式投递类执行 dry-run、真实 interactive
   card 发送和同报告重复调用。首次投递为 `succeeded`，重复调用复用同一成功记录，数据库记录数
   严格为 `1`。
 

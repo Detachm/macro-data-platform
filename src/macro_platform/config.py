@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     worker_schedule_poll_seconds: int = Field(default=60, ge=1, le=3600)
     worker_report_cutoff_hour_local: int = Field(default=8, ge=0, le=23)
     worker_report_cutoff_minute_local: int = Field(default=15, ge=0, le=59)
+    worker_report_publish_hour_local: int = Field(default=8, ge=0, le=23)
+    worker_report_publish_minute_local: int = Field(default=30, ge=0, le=59)
     worker_bar_lookback_days: int = Field(default=14, ge=7, le=366)
     worker_max_task_attempts: int = Field(default=3, ge=1, le=10)
     worker_max_report_attempts: int = Field(default=3, ge=1, le=10)
@@ -53,6 +55,7 @@ class Settings(BaseSettings):
     feishu_app_id: str | None = None
     feishu_app_secret: SecretStr | None = None
     feishu_chat_id: str | None = None
+    feishu_alert_chat_id: str | None = None
     feishu_api_base_url: str = "https://open.feishu.cn"
     feishu_timeout_seconds: int = Field(default=15, ge=1, le=300)
     feishu_delivery_max_attempts: int = Field(default=3, ge=1, le=5)
@@ -68,6 +71,14 @@ class Settings(BaseSettings):
             self.worker_report_cutoff_minute_local,
         ):
             raise ValueError("WORKER_SCHEDULE time must be before WORKER_REPORT_CUTOFF")
+        if time(
+            self.worker_report_cutoff_hour_local,
+            self.worker_report_cutoff_minute_local,
+        ) >= time(
+            self.worker_report_publish_hour_local,
+            self.worker_report_publish_minute_local,
+        ):
+            raise ValueError("WORKER_REPORT_CUTOFF time must be before WORKER_REPORT_PUBLISH")
         if (
             self.app_env == "production"
             and self.service_token.get_secret_value() == "development-only-token"

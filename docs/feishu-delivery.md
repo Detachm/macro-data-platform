@@ -29,6 +29,17 @@ HTTP client，并构造每次状态变更独立提交的 `PostgresReportDelivery
 `ConfiguredFeishuDelivery(settings=..., client=..., store=...).deliver(...)` 执行投递，
 使目标群、超时、重试次数和持久化边界始终来自运行时组合根。
 
+## 独立预警群
+
+#33 使用 `FEISHU_ALERT_CHAT_ID` 指向与日报群不同的私有群。终态失败预警通过
+`ConfiguredFeishuAlerts` 投递红色卡片，包含报告日期、workflow run ID、阶段、稳定错误码、
+provider run IDs 和安全重试指引。预警记录持久化在 `workflow_alert_attempts`（迁移 `0012`）：
+
+- 幂等范围为 workflow run、报告日期、失败阶段、错误码和预警目标群。
+- 发送前提交 `pending`，成功后保存 `message_id`；重复调用复用既有记录。
+- 只对明确限流执行有界重试；模糊结果标记为 `uncertain`，禁止自动重发。
+- 正常日报永远只使用 `FEISHU_CHAT_ID`，预警永远只使用 `FEISHU_ALERT_CHAT_ID`。
+
 ## 联调前由部署方完成
 
 1. 在飞书开放平台创建或选用一个自建应用，启用机器人能力与“以应用身份发送消息”权限。
@@ -41,6 +52,7 @@ HTTP client，并构造每次状态变更独立提交的 `PostgresReportDelivery
    FEISHU_APP_ID=cli_xxx
    FEISHU_APP_SECRET=...
    FEISHU_CHAT_ID=oc_xxx
+   FEISHU_ALERT_CHAT_ID=oc_xxx
    FEISHU_API_BASE_URL=https://open.feishu.cn
    FEISHU_TIMEOUT_SECONDS=15
    FEISHU_DELIVERY_MAX_ATTEMPTS=3
