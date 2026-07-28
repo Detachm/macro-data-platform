@@ -1,33 +1,60 @@
-from __future__ import annotations
+"""Compatibility façade for the scheduled-ingestion subsystem.
 
-import asyncio
-import signal
+The public names remain stable for workers and tests.  Runtime composition,
+durable task checkpointing, and date-level orchestration live in focused
+modules so each has one operational responsibility.
+"""
 
-import structlog
+from macro_platform.jobs.scheduled_cli import main
+from macro_platform.jobs.scheduled_runtime import (
+    _first_safe_run_time,
+    _run_configured_schedule,
+    build_registered_tasks,
+    run_scheduler,
+)
+from macro_platform.jobs.scheduled_tasks import (
+    CheckpointedScheduledTask,
+    PostgresScheduledTaskCheckpointStore,
+)
+from macro_platform.jobs.scheduled_types import (
+    ReportInputMaterializer,
+    ScheduledRequestFactory,
+    ScheduledTask,
+    ScheduledTaskCheckpointStore,
+    ScheduledTaskExecutor,
+    ScheduledTaskResult,
+    ScheduledTaskStatus,
+    ScheduledWorkerResult,
+    ScheduledWorkerStatus,
+)
+from macro_platform.jobs.scheduled_worker import (
+    PostgresReportDateLock,
+    ReportDateLock,
+    RetryableScheduledTaskError,
+    ScheduledIngestionWorker,
+    SchedulerNotConfiguredError,
+)
 
-from macro_platform.config import get_settings
-from macro_platform.observability import configure_logging
-
-
-async def run_scheduler() -> None:
-    """Idle scheduler shell; regional job registration lands in dedicated issues."""
-
-    logger = structlog.get_logger("scheduler")
-    stop = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for signal_name in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(signal_name, stop.set)
-
-    await logger.ainfo("scheduler_started", registered_jobs=0)
-    await stop.wait()
-    await logger.ainfo("scheduler_stopped")
-
-
-def main() -> None:
-    settings = get_settings()
-    configure_logging(settings.log_level)
-    asyncio.run(run_scheduler())
-
-
-if __name__ == "__main__":
-    main()
+__all__ = [
+    "CheckpointedScheduledTask",
+    "PostgresReportDateLock",
+    "PostgresScheduledTaskCheckpointStore",
+    "ReportDateLock",
+    "ReportInputMaterializer",
+    "RetryableScheduledTaskError",
+    "ScheduledIngestionWorker",
+    "ScheduledRequestFactory",
+    "ScheduledTask",
+    "ScheduledTaskCheckpointStore",
+    "ScheduledTaskExecutor",
+    "ScheduledTaskResult",
+    "ScheduledTaskStatus",
+    "ScheduledWorkerResult",
+    "ScheduledWorkerStatus",
+    "SchedulerNotConfiguredError",
+    "_first_safe_run_time",
+    "_run_configured_schedule",
+    "build_registered_tasks",
+    "main",
+    "run_scheduler",
+]

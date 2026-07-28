@@ -234,6 +234,66 @@ def test_rpt_031_required_quality_input_cannot_be_downgraded() -> None:
     }
 
 
+def test_rpt_029_retryable_required_input_blocks_until_the_worker_recovers() -> None:
+    payload = _success_payload()
+    base_snapshot = _snapshot()
+    snapshot = base_snapshot.model_copy(
+        update={
+            "payload": {
+                **base_snapshot.payload,
+                "input_quality": {
+                    **base_snapshot.payload["input_quality"],
+                    "market.hk.core_indices.previous_close": {
+                        "status": "retryable",
+                        "required": True,
+                        "reason": "provider retry budget is not exhausted",
+                    },
+                },
+            }
+        }
+    )
+
+    result = ReportValidator().validate(_stored_report(payload), snapshot)
+
+    assert not result.publishable
+    assert {issue.code for issue in result.issues} == {"RETRYABLE_REQUIRED_INPUT"}
+
+
+def test_rpt_029_fallback_exposes_optional_revision_in_data_quality() -> None:
+    snapshot = _snapshot()
+    revised_snapshot = snapshot.model_copy(
+        update={
+            "payload": {
+                **snapshot.payload,
+                "input_quality": {
+                    **snapshot.payload["input_quality"],
+                    "market.us.vix": {
+                        "status": "revised",
+                        "required": False,
+                        "reason": "provider corrected the close",
+                    },
+                },
+            }
+        }
+    )
+
+    report = ReportFallbackBuilder().build(
+        revised_snapshot,
+        report_id="daily-report-fallback-revised",
+        report_version="fallback-v1",
+        generated_at=NOW,
+    )
+
+    assert report.status == "degraded"
+    assert report.payload["data_quality"]["revised_inputs"] == [
+        {
+            "input_id": "market.us.vix",
+            "reason_code": "REVISED_OPTIONAL_INPUT",
+            "reason": "provider corrected the close",
+        }
+    ]
+
+
 def test_rpt_031_fallback_is_deterministic_when_validated_facts_are_sufficient() -> None:
     snapshot = _snapshot()
 
@@ -305,6 +365,33 @@ def test_rpt_031_fallback_fails_closed_when_required_input_is_missing() -> None:
     assert report.status == "incomplete"
     assert report.publication_decision == "not_published"
     assert not ReportValidator().validate(report, blocked_snapshot).publishable
+
+
+def test_rpt_029_fallback_fails_closed_when_snapshot_has_no_materialized_facts() -> None:
+    snapshot = _snapshot()
+    blocked_snapshot = snapshot.model_copy(
+        update={
+            "fact_ids": [],
+            "payload": {**snapshot.payload, "fact_ids": [], "facts": []},
+        }
+    )
+
+    report = ReportFallbackBuilder().build(
+        blocked_snapshot,
+        report_id="daily-report-fallback-no-facts",
+        report_version="fallback-v1",
+        generated_at=NOW,
+    )
+
+    assert report.status == "incomplete"
+    assert report.publication_decision == "not_published"
+    assert report.payload["data_quality"]["unavailable_inputs"] == [
+        {
+            "input_id": "report.facts",
+            "reason_code": "REQUIRED_FACTS_UNAVAILABLE",
+            "reason": "approved input snapshot contains no materialized report facts",
+        }
+    ]
 
 
 async def test_rpt_031_validation_service_persists_validated_state() -> None:

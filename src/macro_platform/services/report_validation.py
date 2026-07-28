@@ -16,23 +16,11 @@ from macro_platform.contracts.report import (
     ReportStatus,
     ReportValidationIssue,
 )
+from macro_platform.services.report_input_quality import (
+    QualityGateIssue,
+    ReportInputQualityGate,
+)
 from macro_platform.storage.reporting import ReportInputSnapshot, StoredDailyReport
-
-REQUIRED_REPORT_INPUT_IDS = frozenset(
-    {
-        "market.cn.core_indices.previous_close",
-        "news.cn.official_headlines_24h",
-        "market.hk.core_indices.previous_close",
-        "news.hk.official_headlines_24h",
-        "market.us.core_indices.previous_close",
-        "calendar.macro_releases_7d",
-    }
-)
-
-_BLOCKING_INPUT_STATUSES = frozenset(
-    {"missing", "stale", "late", "unavailable", "denied", "quarantined", "invalid"}
-)
-_KNOWN_INPUT_STATUSES = _BLOCKING_INPUT_STATUSES | {"available", "revised"}
 
 
 @dataclass(frozen=True)
@@ -148,7 +136,6 @@ class ReportValidator:
         facts = _load_facts(snapshot)
         source_records = _load_source_records(snapshot)
         snapshot_source_ids = frozenset(source_records)
-        issues.extend(_required_input_issues(snapshot))
         issues.extend(_quality_issues(snapshot))
 
         for source in _report_source_references(typed_report):
@@ -373,7 +360,7 @@ class ReportFallbackBuilder:
         generation_id: UUID | None = None,
     ) -> StoredDailyReport:
         raw_facts = _raw_facts(snapshot)
-        quality_issues = [*_required_input_issues(snapshot), *_quality_issues(snapshot)]
+        quality_issues = _quality_issues(snapshot)
         has_blocking_issue = any(issue.severity == "error" for issue in quality_issues)
         status: ReportStatus = (
             "incomplete" if has_blocking_issue else ("degraded" if quality_issues else "complete")
@@ -643,40 +630,6 @@ def _source_record(source: ReportSourceReference | dict[str, Any]) -> dict[str, 
     }
 
 
-def _required_input_issues(snapshot: ReportInputSnapshot) -> list[ReportValidationIssue]:
-    raw_quality = snapshot.payload.get("input_quality", {})
-    if not isinstance(raw_quality, dict):
-        raw_quality = {}
-    issues = [
-        ReportValidationIssue(
-            code="REQUIRED_INPUT_UNAVAILABLE",
-            message="required report input has no quality-gate result",
-            input_id=input_id,
-        )
-        for input_id in sorted(REQUIRED_REPORT_INPUT_IDS)
-        if not isinstance(raw_quality.get(input_id), dict)
-    ]
-    issues.extend(
-        ReportValidationIssue(
-            code="REQUIRED_INPUT_DECLARATION_INVALID",
-            message="required report input cannot be downgraded to optional",
-            input_id=input_id,
-        )
-        for input_id in sorted(REQUIRED_REPORT_INPUT_IDS)
-        if isinstance(raw_quality.get(input_id), dict)
-        and raw_quality[input_id].get("required", True) is not True
-    )
-    if not _raw_facts(snapshot):
-        issues.append(
-            ReportValidationIssue(
-                code="REQUIRED_FACTS_UNAVAILABLE",
-                message="approved input snapshot contains no materialized report facts",
-                input_id="report.facts",
-            )
-        )
-    return issues
-
-
 def _fact_item(raw: dict[str, Any]) -> dict[str, Any]:
     fact_id = raw["fact_id"]
     display_text = str(raw.get("display_text", fact_id))
@@ -820,9 +773,9 @@ def _append_source_issues(
 
 def _quality_notice(status: str, issues: list[ReportValidationIssue]) -> str:
     if not issues:
-        return "必需数据均已通过质量和权限校验。"
+        return "必需数据均已通过质量校验。"
     if status == "incomplete":
-        return "日报未发布：必需数据未满足质量或权限校验。"
+        return "日报未发布：必需数据未满足质量校验。"
     return "部分可选数据不可用，日报已降级。"
 
 
@@ -842,7 +795,7 @@ def _data_quality(issues: list[ReportValidationIssue], status: str) -> dict[str,
         ],
         "stale_inputs": [entry for entry in entries if "STALE" in entry["reason_code"]],
         "late_inputs": [entry for entry in entries if "LATE" in entry["reason_code"]],
-        "revised_inputs": [],
+        "revised_inputs": [entry for entry in entries if "REVISED" in entry["reason_code"]],
         "unavailable_inputs": [
             entry
             for entry in entries
@@ -853,6 +806,8 @@ def _data_quality(issues: list[ReportValidationIssue], status: str) -> dict[str,
                 "STALE_OPTIONAL_INPUT",
                 "LATE_REQUIRED_INPUT",
                 "LATE_OPTIONAL_INPUT",
+                "REVISED_REQUIRED_INPUT",
+                "REVISED_OPTIONAL_INPUT",
             }
         ],
     }
@@ -896,51 +851,20 @@ def _scheduled_publish_at(snapshot: ReportInputSnapshot) -> str:
 
 
 def _quality_issues(snapshot: ReportInputSnapshot) -> list[ReportValidationIssue]:
-    raw_quality = snapshot.payload.get("input_quality", {})
-    if not isinstance(raw_quality, dict):
-        return []
-    issues: list[ReportValidationIssue] = []
-    for input_id, raw in raw_quality.items():
-        if not isinstance(input_id, str) or not isinstance(raw, dict):
-            continue
-        status = raw.get("status")
-        required = raw.get("required", input_id in REQUIRED_REPORT_INPUT_IDS) is True
-        if status == "revised":
-            code = "REVISED_REQUIRED_INPUT" if required else "REVISED_OPTIONAL_INPUT"
-            issues.append(
-                ReportValidationIssue(
-                    code=code,
-                    message=str(raw.get("reason", "input has a revised value")),
-                    severity="warning",
-                    input_id=input_id,
-                )
-            )
-            continue
-        if status not in _KNOWN_INPUT_STATUSES:
-            issues.append(
-                ReportValidationIssue(
-                    code="INVALID_REQUIRED_INPUT_STATUS" if required else "INVALID_INPUT_STATUS",
-                    message="input quality status is not recognized",
-                    severity="error" if required else "warning",
-                    input_id=input_id,
-                )
-            )
-            continue
-        if status not in _BLOCKING_INPUT_STATUSES:
-            continue
-        code = {
-            "stale": "STALE_REQUIRED_INPUT" if required else "STALE_OPTIONAL_INPUT",
-            "late": "LATE_REQUIRED_INPUT" if required else "LATE_OPTIONAL_INPUT",
-        }.get(status, "REQUIRED_INPUT_UNAVAILABLE" if required else "OPTIONAL_INPUT_UNAVAILABLE")
-        issues.append(
-            ReportValidationIssue(
-                code=code,
-                message=str(raw.get("reason", f"input status is {status}")),
-                severity="error" if required else "warning",
-                input_id=input_id,
-            )
-        )
-    return issues
+    return [
+        _validation_issue(issue) for issue in ReportInputQualityGate().evaluate(snapshot).issues
+    ]
+
+
+def _validation_issue(issue: QualityGateIssue) -> ReportValidationIssue:
+    return ReportValidationIssue(
+        code=issue.code,
+        message=issue.message,
+        severity=(
+            "warning" if not issue.required or issue.code.startswith("REVISED_") else "error"
+        ),
+        input_id=issue.input_id,
+    )
 
 
 def _parse_datetime(value: Any) -> datetime | None:

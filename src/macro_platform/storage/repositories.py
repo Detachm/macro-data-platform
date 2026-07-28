@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal, Protocol
+from typing import cast as typing_cast
 from uuid import UUID
 
 from sqlalchemy import DateTime, cast, delete, func, literal, or_, select, union_all, update
@@ -59,6 +60,7 @@ from macro_platform.storage.models import (
     ProviderRunRow,
     ReportGenerationAttemptRow,
     ReportInputSnapshotRow,
+    ScheduledTaskCheckpointRow,
 )
 from macro_platform.storage.reporting import (
     DeliveryAttempt,
@@ -819,6 +821,153 @@ def _date_only_window(start: datetime, end: datetime) -> tuple[date, date]:
 class IngestionRunLease:
     run_id: UUID
     attempt_no: int
+
+
+@dataclass(frozen=True)
+class ScheduledTaskCheckpoint:
+    report_date: date
+    task_id: str
+    provider_role: str
+    dataset: Dataset
+    region: str
+    request_as_of: datetime
+    status: Literal["active", "completed"]
+    next_cursor: str | None
+    source_watermark: str | None
+    run_id: UUID | None
+    run_ids: tuple[UUID, ...]
+    records_accepted: int
+    records_rejected: int
+    lease_epoch: int
+    lease_owner_id: UUID | None
+
+
+class ScheduledTaskCheckpointRepository:
+    """Persist scheduler progress independently from page-level fact commits."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def begin_or_load(
+        self,
+        *,
+        report_date: date,
+        task_id: str,
+        provider_role: str,
+        dataset: Dataset,
+        region: str,
+        request_as_of: datetime,
+        lease_owner_id: UUID,
+    ) -> ScheduledTaskCheckpoint:
+        claimed = await self._session.execute(
+            insert(ScheduledTaskCheckpointRow)
+            .values(
+                report_date=report_date,
+                task_id=task_id,
+                provider_role=provider_role,
+                dataset=dataset.value,
+                region=region,
+                request_as_of=request_as_of,
+                status="active",
+                records_accepted=0,
+                records_rejected=0,
+                lease_epoch=1,
+                lease_owner_id=lease_owner_id,
+            )
+            .on_conflict_do_update(
+                index_elements=(
+                    ScheduledTaskCheckpointRow.report_date,
+                    ScheduledTaskCheckpointRow.task_id,
+                ),
+                set_={
+                    "lease_epoch": ScheduledTaskCheckpointRow.lease_epoch + 1,
+                    "lease_owner_id": lease_owner_id,
+                },
+                where=ScheduledTaskCheckpointRow.status == "active",
+            )
+            .returning(ScheduledTaskCheckpointRow)
+        )
+        row = claimed.scalar_one_or_none()
+        if row is None:
+            row = await self._session.get(ScheduledTaskCheckpointRow, (report_date, task_id))
+        if row is None:
+            raise RuntimeError("scheduled task checkpoint was not persisted")
+        if (
+            row.provider_role != provider_role
+            or row.dataset != dataset.value
+            or row.region != region
+        ):
+            raise ValueError("scheduled task checkpoint identity was reused for another task")
+        return _scheduled_task_checkpoint(row)
+
+    async def advance(
+        self,
+        checkpoint: ScheduledTaskCheckpoint,
+        *,
+        run_id: UUID,
+        next_cursor: str | None,
+        source_watermark: str | None,
+        records_accepted: int,
+        records_rejected: int,
+    ) -> ScheduledTaskCheckpoint:
+        if checkpoint.status == "completed":
+            raise ValueError("completed scheduled task checkpoint cannot advance")
+        completed = next_cursor is None
+        run_ids = (
+            checkpoint.run_ids if run_id in checkpoint.run_ids else (*checkpoint.run_ids, run_id)
+        )
+        updated = await self._session.execute(
+            update(ScheduledTaskCheckpointRow)
+            .where(
+                ScheduledTaskCheckpointRow.report_date == checkpoint.report_date,
+                ScheduledTaskCheckpointRow.task_id == checkpoint.task_id,
+                ScheduledTaskCheckpointRow.status == "active",
+                ScheduledTaskCheckpointRow.lease_epoch == checkpoint.lease_epoch,
+                ScheduledTaskCheckpointRow.lease_owner_id == checkpoint.lease_owner_id,
+            )
+            .values(
+                status="completed" if completed else "active",
+                run_id=run_id,
+                run_ids=[str(value) for value in run_ids],
+                next_cursor=next_cursor,
+                source_watermark=source_watermark,
+                records_accepted=ScheduledTaskCheckpointRow.records_accepted + records_accepted,
+                records_rejected=ScheduledTaskCheckpointRow.records_rejected + records_rejected,
+            )
+            .returning(ScheduledTaskCheckpointRow)
+        )
+        row = updated.scalar_one_or_none()
+        if row is None:
+            raise RuntimeError("scheduled task checkpoint was lost before it advanced")
+        return _scheduled_task_checkpoint(row)
+
+
+def _scheduled_task_checkpoint(row: ScheduledTaskCheckpointRow) -> ScheduledTaskCheckpoint:
+    if row.status not in {"active", "completed"}:
+        raise RuntimeError("scheduled task checkpoint has an invalid status")
+    try:
+        run_ids = tuple(UUID(value) for value in row.run_ids)
+    except (TypeError, ValueError) as error:
+        raise RuntimeError("scheduled task checkpoint has invalid run IDs") from error
+    if len(run_ids) != len(set(run_ids)):
+        raise RuntimeError("scheduled task checkpoint has duplicate run IDs")
+    return ScheduledTaskCheckpoint(
+        report_date=row.report_date,
+        task_id=row.task_id,
+        provider_role=row.provider_role,
+        dataset=Dataset(row.dataset),
+        region=row.region,
+        request_as_of=row.request_as_of,
+        status=typing_cast(Literal["active", "completed"], row.status),
+        next_cursor=row.next_cursor,
+        source_watermark=row.source_watermark,
+        run_id=row.run_id,
+        run_ids=run_ids,
+        records_accepted=row.records_accepted,
+        records_rejected=row.records_rejected,
+        lease_epoch=row.lease_epoch,
+        lease_owner_id=row.lease_owner_id,
+    )
 
 
 class IngestionRunRepository:
