@@ -14,11 +14,19 @@ from macro_platform.providers.cn.baostock import (
 )
 from macro_platform.providers.cn.live import CnNbsNewsProvider, CnNbsReleaseProvider
 from macro_platform.providers.hk.live import HkmaPressReleaseProvider
+from macro_platform.providers.hk.release_calendar import (
+    HK_CENSTATD_CALENDAR_ROLE,
+    HkCenstatdReleaseCalendarProvider,
+)
 from macro_platform.providers.hk.xtquant import (
     HkXtQuantDailyBarsProvider,
     register_hk_xtquant_provider_roles,
 )
 from macro_platform.providers.registry import ProviderRegistry
+from macro_platform.providers.us.release_calendar import (
+    US_OFFICIAL_CALENDAR_ROLE,
+    UsOfficialReleaseCalendarProvider,
+)
 from macro_platform.providers.us.twelve_data import (
     TWELVE_DATA_DEFAULT_INSTRUMENTS,
     TwelveDataDailyBarsProvider,
@@ -59,6 +67,20 @@ async def test_job_029_registers_all_available_reviewed_live_tasks() -> None:
     hk_news = HkmaPressReleaseProvider(cursor_signing_secret="test-cursor-secret")
     registry.register(hk_news)
     registry.bind_role("hk.news.primary", hk_news.provider_id, required_dataset=Dataset.NEWS)
+    hk_calendar = HkCenstatdReleaseCalendarProvider(cursor_signing_secret="test-cursor-secret")
+    registry.register(hk_calendar)
+    registry.bind_role(
+        HK_CENSTATD_CALENDAR_ROLE,
+        hk_calendar.provider_id,
+        required_dataset=Dataset.MACRO_RELEASES,
+    )
+    us_calendar = UsOfficialReleaseCalendarProvider(cursor_signing_secret="test-cursor-secret")
+    registry.register(us_calendar)
+    registry.bind_role(
+        US_OFFICIAL_CALENDAR_ROLE,
+        us_calendar.provider_id,
+        required_dataset=Dataset.MACRO_RELEASES,
+    )
     database = Database("postgresql+asyncpg://macro:macro@127.0.0.1:5432/macro_data")
     try:
         tasks = build_registered_tasks(
@@ -74,6 +96,8 @@ async def test_job_029_registers_all_available_reviewed_live_tasks() -> None:
             ("hk.equity-bars", "hk.equity-bars.supplemental"),
             ("us.daily-bars", "us.market.primary"),
             ("cn.macro-release-calendar", "cn.macro.primary"),
+            ("hk.macro-release-calendar", "hk.calendar.primary"),
+            ("us.macro-release-calendar", "us.calendar.primary"),
             ("cn.official-headlines", "cn.news.primary"),
             ("hk.official-headlines", "hk.news.primary"),
         ]
@@ -83,6 +107,8 @@ async def test_job_029_registers_all_available_reviewed_live_tasks() -> None:
             "hk.equity-bars": False,
             "us.daily-bars": True,
             "cn.macro-release-calendar": True,
+            "hk.macro-release-calendar": True,
+            "us.macro-release-calendar": True,
             "cn.official-headlines": True,
             "hk.official-headlines": True,
         }

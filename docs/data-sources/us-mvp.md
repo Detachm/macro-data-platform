@@ -11,6 +11,7 @@
   - `us.market.primary`
   - `us.rates_fx.primary`
   - `us.macro.primary`
+  - `us.calendar.primary`
   - `us.filings.primary`
   - `us.news.primary`
 - 数据集：instruments / bars / market_observations / macro_series / macro_observations / macro_releases / news
@@ -31,6 +32,7 @@
 | U.S. Treasury interest rates | [us-treasury-interest-rates.md](us-treasury-interest-rates.md) |
 | BLS Public Data API | [us-bls-api.md](us-bls-api.md) |
 | BEA API | [us-bea-api.md](us-bea-api.md) |
+| OMB PFEI + BEA release schedules | [ADR 0013](../adr/0013-hk-us-official-release-calendars.md) |
 | FRED/ALFRED | [us-fred-alfred.md](us-fred-alfred.md) |
 | GDELT | [us-gdelt.md](us-gdelt.md) |
 | NewsAPI / licensed media placeholder | [us-newsapi.md](us-newsapi.md) |
@@ -40,15 +42,15 @@
 ## 结论摘要
 
 两日 MVP 的目标是证明 US 数据源抽象、字段映射、授权边界和 fixture-backed provider 纵向切片，
-原则上不承诺生产 live 接入。唯一的后续例外是 ADR 0003 批准的 Twelve Data Basic 三个
-US market proxy 日线范围；其 live adapter 仍由 #34 单独实现。
+原则上不承诺生产 live 接入。后续例外包括 ADR 0003 批准的 Twelve Data Basic 三个 US market
+proxy 日线，以及 ADR 0013 批准的 OMB/BLS + BEA 官方发布日历。
 
 | 数据类 | 两日 MVP 状态 | Primary | Fallback / gap | 结论 |
 |---|---|---|---|---|
 | instruments | `fixture-only`，可用官方公开源设计 live adapter | Nasdaq Trader Symbol Directory + SEC company tickers/CIK enrichment | Polygon/Massive reference tickers if licensed | Nasdaq/SEC 可支持合成 fixture；交易所目录权利需复核后才能宣称 live-ready。 |
 | daily bars | `live-approved`，仅内部 scope | Twelve Data Basic：`SPY`、`QQQ`、`DIA` 的 raw `1day` OHLCV | 无生产 fallback；Polygon/Massive、Alpha Vantage 仍未获批 | 仅允许内部 ingestion 与 canonical facts 存储；禁止外部 LLM、引用和再分发。详见 ADR 0003。 |
 | rates / FX / cross-asset observations | `live-candidate` for official public releases; MVP 仍用 fixture | Federal Reserve H.15/H.10 Data Download/current releases；Treasury official feeds where available | FRED 只作发现/人工核对，不作为持久化 ingest 源 | 官方利率/汇率可做首批 market observations；在逐 series owner rights review 前，平台对 FRED 采用 no-ingest/no-LLM 保守策略。 |
-| macro observations / releases | `live-candidate` for direct agency APIs; MVP 可 fixture | BLS Public Data API、BEA API、官方 release calendar | FRED 只作非持久化发现 | BLS/BEA 是 CPI、employment、GDP、PCE 等主源；available_at 不得早于 API/平台首次可见时间。 |
+| macro observations / releases | observations 仍为 `live-candidate`；release calendar 已 `live-approved` | observations：BLS/BEA API；calendar：OMB PFEI PDF + BEA official schedule | FRED 只作非持久化发现 | 日历只提供 schedule metadata，不冒充观测值；OMB/BLS 保持日期精度，BEA 使用美东精确时刻。 |
 | SEC filing metadata | `live-candidate` | SEC EDGAR `data.sec.gov` submissions + index files | Commercial SEC vendors only for enhanced search | SEC JSON APIs 无 API key，但必须遵守 fair access；只采 metadata，不采完整正文作为新闻正文。 |
 | daily news | `fixture-only` | Official releases/filings for `official` tier；GDELT disabled until rights approval | Licensed media provider pending procurement | 商业新闻正文/摘要默认不可外发；NewsAPI/Alpha Vantage/GDELT 等需合同或 rights approval 后才能进入 live。 |
 
@@ -71,7 +73,7 @@ US market proxy 日线范围；其 live adapter 仍由 #34 单独实现。
 | rates/FX observations | `region + scope_type + scope_id + metric_code + observed_at + provider_id` | `obs_us_<sha256(identity_basis)[:20]>` | `<provider_id>:<metric_code>:<observed_at-or-period>` | canonical observation JSON，不含 retrieved_at | official release/download URL | `observed_at ASC, observation_id ASC` |
 | macro series | `series_id` | stable `macro:US:<AUTHORITY>:<CODE>` | `<provider_id>:<authority-code>` | canonical series metadata JSON | agency series/table URL | `series_id ASC` |
 | macro observations | `series_id + period_end + vintage_id + provider_id` | `mobs_us_<sha256(identity_basis)[:20]>` | `<provider_id>:<series_id>:<period_end>:<vintage_id>` | canonical observation JSON，不含 retrieved_at | agency API/release URL | `period_end ASC, series_id ASC, available_at ASC` |
-| macro releases | `series_id + scheduled_at + period_end + provider_id` | `mrel_us_<sha256(identity_basis)[:20]>` | `<provider_id>:<series_id>:<scheduled_at>:<period_end>` | canonical release JSON，不含 retrieved_at | agency release calendar URL | `scheduled_at ASC, release_id ASC` |
+| macro releases | `provider + authority + full official event title/reference period`，不含 scheduled date | stable hash；官方改期不改 identity | 同 identity basis | canonical release JSON，包含当前 schedule，不含 retrieved_at | agency release calendar URL | schedule ASC, release_id ASC |
 | SEC filing metadata as news | `accessionNumber + form + cik` | `news_us_sec_<normalized_accession_number>` | `<accessionNumber>` | canonical SEC filing metadata JSON，不含 retrieved_at | SEC archive filing URL | `published_at DESC, news_id DESC` |
 | daily news | source stable ID if provided; else canonical URL/content hash + published_at | `news_us_<sha256(identity_basis)[:20]>` | provider source ID, canonical URL hash, or `identity_basis:<hash>` | canonical headline/snippet metadata JSON；不含 restricted body | canonical URL / official release URL | `published_at DESC, news_id DESC` |
 
@@ -197,6 +199,11 @@ Rates/FX 公共合同映射：
 | source row identity | `observation_id` / `source.checksum_sha256` | 按公共 identity/checksum 表生成。 | 是 | quarantine |
 
 ### 4. Macro observations / releases
+
+发布日历使用独立 role `us.calendar.primary`，由 `UsOfficialReleaseCalendarProvider` 提供：OMB PFEI
+年度 PDF 只接入 Employment Situation、PPI、CPI 并保留日期精度；BEA schedule 接入所有有确定日期
+时间的行。任务以首次抓取时间作为 `available_at`，改期写 revision。下面的 `us.macro.primary` 仍描述
+观测值 API，当前不因日历上线而自动变成 live observation provider。
 
 | 项 | BLS | BEA |
 |---|---|---|

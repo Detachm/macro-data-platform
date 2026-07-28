@@ -12,6 +12,11 @@ from macro_platform.providers.hk.live import (
     HkmaLiveNewsProvider,
     HkmaPressReleaseProvider,
 )
+from macro_platform.providers.hk.release_calendar import (
+    HK_CENSTATD_CALENDAR_PROVIDER_ID,
+    HK_CENSTATD_CALENDAR_ROLE,
+    HkCenstatdReleaseCalendarProvider,
+)
 from macro_platform.providers.hk.xtquant import (
     HK_XTQUANT_CORE_INDEX_INSTRUMENTS,
     HK_XTQUANT_DEFAULT_INSTRUMENTS,
@@ -83,11 +88,14 @@ __all__ = [
     "HK_XTQUANT_EQUITY_ROLE",
     "HK_XTQUANT_PRIMARY_ROLE",
     "HK_XTQUANT_PROVIDER_ID",
+    "HK_CENSTATD_CALENDAR_PROVIDER_ID",
+    "HK_CENSTATD_CALENDAR_ROLE",
     "HkContractFixtureProvider",
     "HkSyntheticProvider",
     "HkXtQuantDailyBarsProvider",
     "HkXtQuantInstrument",
     "HkCsdProvider",
+    "HkCenstatdReleaseCalendarProvider",
     "HkLiveMacroProvider",
     "HkmaLiveNewsProvider",
     "HkmaPressReleaseProvider",
