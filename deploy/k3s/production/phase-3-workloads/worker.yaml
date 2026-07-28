@@ -1,0 +1,91 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: macro-data-worker
+  namespace: macro-data-platform
+  labels:
+    app.kubernetes.io/name: macro-data-platform
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/part-of: macro-data-platform
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  progressDeadlineSeconds: 300
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: macro-data-platform
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: macro-data-platform
+        app.kubernetes.io/component: worker
+        app.kubernetes.io/part-of: macro-data-platform
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: worker
+          image: macro-data-platform:0.1.0
+          imagePullPolicy: Never
+          command:
+            - macro-data-worker
+          envFrom:
+            - configMapRef:
+                name: macro-runtime-config
+            - secretRef:
+                name: macro-runtime
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: macro-postgres
+                  key: DATABASE_URL
+            - name: HK_XTQUANT_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+          startupProbe:
+            exec:
+              command:
+                - macro-data-worker
+                - --check-ready
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command:
+                - macro-data-worker
+                - --check-ready
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -ec
+                - kill -0 1
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL

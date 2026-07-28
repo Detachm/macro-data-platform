@@ -628,6 +628,32 @@ def test_e2e_033_cli_passes_an_explicit_regeneration_version(
     assert captured["report_version"] == "v2-reviewed"
 
 
+def test_e2e_033_cli_readiness_mode_exits_with_the_check_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_readiness(settings: Settings) -> int:
+        captured["settings"] = settings
+        return 1
+
+    async def fail_if_scheduled(**kwargs: object) -> None:
+        del kwargs
+        raise AssertionError("readiness mode must not start the scheduler")
+
+    monkeypatch.setattr(scheduled_cli, "_worker_readiness_exit_code", fake_readiness)
+    monkeypatch.setattr(scheduled_cli, "run_scheduler", fail_if_scheduled)
+    monkeypatch.setattr(scheduled_cli, "get_settings", lambda: Settings(_env_file=None))
+    monkeypatch.setattr(scheduled_cli, "configure_logging", lambda _level: None)
+    monkeypatch.setattr(sys, "argv", ["macro-data-worker", "--check-ready"])
+
+    with pytest.raises(SystemExit) as caught:
+        scheduled_cli.main()
+
+    assert caught.value.code == 1
+    assert isinstance(captured["settings"], Settings)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("first_status", ["retryable", "locked"])
 async def test_job_029_configured_schedule_retries_nonterminal_report_dates(

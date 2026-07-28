@@ -1,0 +1,80 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: archive-capacity-monitor
+  namespace: macro-data-platform
+  labels:
+    app.kubernetes.io/name: archive-capacity-monitor
+    app.kubernetes.io/part-of: macro-data-platform
+spec:
+  schedule: "*/15 * * * *"
+  timeZone: Asia/Shanghai
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 300
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: archive-capacity-monitor
+            app.kubernetes.io/component: archive-monitor
+            app.kubernetes.io/part-of: macro-data-platform
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsUser: 999
+            runAsGroup: 999
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: monitor
+              image: macro-data-platform:0.1.0
+              imagePullPolicy: Never
+              command:
+                - macro-data-archive-monitor
+                - --path
+                - /host-archive/macro-data-platform/postgres-backups
+                - --warning-percent
+                - "70"
+                - --critical-percent
+                - "85"
+                - --minimum-total-bytes
+                - "20000000000000"
+              envFrom:
+                - configMapRef:
+                    name: macro-runtime-config
+                - secretRef:
+                    name: macro-runtime
+              env:
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: macro-postgres
+                      key: DATABASE_URL
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  cpu: 500m
+                  memory: 512Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+              volumeMounts:
+                - name: archive-backups
+                  mountPath: /host-archive
+                  readOnly: true
+          volumes:
+            - name: archive-backups
+              hostPath:
+                path: /archive
+                type: Directory
