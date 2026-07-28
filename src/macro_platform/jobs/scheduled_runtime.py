@@ -394,6 +394,10 @@ async def run_scheduler(
                 raise SchedulerNotConfiguredError(
                     "FEISHU_ALERT_CHAT_ID is required for the complete daily workflow"
                 )
+            if resolved_settings.feishu_alert_chat_id == resolved_settings.feishu_chat_id:
+                raise SchedulerNotConfiguredError(
+                    "FEISHU_ALERT_CHAT_ID must differ from FEISHU_CHAT_ID"
+                )
             if resolved_http_client is None:
                 resolved_http_client = httpx.AsyncClient()
                 owns_http_client = True

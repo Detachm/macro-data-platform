@@ -30,6 +30,10 @@ from macro_platform.services.daily_workflow import (
     PostgresReportGenerationStore,
     build_generation_service,
 )
+from macro_platform.services.delivery_recovery import (
+    DeliveryRecoveryService,
+    PostgresDeliveryRecoveryAuditStore,
+)
 from macro_platform.services.llm import LlmError
 from macro_platform.services.report_delivery import (
     ConfiguredFeishuDelivery,
@@ -47,10 +51,15 @@ from macro_platform.services.workflow_alerts import (
     ConfiguredFeishuAlerts,
     PostgresWorkflowAlertStore,
 )
+from macro_platform.services.workflow_operations import (
+    PostgresWorkerReadinessReader,
+    PostgresWorkflowOperationsReader,
+)
 from macro_platform.storage.database import Database
 from macro_platform.storage.models import (
     DailyReportRow,
     DeliveryAttemptRow,
+    DeliveryOperatorActionRow,
     WorkflowAlertAttemptRow,
 )
 from macro_platform.storage.reporting import ReportInputSnapshot
@@ -220,6 +229,11 @@ async def test_e2e_033_postgres_workflow_falls_back_and_delivers_once(
     llm = _UnavailableLlm()
     generation_store = PostgresReportGenerationStore(database)
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        configured_delivery = ConfiguredFeishuDelivery(
+            settings=settings,
+            client=client,
+            store=PostgresReportDeliveryStore(database),
+        )
         workflow = DailyReportWorkflow(
             generation_service=build_generation_service(
                 llm=llm,  # type: ignore[arg-type]
@@ -228,11 +242,7 @@ async def test_e2e_033_postgres_workflow_falls_back_and_delivers_once(
                 max_attempts=1,
             ),
             store=generation_store,
-            report_delivery=ConfiguredFeishuDelivery(
-                settings=settings,
-                client=client,
-                store=PostgresReportDeliveryStore(database),
-            ),
+            report_delivery=configured_delivery,
             alert_delivery=ConfiguredFeishuAlerts(
                 settings=settings,
                 client=client,
@@ -254,6 +264,22 @@ async def test_e2e_033_postgres_workflow_falls_back_and_delivers_once(
 
         first = await worker.run_for_date(REPORT_DATE)
         replay = await worker.run_for_date(REPORT_DATE)
+        assert first.report_id is not None
+        recovery_service = DeliveryRecoveryService(
+            delivery=configured_delivery,
+            audit_store=PostgresDeliveryRecoveryAuditStore(database),
+        )
+        recovery_request_id = uuid4()
+        recovered = await recovery_service.retry(
+            request_id=recovery_request_id,
+            report_id=first.report_id,
+            confirmed_not_delivered=False,
+        )
+        recovery_replay = await recovery_service.retry(
+            request_id=recovery_request_id,
+            report_id=first.report_id,
+            confirmed_not_delivered=False,
+        )
 
     message_requests = [
         request for request in requests if request.url.path.endswith("/im/v1/messages")
@@ -266,6 +292,9 @@ async def test_e2e_033_postgres_workflow_falls_back_and_delivers_once(
     assert llm.calls == 1
     assert len(message_requests) == 1
     assert json.loads(message_requests[0].content)["receive_id"] == "oc_daily"
+    assert recovered.status == recovery_replay.status == "succeeded"
+    assert recovered.replayed is False
+    assert recovery_replay.replayed is True
 
     async with database.session() as session:
         report_count = await session.scalar(
@@ -283,6 +312,43 @@ async def test_e2e_033_postgres_workflow_falls_back_and_delivers_once(
             .select_from(WorkflowAlertAttemptRow)
             .where(WorkflowAlertAttemptRow.workflow_run_id == first.workflow_run_id)
         )
+        operator_action_count = await session.scalar(
+            select(func.count())
+            .select_from(DeliveryOperatorActionRow)
+            .where(DeliveryOperatorActionRow.request_id == recovery_request_id)
+        )
     assert report_count == 1
     assert delivery_count == 1
     assert alert_count == 0
+    assert operator_action_count == 1
+
+    operations = await PostgresWorkflowOperationsReader(database).load(REPORT_DATE)
+    assert operations.status == "delivered"
+    assert operations.operator_attention_required is False
+    assert [item.report_id for item in operations.reports] == [first.report_id]
+    assert [item.status for item in operations.deliveries] == ["succeeded"]
+    assert operations.snapshots[0].quality_status == "passed"
+    assert [item.status for item in operations.operator_actions] == ["succeeded"]
+
+    readiness_settings = Settings(
+        _env_file=None,
+        provider_mode="live",
+        us_provider_mode="live",
+        twelve_data_api_key=SecretStr("test-us-key"),
+        twelve_data_cursor_secret=SecretStr("test-us-cursor"),
+        feishu_delivery_enabled=True,
+        feishu_app_id="cli_test",
+        feishu_app_secret=SecretStr("secret-test"),
+        feishu_chat_id="oc_daily",
+        feishu_alert_chat_id="oc_alert",
+    )
+    readiness = await PostgresWorkerReadinessReader(database, readiness_settings).check()
+    assert readiness.status == "ready"
+    assert readiness.unmet_requirements == ()
+
+    same_chat_readiness = await PostgresWorkerReadinessReader(
+        database,
+        readiness_settings.model_copy(update={"feishu_alert_chat_id": "oc_daily"}),
+    ).check()
+    assert same_chat_readiness.status == "not_ready"
+    assert "FEISHU_CHATS_NOT_DISTINCT" in same_chat_readiness.unmet_requirements

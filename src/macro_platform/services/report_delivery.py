@@ -46,6 +46,14 @@ class ReportDeliveryError(RuntimeError):
     """The report cannot be safely prepared or delivered."""
 
 
+class ManualDeliveryRetryError(ReportDeliveryError):
+    """A protected manual retry was rejected before any network request."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 class FeishuTransportError(RuntimeError):
     """A classified Feishu transport failure.
 
@@ -395,6 +403,14 @@ class ReportDeliveryStore(Protocol):
 
     async def retry_delivery_attempt(self, delivery_id: UUID) -> bool: ...
 
+    async def authorize_manual_retry(
+        self,
+        delivery_id: UUID,
+        *,
+        expected_attempt_no: int,
+        allow_uncertain: bool,
+    ) -> bool: ...
+
     async def load_delivery_attempt(self, delivery_id: UUID) -> DeliveryAttempt | None: ...
 
     async def load_delivery_attempt_for_key(
@@ -444,6 +460,20 @@ class PostgresReportDeliveryStore:
         async with UnitOfWork(self._database).transaction() as session:
             return await ReportRepository(session).retry_delivery_attempt(delivery_id)
 
+    async def authorize_manual_retry(
+        self,
+        delivery_id: UUID,
+        *,
+        expected_attempt_no: int,
+        allow_uncertain: bool,
+    ) -> bool:
+        async with UnitOfWork(self._database).transaction() as session:
+            return await ReportRepository(session).authorize_manual_delivery_retry(
+                delivery_id,
+                expected_attempt_no=expected_attempt_no,
+                allow_uncertain=allow_uncertain,
+            )
+
     async def load_delivery_attempt(self, delivery_id: UUID) -> DeliveryAttempt | None:
         async with self._database.session() as session:
             return await ReportRepository(session).load_delivery_attempt(delivery_id)
@@ -489,6 +519,7 @@ class ReportDeliveryService:
         *,
         card_renderer: FeishuCardRenderer | None = None,
         max_attempts: int = 3,
+        max_total_attempts: int = 10,
         retry_delay_seconds: float = 0.25,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
@@ -496,9 +527,12 @@ class ReportDeliveryService:
             raise ValueError("Feishu delivery max_attempts must be positive")
         if retry_delay_seconds < 0:
             raise ValueError("Feishu delivery retry delay must not be negative")
+        if max_total_attempts < max_attempts:
+            raise ValueError("Feishu delivery max_total_attempts must cover automatic attempts")
         self._transport = transport
         self._card_renderer = card_renderer or FeishuCardRenderer()
         self._max_attempts = max_attempts
+        self._max_total_attempts = max_total_attempts
         self._retry_delay_seconds = retry_delay_seconds
         self._sleep = sleep
 
@@ -567,6 +601,153 @@ class ReportDeliveryService:
                 return _result(report, delivery_target, idempotency_key, card, current)
             attempt = resumed_attempt
 
+        return await self._send(
+            store,
+            report=report,
+            chat_id=chat_id,
+            card=card,
+            delivery_target=delivery_target,
+            idempotency_key=idempotency_key,
+            request_uuid=request_uuid,
+            attempt=attempt,
+            max_attempt_no=self._max_attempts,
+        )
+
+    async def retry(
+        self,
+        store: ReportDeliveryStore,
+        *,
+        report_id: str,
+        chat_id: str,
+        confirmed_not_delivered: bool,
+    ) -> ReportDeliveryResult:
+        report = await store.load_report(report_id)
+        if report is None:
+            raise ManualDeliveryRetryError(
+                "REPORT_NOT_FOUND", f"report does not exist: {report_id}"
+            )
+        if report.lifecycle_status != "validated" or report.publication_decision != "published":
+            raise ManualDeliveryRetryError(
+                "REPORT_NOT_PUBLISHABLE",
+                "only validated published reports may be retried",
+            )
+        if not chat_id.strip():
+            raise ManualDeliveryRetryError(
+                "DELIVERY_TARGET_NOT_CONFIGURED",
+                "Feishu chat ID is required",
+            )
+        card = self._card_renderer.render(report)
+        delivery_target = f"feishu:{chat_id}"
+        idempotency_key = _idempotency_key(report, delivery_target)
+        request_uuid = _feishu_request_uuid(idempotency_key)
+        existing = await store.load_delivery_attempt_for_key(
+            report_id=report.report_id,
+            delivery_target=delivery_target,
+            idempotency_key=idempotency_key,
+        )
+        if existing is None:
+            raise ManualDeliveryRetryError(
+                "DELIVERY_ATTEMPT_NOT_FOUND",
+                "the report has no delivery attempt to retry",
+            )
+        if existing.status == "succeeded":
+            return _result(report, delivery_target, idempotency_key, card, existing)
+        if existing.status == "pending":
+            raise ManualDeliveryRetryError(
+                "DELIVERY_ATTEMPT_IN_PROGRESS",
+                "the existing delivery attempt is still pending",
+            )
+        if existing.status == "uncertain" and not confirmed_not_delivered:
+            raise ManualDeliveryRetryError(
+                "DELIVERY_ABSENCE_CONFIRMATION_REQUIRED",
+                "confirm that the report is absent from the daily chat before retrying",
+            )
+        if existing.attempt_no >= self._max_total_attempts:
+            raise ManualDeliveryRetryError(
+                "DELIVERY_RETRY_LIMIT_EXHAUSTED",
+                "the total delivery retry limit is exhausted",
+            )
+        if existing.status not in {"failed", "retry_wait", "uncertain"}:
+            raise ManualDeliveryRetryError(
+                "DELIVERY_ATTEMPT_NOT_RETRYABLE",
+                f"delivery status cannot be retried: {existing.status}",
+            )
+        authorized = await store.authorize_manual_retry(
+            existing.delivery_id,
+            expected_attempt_no=existing.attempt_no,
+            allow_uncertain=confirmed_not_delivered,
+        )
+        if not authorized:
+            raise ManualDeliveryRetryError(
+                "DELIVERY_RETRY_CONFLICT",
+                "the delivery attempt changed while retry was being authorized",
+            )
+        attempt = existing.model_copy(
+            update={
+                "attempt_no": existing.attempt_no + 1,
+                "status": "pending",
+                "response_payload": None,
+                "message_id": None,
+                "error_code": None,
+            }
+        )
+        return await self._send(
+            store,
+            report=report,
+            chat_id=chat_id,
+            card=card,
+            delivery_target=delivery_target,
+            idempotency_key=idempotency_key,
+            request_uuid=request_uuid,
+            attempt=attempt,
+            max_attempt_no=attempt.attempt_no,
+        )
+
+    async def inspect(
+        self,
+        store: ReportDeliveryStore,
+        *,
+        report_id: str,
+        chat_id: str,
+    ) -> ReportDeliveryResult:
+        report = await store.load_report(report_id)
+        if report is None:
+            raise ManualDeliveryRetryError(
+                "REPORT_NOT_FOUND", f"report does not exist: {report_id}"
+            )
+        if report.lifecycle_status != "validated" or report.publication_decision != "published":
+            raise ManualDeliveryRetryError(
+                "REPORT_NOT_PUBLISHABLE",
+                "only validated published reports may be inspected for delivery recovery",
+            )
+        if not chat_id.strip():
+            raise ManualDeliveryRetryError(
+                "DELIVERY_TARGET_NOT_CONFIGURED",
+                "Feishu chat ID is required",
+            )
+        card = self._card_renderer.render(report)
+        delivery_target = f"feishu:{chat_id}"
+        idempotency_key = _idempotency_key(report, delivery_target)
+        attempt = await store.load_delivery_attempt_for_key(
+            report_id=report.report_id,
+            delivery_target=delivery_target,
+            idempotency_key=idempotency_key,
+        )
+        return _result(report, delivery_target, idempotency_key, card, attempt)
+
+    async def _send(
+        self,
+        store: ReportDeliveryStore,
+        *,
+        report: StoredDailyReport,
+        chat_id: str,
+        card: dict[str, Any],
+        delivery_target: str,
+        idempotency_key: str,
+        request_uuid: str,
+        attempt: DeliveryAttempt,
+        max_attempt_no: int,
+    ) -> ReportDeliveryResult:
         while True:
             try:
                 sent = await self._transport.send_card(
@@ -578,7 +759,7 @@ class ReportDeliveryService:
                 next_status: Literal["failed", "retry_wait", "uncertain"]
                 if error.outcome_unknown:
                     next_status = "uncertain"
-                elif error.retryable and attempt.attempt_no < self._max_attempts:
+                elif error.retryable and attempt.attempt_no < max_attempt_no:
                     next_status = "retry_wait"
                 else:
                     next_status = "failed"
@@ -701,6 +882,7 @@ class ConfiguredFeishuDelivery:
                 timeout_seconds=settings.feishu_timeout_seconds,
             ),
             max_attempts=settings.feishu_delivery_max_attempts,
+            max_total_attempts=settings.feishu_delivery_max_total_attempts,
         )
 
     async def deliver(
@@ -714,6 +896,26 @@ class ConfiguredFeishuDelivery:
             report_id=report_id,
             chat_id=self._chat_id,
             dry_run=dry_run,
+        )
+
+    async def retry(
+        self,
+        *,
+        report_id: str,
+        confirmed_not_delivered: bool,
+    ) -> ReportDeliveryResult:
+        return await self._service.retry(
+            self._store,
+            report_id=report_id,
+            chat_id=self._chat_id,
+            confirmed_not_delivered=confirmed_not_delivered,
+        )
+
+    async def inspect(self, *, report_id: str) -> ReportDeliveryResult:
+        return await self._service.inspect(
+            self._store,
+            report_id=report_id,
+            chat_id=self._chat_id,
         )
 
 
@@ -902,7 +1104,7 @@ def _result(
     delivery_target: str,
     idempotency_key: str,
     card: dict[str, Any],
-    attempt: DeliveryAttempt,
+    attempt: DeliveryAttempt | None,
 ) -> ReportDeliveryResult:
     return ReportDeliveryResult(
         report_id=report.report_id,

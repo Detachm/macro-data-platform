@@ -70,6 +70,7 @@ class Settings(BaseSettings):
     feishu_api_base_url: str = "https://open.feishu.cn"
     feishu_timeout_seconds: int = Field(default=15, ge=1, le=300)
     feishu_delivery_max_attempts: int = Field(default=3, ge=1, le=5)
+    feishu_delivery_max_total_attempts: int = Field(default=10, ge=1, le=20)
 
     @model_validator(mode="after")
     def reject_development_secret_in_production(self) -> Settings:
@@ -134,6 +135,10 @@ class Settings(BaseSettings):
             )
         if self.feishu_delivery_enabled and not self.feishu_api_base_url.startswith("https://"):
             raise ValueError("FEISHU_API_BASE_URL must use HTTPS when delivery is enabled")
+        if self.feishu_delivery_max_total_attempts < self.feishu_delivery_max_attempts:
+            raise ValueError(
+                "FEISHU_DELIVERY_MAX_TOTAL_ATTEMPTS must be at least FEISHU_DELIVERY_MAX_ATTEMPTS"
+            )
         return self
 
 
