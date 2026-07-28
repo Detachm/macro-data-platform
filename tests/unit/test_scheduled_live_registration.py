@@ -70,7 +70,8 @@ async def test_job_029_registers_all_available_reviewed_live_tasks() -> None:
 
         assert [(task.task_id, task.provider_role) for task in tasks] == [
             ("cn.daily-bars", "cn.bars.primary"),
-            ("hk.daily-bars", "hk.bars.primary"),
+            ("hk.core-index-bars", "hk.bars.primary"),
+            ("hk.equity-bars", "hk.equity-bars.supplemental"),
             ("us.daily-bars", "us.market.primary"),
             ("cn.macro-release-calendar", "cn.macro.primary"),
             ("cn.official-headlines", "cn.news.primary"),
@@ -78,7 +79,8 @@ async def test_job_029_registers_all_available_reviewed_live_tasks() -> None:
         ]
         assert {task.task_id: task.required for task in tasks} == {
             "cn.daily-bars": True,
-            "hk.daily-bars": False,
+            "hk.core-index-bars": True,
+            "hk.equity-bars": False,
             "us.daily-bars": True,
             "cn.macro-release-calendar": True,
             "cn.official-headlines": True,

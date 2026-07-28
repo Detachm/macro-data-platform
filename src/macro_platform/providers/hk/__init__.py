@@ -13,7 +13,10 @@ from macro_platform.providers.hk.live import (
     HkmaPressReleaseProvider,
 )
 from macro_platform.providers.hk.xtquant import (
+    HK_XTQUANT_CORE_INDEX_INSTRUMENTS,
     HK_XTQUANT_DEFAULT_INSTRUMENTS,
+    HK_XTQUANT_EQUITY_INSTRUMENTS,
+    HK_XTQUANT_EQUITY_ROLE,
     HK_XTQUANT_PRIMARY_ROLE,
     HK_XTQUANT_PROVIDER_ID,
     HkXtQuantDailyBarsProvider,
@@ -75,6 +78,9 @@ __all__ = [
     "HK_PROVIDER_ID",
     "HK_ROLE_BINDINGS",
     "HK_XTQUANT_DEFAULT_INSTRUMENTS",
+    "HK_XTQUANT_CORE_INDEX_INSTRUMENTS",
+    "HK_XTQUANT_EQUITY_INSTRUMENTS",
+    "HK_XTQUANT_EQUITY_ROLE",
     "HK_XTQUANT_PRIMARY_ROLE",
     "HK_XTQUANT_PROVIDER_ID",
     "HkContractFixtureProvider",

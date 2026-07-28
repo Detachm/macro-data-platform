@@ -29,7 +29,8 @@ class Settings(BaseSettings):
     hk_xtquant_host: str = "127.0.0.1"
     hk_xtquant_port: int = Field(default=58615, ge=1, le=65535)
     hk_xtquant_symbols: str = (
-        "00700.HK,09988.HK,03690.HK,01810.HK,00941.HK,00005.HK,00388.HK,01299.HK,02318.HK,09618.HK"
+        "HSI.HK,HSCEI.HK,HSTECH.HK,00700.HK,09988.HK,03690.HK,01810.HK,00941.HK,00005.HK,"
+        "00388.HK,01299.HK,02318.HK,09618.HK"
     )
     us_provider_mode: Literal["fixture", "live"] = "fixture"
     twelve_data_api_key: SecretStr | None = None

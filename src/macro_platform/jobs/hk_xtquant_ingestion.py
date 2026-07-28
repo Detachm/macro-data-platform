@@ -1,8 +1,8 @@
-"""Durable ingestion bridge for XtQuant HK daily equity bars."""
+"""Durable ingestion bridge for XtQuant HK daily equity and index bars."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -38,10 +38,29 @@ class HkXtQuantIngestHandler:
         self,
         provider: HkXtQuantDailyBarsProvider,
         *,
+        provider_role: str = HK_XTQUANT_PRIMARY_ROLE,
+        instrument_ids: Sequence[str] | None = None,
         supports_point_in_time: bool | None = None,
         now: Callable[[], datetime] = utc_now,
     ) -> None:
+        if not provider_role.strip():
+            raise ValueError("XtQuant provider role must not be empty")
+        selected_instrument_ids = tuple(
+            provider.instrument_ids if instrument_ids is None else instrument_ids
+        )
+        if not selected_instrument_ids:
+            raise ValueError("XtQuant ingestion requires at least one instrument")
+        if len(set(selected_instrument_ids)) != len(selected_instrument_ids):
+            raise ValueError("XtQuant ingestion instruments must be unique")
+        unknown = set(selected_instrument_ids) - set(provider.instrument_ids)
+        if unknown:
+            raise ValueError(
+                "XtQuant ingestion instruments are not configured by the provider: "
+                + ", ".join(sorted(unknown))
+            )
         self._provider = provider
+        self._provider_role = provider_role.strip()
+        self._instrument_ids = selected_instrument_ids
         self._supports_point_in_time = (
             provider.capabilities().supports_point_in_time
             if supports_point_in_time is None
@@ -84,7 +103,7 @@ class HkXtQuantIngestHandler:
         )
         page: ProviderPage[MarketBar] = await self._provider.fetch_bars(
             BarQuery(
-                instrument_ids=list(self._provider.instrument_ids),
+                instrument_ids=list(self._instrument_ids),
                 interval=Interval.D1,
                 start=request.start,
                 end=request.end,
@@ -120,7 +139,7 @@ class HkXtQuantIngestHandler:
                 redacted_payload=redacted_payload,
             )
             PROVIDER_REJECTIONS.labels(
-                provider_role=HK_XTQUANT_PRIMARY_ROLE,
+                provider_role=self._provider_role,
                 dataset=Dataset.BARS.value,
                 error_code=error_code,
             ).inc()
@@ -144,7 +163,10 @@ class HkXtQuantIngestHandler:
             repository = IngestionCheckpointRepository(session, ingestion_run_id=execution.run_id)
 
             async def write_records(_: object) -> None:
-                for instrument in self._provider.instrument_contracts(fetched_at=page.fetched_at):
+                for instrument in self._provider.instrument_contracts(
+                    fetched_at=page.fetched_at,
+                    instrument_ids=self._instrument_ids,
+                ):
                     await repository.upsert_instrument(instrument)
                 for bar in page.items:
                     await repository.upsert_bar(bar)
@@ -170,10 +192,9 @@ class HkXtQuantIngestHandler:
             warnings=list(page.warnings),
         )
 
-    @staticmethod
-    def _validate_request(request: IngestJobRequest) -> None:
-        if request.provider_role != HK_XTQUANT_PRIMARY_ROLE:
-            raise ValueError("XtQuant ingestion requires the hk.bars.primary role")
+    def _validate_request(self, request: IngestJobRequest) -> None:
+        if request.provider_role != self._provider_role:
+            raise ValueError(f"XtQuant ingestion requires the {self._provider_role} role")
         if request.dataset is not Dataset.BARS:
             raise ValueError("XtQuant ingestion supports bars only")
         if request.regions != {Region.HK}:

@@ -1,4 +1,4 @@
-"""Allowlisted XtQuant adapter for HK daily equity bars.
+"""Allowlisted XtQuant adapter for HK daily equity and index bars.
 
 The XtQuant data-centre is an externally managed local service.  This adapter
 does not start it, configure credentials, or manipulate its port: it only
@@ -61,6 +61,7 @@ from macro_platform.providers.registry import ProviderRegistry
 
 HK_XTQUANT_PROVIDER_ID: Final = "hk.xtquant.v1"
 HK_XTQUANT_PRIMARY_ROLE: Final = "hk.bars.primary"
+HK_XTQUANT_EQUITY_ROLE: Final = "hk.equity-bars.supplemental"
 _MAX_CURSOR_OFFSET: Final = 100_000
 _MAX_QUERY_WINDOW: Final = timedelta(days=5 * 366)
 _MAX_ROWS_PER_INSTRUMENT: Final = 2_500
@@ -98,7 +99,7 @@ class XtQuantClient(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class HkXtQuantInstrument:
-    """Reviewed platform identity for one XtQuant HK equity symbol."""
+    """Reviewed platform identity for one XtQuant HK symbol."""
 
     instrument_id: str
     canonical_symbol: str
@@ -122,6 +123,7 @@ class _XtQuantInstrumentMetadata:
     canonical_symbol: str
     name: str
     listed_on: date
+    asset_class: AssetClass = AssetClass.EQUITY
     currency: str = "HKD"
 
 
@@ -162,16 +164,47 @@ _INSTRUMENT_METADATA: Final = {
     "09618.HK": _XtQuantInstrumentMetadata(
         canonical_symbol="XHKG:09618", name="JD.com, Inc.", listed_on=date(2020, 6, 18)
     ),
+    "HSI.HK": _XtQuantInstrumentMetadata(
+        canonical_symbol="XHKG:HSI",
+        name="Hang Seng Index",
+        listed_on=date(1969, 11, 24),
+        asset_class=AssetClass.INDEX,
+    ),
+    "HSCEI.HK": _XtQuantInstrumentMetadata(
+        canonical_symbol="XHKG:HSCEI",
+        name="Hang Seng China Enterprises Index",
+        listed_on=date(1994, 8, 8),
+        asset_class=AssetClass.INDEX,
+    ),
+    "HSTECH.HK": _XtQuantInstrumentMetadata(
+        canonical_symbol="XHKG:HSTECH",
+        name="Hang Seng TECH Index",
+        listed_on=date(2020, 7, 27),
+        asset_class=AssetClass.INDEX,
+    ),
 }
 
 HK_XTQUANT_DEFAULT_INSTRUMENTS: Final = tuple(
     HkXtQuantInstrument(
-        instrument_id=f"ins_hk_equity_{source_symbol.removesuffix('.HK').lower()}",
+        instrument_id=(
+            f"ins_hk_{metadata.asset_class.value}_{source_symbol.removesuffix('.HK').lower()}"
+        ),
         canonical_symbol=metadata.canonical_symbol,
         source_symbol=source_symbol,
         currency=metadata.currency,
     )
     for source_symbol, metadata in _INSTRUMENT_METADATA.items()
+)
+
+HK_XTQUANT_CORE_INDEX_INSTRUMENTS: Final = tuple(
+    instrument
+    for instrument in HK_XTQUANT_DEFAULT_INSTRUMENTS
+    if _INSTRUMENT_METADATA[instrument.source_symbol].asset_class is AssetClass.INDEX
+)
+HK_XTQUANT_EQUITY_INSTRUMENTS: Final = tuple(
+    instrument
+    for instrument in HK_XTQUANT_DEFAULT_INSTRUMENTS
+    if _INSTRUMENT_METADATA[instrument.source_symbol].asset_class is AssetClass.EQUITY
 )
 
 
@@ -251,9 +284,7 @@ class HkXtQuantDailyBarsProvider:
 
     def assert_production_dataset_supported(self, dataset: Dataset) -> None:
         if dataset is not Dataset.BARS:
-            raise UnsupportedCapabilityError(
-                "XtQuant is approved only for HK raw daily equity bars"
-            )
+            raise UnsupportedCapabilityError("XtQuant is approved only for HK raw daily bars")
 
     @property
     def instrument_ids(self) -> tuple[str, ...]:
@@ -263,10 +294,19 @@ class HkXtQuantDailyBarsProvider:
     def request_timeout_seconds(self) -> float:
         return self._timeout_seconds
 
-    def instrument_contracts(self, *, fetched_at: datetime) -> list[Instrument]:
+    def instrument_contracts(
+        self,
+        *,
+        fetched_at: datetime,
+        instrument_ids: Sequence[str] | None = None,
+    ) -> list[Instrument]:
+        instruments = (
+            list(self._instruments_by_id.values())
+            if instrument_ids is None
+            else self._requested_instruments(instrument_ids)
+        )
         return [
-            _instrument_contract(instrument, fetched_at=fetched_at)
-            for instrument in self._instruments_by_id.values()
+            _instrument_contract(instrument, fetched_at=fetched_at) for instrument in instruments
         ]
 
     async def healthcheck(self) -> ProviderHealth:
@@ -590,6 +630,7 @@ def register_hk_xtquant_provider_roles(
     provider.assert_production_dataset_supported(Dataset.BARS)
     registry.register(provider)
     registry.bind_role(HK_XTQUANT_PRIMARY_ROLE, provider.provider_id, required_dataset=Dataset.BARS)
+    registry.bind_role(HK_XTQUANT_EQUITY_ROLE, provider.provider_id, required_dataset=Dataset.BARS)
 
 
 def _frame_records(frame: object) -> list[dict[str, object]]:
@@ -695,6 +736,7 @@ def _instrument_contract(instrument: HkXtQuantInstrument, *, fetched_at: datetim
             "canonical_symbol": instrument.canonical_symbol,
             "source_symbol": instrument.source_symbol,
             "name": metadata.name,
+            "asset_class": metadata.asset_class.value,
             "listed_on": metadata.listed_on.isoformat(),
             "currency": instrument.currency,
         }
@@ -706,7 +748,7 @@ def _instrument_contract(instrument: HkXtQuantInstrument, *, fetched_at: datetim
         venue_mic="XHKG",
         local_symbol=instrument.source_symbol.removesuffix(".HK"),
         name=metadata.name,
-        asset_class=AssetClass.EQUITY,
+        asset_class=metadata.asset_class,
         currency=instrument.currency,
         timezone="Asia/Hong_Kong",
         status=InstrumentStatus.ACTIVE,

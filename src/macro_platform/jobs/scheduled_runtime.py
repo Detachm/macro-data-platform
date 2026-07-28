@@ -40,7 +40,12 @@ from macro_platform.providers.cn.baostock import BaoStockDailyBarsProvider
 from macro_platform.providers.cn.live import CnNbsNewsProvider, CnNbsReleaseProvider
 from macro_platform.providers.factory import create_provider_registry
 from macro_platform.providers.hk.live import HkmaPressReleaseProvider
-from macro_platform.providers.hk.xtquant import HkXtQuantDailyBarsProvider
+from macro_platform.providers.hk.xtquant import (
+    HK_XTQUANT_CORE_INDEX_INSTRUMENTS,
+    HK_XTQUANT_EQUITY_INSTRUMENTS,
+    HK_XTQUANT_EQUITY_ROLE,
+    HkXtQuantDailyBarsProvider,
+)
 from macro_platform.providers.registry import ProviderRegistry
 from macro_platform.providers.us.twelve_data import TwelveDataDailyBarsProvider
 from macro_platform.services.daily_workflow import (
@@ -85,6 +90,9 @@ def build_registered_tasks(
     hk_provider = provider_registry.resolve("hk.bars.primary")
     if not isinstance(hk_provider, HkXtQuantDailyBarsProvider):
         raise TypeError("hk.bars.primary must resolve to HkXtQuantDailyBarsProvider")
+    hk_equity_provider = provider_registry.resolve(HK_XTQUANT_EQUITY_ROLE)
+    if hk_equity_provider is not hk_provider:
+        raise TypeError("HK index and supplemental equity roles must share one XtQuant provider")
     us_provider = provider_registry.resolve("us.market.primary")
     if not isinstance(us_provider, TwelveDataDailyBarsProvider):
         raise TypeError("us.market.primary must resolve to TwelveDataDailyBarsProvider")
@@ -111,11 +119,41 @@ def build_registered_tasks(
             now=now,
         ),
         _daily_bar_task(
-            task_id="hk.daily-bars",
+            task_id="hk.core-index-bars",
             provider_role="hk.bars.primary",
             region=Region.HK,
             executor=JobRunner(
-                HkXtQuantIngestHandler(hk_provider, now=now), database=database, now=now
+                HkXtQuantIngestHandler(
+                    hk_provider,
+                    provider_role="hk.bars.primary",
+                    instrument_ids=tuple(
+                        instrument.instrument_id for instrument in HK_XTQUANT_CORE_INDEX_INSTRUMENTS
+                    ),
+                    now=now,
+                ),
+                database=database,
+                now=now,
+            ),
+            checkpoint_store=checkpoint_store,
+            calendar_timezone=calendar_timezone,
+            lookback_days=settings.worker_bar_lookback_days,
+            now=now,
+        ),
+        _daily_bar_task(
+            task_id="hk.equity-bars",
+            provider_role=HK_XTQUANT_EQUITY_ROLE,
+            region=Region.HK,
+            executor=JobRunner(
+                HkXtQuantIngestHandler(
+                    hk_provider,
+                    provider_role=HK_XTQUANT_EQUITY_ROLE,
+                    instrument_ids=tuple(
+                        instrument.instrument_id for instrument in HK_XTQUANT_EQUITY_INSTRUMENTS
+                    ),
+                    now=now,
+                ),
+                database=database,
+                now=now,
             ),
             checkpoint_store=checkpoint_store,
             calendar_timezone=calendar_timezone,

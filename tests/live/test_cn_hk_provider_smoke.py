@@ -18,6 +18,7 @@ from macro_platform.providers.cn.baostock import (
 from macro_platform.providers.cn.live import CnNbsNewsProvider, CnNbsReleaseProvider
 from macro_platform.providers.hk.live import HkCsdProvider, HkmaPressReleaseProvider
 from macro_platform.providers.hk.xtquant import (
+    HK_XTQUANT_CORE_INDEX_INSTRUMENTS,
     HK_XTQUANT_DEFAULT_INSTRUMENTS,
     HkXtQuantDailyBarsProvider,
 )
@@ -107,6 +108,44 @@ async def test_hk_xtquant_tencent_daily_bar_live_smoke() -> None:
 
     assert page.items
     assert {bar.source.source_symbol for bar in page.items} == {"00700.HK"}
+    assert all(bar.interval is Interval.D1 for bar in page.items)
+
+
+@pytest.mark.live
+@pytest.mark.asyncio
+async def test_hk_xtquant_core_indices_live_smoke() -> None:
+    _require_xtquant_live_smoke()
+    context = _live_context()
+    provider = HkXtQuantDailyBarsProvider(
+        instruments=HK_XTQUANT_CORE_INDEX_INSTRUMENTS,
+        host=os.getenv("HK_XTQUANT_HOST", "127.0.0.1"),
+        port=int(os.getenv("HK_XTQUANT_PORT", "58615")),
+        cursor_signing_secret="live-smoke-only-cursor-secret",
+    )
+    try:
+        page = await provider.fetch_bars(
+            BarQuery(
+                instrument_ids=[
+                    instrument.instrument_id for instrument in HK_XTQUANT_CORE_INDEX_INSTRUMENTS
+                ],
+                interval=Interval.D1,
+                start=context.as_of - timedelta(days=14),
+                end=context.as_of + timedelta(days=1),
+                adjustment=Adjustment.RAW,
+                as_of=context.as_of,
+                limit=40,
+            ),
+            context,
+        )
+    finally:
+        await provider.aclose()
+
+    assert page.items
+    assert {bar.source.source_symbol for bar in page.items} == {
+        "HSI.HK",
+        "HSCEI.HK",
+        "HSTECH.HK",
+    }
     assert all(bar.interval is Interval.D1 for bar in page.items)
 
 

@@ -4,7 +4,7 @@ Owner: @Nouzee
 Issue: #1 P0
 状态: review，冻结草案，已进入实习生 B 交叉评审
 区域: CN / HK
-Provider roles: `cn.instruments.primary`, `cn.bars.primary`, `cn.macro.primary`, `cn.news.primary`, `hk.instruments.primary`, `hk.bars.primary`, `hk.macro.primary`, `hk.news.primary`
+Provider roles: `cn.instruments.primary`, `cn.bars.primary`, `cn.macro.primary`, `cn.news.primary`, `hk.instruments.primary`, `hk.bars.primary`, `hk.equity-bars.supplemental`, `hk.macro.primary`, `hk.news.primary`
 数据集: instruments / bars / macro_series / macro_observations / macro_releases / news
 采购/合同负责人: 项目负责人
 账号负责人: 项目负责人；两日 MVP 仅允许无凭据公开 API 或合成/脱敏 fixture
@@ -25,7 +25,7 @@ Provider roles: `cn.instruments.primary`, `cn.bars.primary`, `cn.macro.primary`,
 | CN | macro/releases | release calendar live-ready；macro observation 先 fixture-only | NBS 发布日程、NBS 数据发布库 | NBS 新闻稿页面 | 无 token；EasyQuery 无官方外部 API 文档，observation 不 live-ready |
 | CN | news/announcements | NBS 数据发布标题 metadata live-ready；交易所/公司公告仍 fixture-only；禁止保存正文 | NBS 数据发布 | SSE/SZSE/CNINFO 公告检索页 | NBS 无 token；只读取标题、链接和发布日期 |
 | HK | instruments | fixture-only；HKEX 公共证券列表可人工 fixture，付费 master file 未采购 | HKEX Securities Lists | HKEX Securities Master File | 无 Data Marketplace/Historical Data 订阅 |
-| HK | daily bars | `live-ready`，仅覆盖 10 个批准的核心港股；其他标的仍为 gap | 项目托管 XtQuant data-centre（迅投）`1d` | HKEX Data Marketplace | macro worker 不持有 token；只连接已运行的 XtQuant 服务 |
+| HK | daily bars | `live-ready`，覆盖 HSI/HSCEI/HSTECH 三项必需核心指数及 10 个可选港股；其他标的仍为 gap | 项目托管 XtQuant data-centre（迅投）`1d` | HKEX Data Marketplace | macro worker 不持有 token；只连接已运行的 XtQuant 服务 |
 | HK | macro/releases | allowlisted C&SD adapter live-ready；release-calendar coverage requires a separately approved source | DATA.GOV.HK/C&SD API、HKMA Open API | HKMA Economic & Financial Data page | 无需申请、注册或认证 |
 | HK | news/announcements | HKMA press releases live-ready；HKEX issuer announcements fixture-only | HKMA Press Releases API；HKEXnews title search | HKEX IIS paid feed | HKMA 无需凭据；HKEX IIS 无凭据 |
 
@@ -270,9 +270,9 @@ Provider roles: `cn.instruments.primary`, `cn.bars.primary`, `cn.macro.primary`,
 
 | 项 | primary | fallback |
 |---|---|---|
-| Provider role | `hk.bars.primary` | `hk.bars.fallback` |
+| Provider role | 核心指数 `hk.bars.primary`；个股 `hk.equity-bars.supplemental` | `hk.bars.fallback` |
 | 来源 | 项目托管 XtQuant data-centre（迅投 xtquant Python SDK） | HKEX Data Marketplace，用于扩大覆盖或替换内部运行时 |
-| 状态 | live-ready；仅 `00700.HK`、`09988.HK`、`03690.HK`、`01810.HK`、`00941.HK`、`00005.HK`、`00388.HK`、`01299.HK`、`02318.HK`、`09618.HK` | gap |
+| 状态 | live-ready；必需指数仅 `HSI.HK`、`HSCEI.HK`、`HSTECH.HK`；可选个股仅 `00700.HK`、`09988.HK`、`03690.HK`、`01810.HK`、`00941.HK`、`00005.HK`、`00388.HK`、`01299.HK`、`02318.HK`、`09618.HK` | gap |
 | 官方文档 | 项目内 Beast XtQuant 实现及随 SDK 发布的 `xtdata` 文档 | 按合同 |
 | Base URL/端点 | 本机或私有网络 XtQuant data-centre；worker 只调用 `connect(host, port)`，不启动、停止或清理端口 | 按合同 |
 | 请求参数 | `stock_list`, `period=1d`, `start_time`, `end_time`, `dividend_type=none`, `fill_data=false` | 按合同 |
@@ -288,7 +288,7 @@ Provider roles: `cn.instruments.primary`, `cn.bars.primary`, `cn.macro.primary`,
 
 | 上游字段 | 公共字段 | 变换/口径 | 必填 | 缺失策略 |
 |---|---|---|---:|---|
-| `00700.HK` 等 XtQuant code | `canonical_symbol`, `instrument_id` | 10 条静态 mapping，例如 `00700.HK`→`XHKG:00700` | 是 | 未在 allowlist 或响应 symbol 不匹配时拒绝 |
+| XtQuant code | `canonical_symbol`, `instrument_id` | 13 条静态 mapping；例如 `HSCEI.HK`→`XHKG:HSCEI`、`00700.HK`→`XHKG:00700` | 是 | 未在 allowlist 或响应 symbol 不匹配时拒绝 |
 | `index` / `time` | `trading_date`, `bar_start`, `bar_end` | `index` 为 `YYYYMMDD`；epoch milliseconds 与香港日期必须一致；标准交易日按 09:30–16:00 HK 转 UTC | 是 | 缺失、冲突或无法转换时拒绝 |
 | Open/High/Low/Close | `open/high/low/close` | Decimal；币种为交易柜台币种 | 是 | 缺失拒绝 |
 | Volume | `volume` | 股/单位，非负 Decimal | 否 | `null` + flag |
@@ -373,7 +373,7 @@ Provider roles: `cn.instruments.primary`, `cn.bars.primary`, `cn.macro.primary`,
 | NBS data portal observations | Yes for fixtures only | Yes for fixtures only | No | No | No | 官方数据发布库；EasyQuery 未作为正式外部 API 文档，当前不冻结 live observation 权利 |
 | HKEX public securities lists | Yes, metadata fixture only | Yes, internal review | No raw page/content | No | No | HKEX Terms 禁止未经许可使用 marks/information；市场数据另需许可 |
 | HKEX Historical Data / Data Marketplace | No until contract | No until contract | No | No | No | 未订阅；市场数据 vendor/end-user/redistribution 权利按合同 |
-| 项目托管 XtQuant HK daily bars | Yes, normalized internal facts for the ten allowlisted symbols | Yes, internal analysis | No | No | No | 内部 XtQuant data-centre 账户和 token 由运行环境管理；adapter 不保存 token、SDK cache 或原始响应，且不将内部访问视为再分发授权 |
+| 项目托管 XtQuant HK daily bars | Yes, normalized internal facts for the 13 allowlisted symbols | Yes, internal analysis | No | No | No | 内部 XtQuant data-centre 账户和 token 由运行环境管理；adapter 不保存 token、SDK cache 或原始响应，且不将内部访问视为再分发授权 |
 | HKEXnews title search | Yes, title/url fixture only | Yes, internal review | No | No | No | HKEXnews/HKEX Terms；IIS 才是授权 feed |
 | HKEX IIS | No until contract | No until contract | No | No | No | 未取得 IIS 客户资格、传输规格和许可 |
 | DATA.GOV.HK/C&SD API | Yes | Yes | Yes, with attribution | Yes, with attribution | Yes, with attribution | DATA.GOV.HK Terms 允许免费浏览、下载、分发、复制、打印，含商业和非商业用途，需注明来源和遵守条款 |
@@ -434,7 +434,7 @@ Issue #28 的 live 选择通过 `PROVIDER_MODE` 显式控制：`live` 才会由�
 | `CnNbsReleaseProvider` | NBS release calendar | `macro_releases` | 只输出发布日程 metadata，不保存正文 |
 | `CnNbsNewsProvider` | NBS `数据发布` listing | `news` | 只输出标题、官方链接、发布日期和 `first_seen`；摘要/正文请求明确拒绝 |
 | `BaoStockDailyBarsProvider` | BaoStock `query_history_k_data_plus` | `bars` | 仅 `sh.000001`、`sh.000300`、`sz.399001`；`1d raw`，`available_at=first_seen` |
-| `HkXtQuantDailyBarsProvider` | 项目托管 XtQuant data-centre | `bars` | 十个批准 HK equity mappings；`1d raw`，`available_at=first_seen`，不启动或配置 data-centre |
+| `HkXtQuantDailyBarsProvider` | 项目托管 XtQuant data-centre | `bars` | 三个批准 HK 核心指数 + 十个批准 HK equity mappings；`1d raw`，`available_at=first_seen`，不启动或配置 data-centre |
 | `HkCsdProvider` | C&SD `510-60004` API | `macro_series`, `macro_observations` | 以 API 首次可见时间作为 `available_at`，不声称 PIT 或 revision history |
 | `HkmaPressReleaseProvider` | HKMA press-releases API | `news` | 只输出标题/链接；正文请求明确拒绝 |
 
@@ -491,7 +491,7 @@ Adapter authors must register capabilities according to this matrix:
 - CN release calendar: 每日一次 GET NBS 发布日程页面；无 token；成本为公共网页请求。
 - CN official headlines: 每日一次 GET NBS 数据发布列表首页；无 token；只存 metadata，不请求文章正文。
 - CN core-index bars: BaoStock client 查询 `sh.000300` 最近 10 个日历日；无 token；成本为公共客户端请求。
-- HK daily bars: 已配置的 XtQuant data-centre 查询 `00700.HK` 最近 10 个日历日；worker 无 token；成本计入内部 XtQuant 账户/缓存。
+- HK daily bars: 已配置的 XtQuant data-centre 查询 `HSI.HK`、`HSCEI.HK`、`HSTECH.HK` 最近 14 个日历日；worker 无 token；成本计入内部 XtQuant 账户/缓存。
 - HK macro: 每日一次 C&SD table API 或 HKMA Open API，`pagesize<=100`; 无 token；成本为公共 API 请求。
 - HKMA press releases: 每日一次 `lang=en&offset=0`; 无 token；成本为公共 API 请求。
 - 所有未列为 `live-ready` 的 `fixture-only` 和 `gap` 来源在线 smoke 禁止运行。NBS 新闻 smoke 与其他公共来源一样必须显式设置 `RUN_LIVE_SMOKE=1`；XtQuant smoke 还必须设置 `RUN_XTQUANT_LIVE_SMOKE=1`，避免没有 vendor runtime 或共享数据中心时误跑。

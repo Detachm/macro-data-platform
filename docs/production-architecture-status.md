@@ -64,13 +64,12 @@ Delivery audit + message_id + metrics + backup
 ### 已接入
 
 - CN：BaoStock 核心指数日线、NBS 发布日历、NBS 数据发布官方标题 metadata。
-- HK：XtQuant 已审核个股日线、HKMA 官方标题。
+- HK：XtQuant 的 HSI/HSCEI/HSTECH 核心指数日线、十个已审核个股日线、HKMA 官方标题。
 - US：Twelve Data 的 SPY/QQQ/DIA 日线。
 - fixture 仅用于离线测试，生产环境禁止回退到 fixture。
 
 ### 尚需补齐
 
-- XtQuant HK 核心指数，例如恒生指数、恒生科技指数；实际 source symbol 必须通过付费数据中心能力探测确认，不能猜测。
 - HK/US 宏观发布日历。
 - 宿主机 XtQuant `58615` 常驻服务及健康检查。
 
@@ -105,7 +104,8 @@ PostgreSQL 设计：
 ## 7. Secret 与网络边界
 
 - XtQuant token 只属于宿主机 Beast/XtQuant 服务。K8s 工作负载只获得受限的 host/port，不获得该 token。
-- Beast 中已经进入 Git 历史的明文 XtQuant token 必须轮换，并迁入宿主机受限 secret/EnvironmentFile。
+- XtQuant 继续使用项目负责人确认的现有付费 token，本轮不轮换；正式常驻服务将其隔离在宿主机
+  root-only EnvironmentFile，K8s 工作负载不持有该 token。
 - `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、日报群 Chat ID、预警群 Chat ID 和数据库密码进入 K8s Secret。
 - K8s Pod 到宿主机 `58615` 的连接只允许宏观 worker，禁止公开暴露该端口。
 - 正式飞书凭据不得经聊天、Issue、PR、截图或 shell history 传递。
@@ -138,23 +138,24 @@ PostgreSQL 设计：
   `X-Request-ID` 和迁移 `0013` 的 `delivery_operator_actions` 永久审计，`uncertain` 必须人工确认
   群内无消息，API 不接收 Chat ID。
 - #50 仓库侧已增加 fail-closed 的宿主机 XtQuant data-centre CLI、systemd unit、TCP 自检和只输出
-  HSI/HSTECH 标识元数据的 entitlement probe；真实 token 轮换、Beast 139 个 tracked 配置清理、
-  防火墙、服务启动和指数 allowlist 仍需现场验收。
-- #51 第一阶段已定义并持久化单一 `report_day_policy`：周末/区域交易所休市不会把对应 market input
-  误报为必需缺失，新闻和宏观日历仍 fail closed；获批 CN 新闻、HK/US 发布日历及两日 live 验收未完成。
+  HSI/HSCEI/HSTECH 标识元数据的 entitlement probe。2026-07-28 已用当前付费 token 在回环服务确认
+  `HSI.HK`、`HSCEI.HK`、`HSTECH.HK` 唯一身份，并通过三项 `1d raw` live smoke；必需核心指数任务、
+  独立可选个股任务和质量证据已接入。正式防火墙、systemd 常驻和重启验收仍需现场完成。
+- #51 已定义并持久化单一 `report_day_policy`：周末/区域交易所休市不会把对应 market input 误报为
+  必需缺失，新闻和宏观日历仍 fail closed；CN 官方新闻已接入，HK/US 发布日历及连续两日报告日 live
+  验收未完成。
 
 ### 尚未完成
 
-1. 按 #50 轮换 Beast 明文 XtQuant token，恢复并托管 `58615` 数据中心，同时扩展 HK
-   核心指数。
-2. 按 #51 补齐 CN 新闻、HK/US 日历和节假日报告策略。
-3. 实现周末/节假日宏观版，不把休市当作必需行情缺失。
-4. #49 的三阶段 K3s 清单和详细运行手册已经进入仓库：包括 Namespace、Deployment、
+1. 按 #51 补齐 HK/US 宏观发布日历。
+2. 按 #50 将已验证 XtQuant 服务安装为受限 systemd 常驻服务，完成防火墙、Pod 连通、SIGKILL 和
+   宿主机重启验收。
+3. #49 的三阶段 K3s 清单和详细运行手册已经进入仓库：包括 Namespace、Deployment、
    StatefulSet、Service、migration Job、CronJob、100 Gi PVC、readiness、NetworkPolicy、运行时
    Secret 创建流程、`/archive` 备份、70%/85% 幂等预警和隔离恢复演练；尚未在本机安装 K3s 或执行
    真实 PVC/重启/恢复验收。
-5. 在维护窗口安装固定版本 K3s，执行 #49 的宿主机验收，并确认最终值班 ownership。
-6. 完成 provider 连续两个报告日验证和完整链路连续五个工作日 soak。
+4. 安装固定版本 K3s，执行 #49 的宿主机验收，并确认最终值班 ownership。
+5. 完成 provider 连续两个报告日验证和完整链路连续五个工作日 soak。
 
 GitHub 当前开放的生产任务是 #33、#49、#50 和 #51，分别跟踪编排、部署/存储、
 Beast/HK 行情和新闻/日历/节假日策略；不重新打开已经完成的旧 provider issue。
@@ -163,9 +164,8 @@ Beast/HK 行情和新闻/日历/节假日策略；不重新打开已经完成的
 
 推荐顺序：
 
-1. 完成 #50：轮换已暴露的 XtQuant token，恢复宿主机 `58615` 常驻服务并接入付费
-   XtQuant HK 核心指数。
-2. 完成 #51：补齐 CN 新闻、HK/US 日历及节假日报告策略。
+1. 完成 #51：补齐 HK/US 日历。
+2. 完成 #50：把已通过权限及日线验证的 XtQuant 服务托管为宿主机 `58615` 常驻服务。
 3. 完成 #49：安装 K3s，完成 PostgreSQL PVC、Secret、迁移和 `/archive` 备份。
 4. 收口 #33 的 K8s 运维所有权和五工作日 soak；周末策略由 #51 提供输入。
 5. 执行 E2E、两日报告日 provider 验证和五工作日生产式 soak。

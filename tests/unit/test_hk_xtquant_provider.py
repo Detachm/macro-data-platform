@@ -1,17 +1,19 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from uuid import UUID
 
 import pytest
 
 from macro_platform.config import Settings
-from macro_platform.contracts.common import Region
+from macro_platform.contracts.common import AssetClass, Region
 from macro_platform.contracts.market import Adjustment, BarQuery, Interval
 from macro_platform.contracts.provider import FetchContext
 from macro_platform.providers.base import ProviderCursorError, ProviderUnavailableError
 from macro_platform.providers.factory import create_provider_registry
 from macro_platform.providers.hk.xtquant import (
+    HK_XTQUANT_CORE_INDEX_INSTRUMENTS,
+    HK_XTQUANT_EQUITY_ROLE,
     HK_XTQUANT_PRIMARY_ROLE,
     HkXtQuantDailyBarsProvider,
     HkXtQuantInstrument,
@@ -66,7 +68,9 @@ class _Client:
 
     def get_market_data_ex(self, **kwargs: object) -> dict[str, _Frame]:
         self.calls.append(("read", kwargs))
-        return {"00700.HK": _Frame(self._records)}
+        stock_list = kwargs["stock_list"]
+        assert isinstance(stock_list, list)
+        return {str(symbol): _Frame(self._records) for symbol in stock_list}
 
 
 def _provider(client: _Client | None = None) -> HkXtQuantDailyBarsProvider:
@@ -149,6 +153,50 @@ async def test_xtquant_maps_hk_daily_bar_via_shared_datacentre_protocol() -> Non
     ]
 
 
+@pytest.mark.asyncio
+async def test_xtquant_maps_entitlement_confirmed_hk_core_indices() -> None:
+    client = _Client([_row()])
+    provider = HkXtQuantDailyBarsProvider(
+        instruments=HK_XTQUANT_CORE_INDEX_INSTRUMENTS,
+        client=client,
+        host="127.0.0.1",
+        port=58615,
+        cursor_signing_secret="unit-test-cursor-secret",
+        clock=lambda: NOW,
+    )
+    instrument_ids = [instrument.instrument_id for instrument in HK_XTQUANT_CORE_INDEX_INSTRUMENTS]
+
+    page = await provider.fetch_bars(
+        _query().model_copy(update={"instrument_ids": instrument_ids}), CONTEXT
+    )
+    contracts = provider.instrument_contracts(
+        fetched_at=NOW,
+        instrument_ids=instrument_ids,
+    )
+
+    assert {item.source.source_symbol for item in page.items} == {
+        "HSI.HK",
+        "HSCEI.HK",
+        "HSTECH.HK",
+    }
+    assert {item.canonical_symbol for item in page.items} == {
+        "XHKG:HSI",
+        "XHKG:HSCEI",
+        "XHKG:HSTECH",
+    }
+    assert {item.instrument_id for item in page.items} == {
+        "ins_hk_index_hsi",
+        "ins_hk_index_hscei",
+        "ins_hk_index_hstech",
+    }
+    assert {item.asset_class for item in contracts} == {AssetClass.INDEX}
+    assert {item.listed_on for item in contracts} == {
+        date(1969, 11, 24),
+        date(1994, 8, 8),
+        date(2020, 7, 27),
+    }
+
+
 def test_xtquant_rejects_unapproved_hk_symbol() -> None:
     with pytest.raises(ValueError, match="approved HK allowlist"):
         HkXtQuantInstrument(
@@ -210,6 +258,7 @@ async def test_xtquant_binds_live_hk_bars_role_in_factory() -> None:
     registry = ProviderRegistry()
     register_hk_xtquant_provider_roles(registry, provider)
     assert registry.resolve(HK_XTQUANT_PRIMARY_ROLE) is provider
+    assert registry.resolve(HK_XTQUANT_EQUITY_ROLE) is provider
 
     live_registry = create_provider_registry(
         Settings(app_env="test", provider_mode="live", provider_cursor_secret="test-cursor")
