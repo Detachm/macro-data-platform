@@ -37,14 +37,23 @@ ADR 0005 已决定内部个人使用不设置运行时来源权利 gate。因此
   input snapshot 没有 materialized facts、或 payload facts 与声明的 `fact_ids` 不一致时同样
   `blocked`。历史 `denied` 标记被忽略；它只可能是旧来源权利元数据，绝不构成质量或来源权利规则。
 - 成功的 scheduled task 必须返回其 durable `run_id`；缺失时 worker 改记为
-  `MISSING_DURABLE_RUN_ID` 并 fail closed。后续 task 注册仍必须使用 checkpointed `JobRunner`，
-  以取得该 run 和恢复边界。
-- 本 PR 故意让 `build_registered_tasks()` 返回空元组。报告日历、各地区任务到 input snapshot 的
-  materialization、以及生产 cron/触发时间尚未有冻结合同；在它们定义前不得登记 provider 或发起
-  live ingestion。空 task bundle 若被直接执行会 fail closed 为 `blocked`；该扩展点是范围边界，
-  不是已完成的生产调度。
-- `macro-data-worker` 入口在注册为空时记录 `SCHEDULER_NOT_CONFIGURED` 并以失败状态退出，不会以
-  空闲进程伪装成正常生产 worker。
+  `MISSING_DURABLE_RUN_ID` 并 fail closed。所有 live task 都经 checkpointed `JobRunner` 执行。
+- 已注册的 live 任务为 `cn.daily-bars`（BaoStock 三个 CN 核心指数）、`hk.daily-bars`（XtQuant
+  审核的十个 HK 标的）和 `us.daily-bars`（Twelve Data 的 SPY/QQQ/DIA）。每个请求取报告日上海
+  当地午夜之前、可配置的 14 天回看窗口，因而只请求上一交易日及更早的日线。
+- 新增 `scheduled_task_checkpoints`。其主键是 `(report_date, task_id)`，保存稳定的 live request
+  clock、下一页 opaque cursor、source watermark、最后的 durable run ID 与接受/隔离计数。page
+  commit 仍是事实写入的唯一幂等边界；task checkpoint 只负责在 worker 重启后从已提交页继续。完成的
+  task 直接复放该持久化结果，不再访问上游。
+- `ReportInputSnapshotMaterializer` 从 PostgreSQL 规范化事实、revision、`ingest_rejections` 和
+  task 终态派生 `facts`、`source_references` 与 `input_quality`，随后写入不可变 snapshot。默认
+  上海 07:50 抓取、08:15 截止；晚于 cutoff 到达的事实为 `late`，超过可配置窗口的事实为 `stale`。
+  CN/HK news 和 CN/US macro release 尚无 live checkpointed handler，因此在没有已入库事实时显式
+  标为 `missing`，阻止报告，而不是伪造成功。
+- `macro-data-worker` 默认在可配置的时区、时刻和轮询间隔下每天运行一次。运维可使用
+  `macro-data-worker --report-date YYYY-MM-DD` 或
+  `macro-data-worker --backfill-start YYYY-MM-DD --backfill-end YYYY-MM-DD`；两种模式互斥，backfill
+  是包含首尾日期的串行循环并复用同一 advisory lock 与 checkpoint。
 
 ## 后果与回滚
 
@@ -52,11 +61,13 @@ ADR 0005 已决定内部个人使用不设置运行时来源权利 gate。因此
 - advisory lock 只保护报告日编排，不能替代事实表的唯一约束或 provider run fencing。
 - 若 worker 行为异常，停用任务注册或停止 worker 进程即可；不删除已持久化的事实、run 或
   checkpoint。恢复时由每个 task 的 `JobRunner` 重放安全页。
-- 自动计划和 snapshot materializer 启用前，必须另开 Issue/ADR 并补真实 PostgreSQL e2e，证明连续
-  两个报告日期、重启恢复和 API 只读路径。
+- 无法绑定任一 reviewed live provider role 时，worker 仍以 `SCHEDULER_NOT_CONFIGURED` 失败退出；
+  fixture provider 不能作为生产 fallback。
 
 ## 验证
 
-- `RPT-029`：必需隔离和缺失输入阻断、可选修订降级、必需 retryable 输入不发布。
-- `JOB-029`：限次重试、date lock 冲突、闭区间 backfill。
-- PostgreSQL integration：两个独立连接竞争同一 report date，第二个 worker 不得取得锁。
+- `RPT-029`：必需隔离和缺失输入阻断、可选修订降级、必需 retryable 输入不发布；snapshot 不读取或
+  写入任何 rights/LLM runtime gate。
+- `JOB-029`：限次重试、date lock 冲突、闭区间 backfill、完成 task 的 durable replay。
+- PostgreSQL e2e：两个独立连接竞争同一 report date；worker 在首个 page commit 后重启，从下一页
+  cursor 恢复，连续两个 backfill report date 均写入不可变 input snapshot，且 normalized bars 无重复。

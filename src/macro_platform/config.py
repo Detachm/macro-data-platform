@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from datetime import date
 from functools import lru_cache
 from typing import Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -32,9 +34,28 @@ class Settings(BaseSettings):
     us_provider_mode: Literal["fixture", "live"] = "fixture"
     twelve_data_api_key: SecretStr | None = None
     twelve_data_cursor_secret: SecretStr | None = None
+    worker_schedule_timezone: str = "Asia/Shanghai"
+    worker_schedule_hour_local: int = Field(default=7, ge=0, le=23)
+    worker_schedule_minute_local: int = Field(default=50, ge=0, le=59)
+    worker_schedule_poll_seconds: int = Field(default=60, ge=1, le=3600)
+    worker_report_cutoff_hour_local: int = Field(default=8, ge=0, le=23)
+    worker_report_cutoff_minute_local: int = Field(default=15, ge=0, le=59)
+    worker_bar_lookback_days: int = Field(default=14, ge=7, le=366)
+    worker_max_task_attempts: int = Field(default=3, ge=1, le=10)
+    worker_retry_delay_seconds: float = Field(default=1.0, gt=0, le=300)
+    worker_market_freshness_hours: int = Field(default=72, ge=1, le=720)
+    worker_news_freshness_hours: int = Field(default=30, ge=1, le=720)
+    worker_macro_freshness_days: int = Field(default=8, ge=1, le=365)
+    worker_run_once_report_date: date | None = None
+    worker_backfill_start_date: date | None = None
+    worker_backfill_end_date: date | None = None
 
     @model_validator(mode="after")
     def reject_development_secret_in_production(self) -> Settings:
+        try:
+            ZoneInfo(self.worker_schedule_timezone)
+        except ZoneInfoNotFoundError as error:
+            raise ValueError("WORKER_SCHEDULE_TIMEZONE must be an IANA timezone") from error
         if (
             self.app_env == "production"
             and self.service_token.get_secret_value() == "development-only-token"
@@ -48,6 +69,23 @@ class Settings(BaseSettings):
             == "development-only-provider-cursor-secret"
         ):
             raise ValueError("PROVIDER_CURSOR_SECRET must be configured in production")
+        if (self.worker_backfill_start_date is None) != (self.worker_backfill_end_date is None):
+            raise ValueError(
+                "WORKER_BACKFILL_START_DATE and WORKER_BACKFILL_END_DATE must be set together"
+            )
+        if (
+            self.worker_backfill_start_date is not None
+            and self.worker_backfill_end_date is not None
+            and self.worker_backfill_end_date < self.worker_backfill_start_date
+        ):
+            raise ValueError(
+                "WORKER_BACKFILL_END_DATE must not be before WORKER_BACKFILL_START_DATE"
+            )
+        if (
+            self.worker_run_once_report_date is not None
+            and self.worker_backfill_start_date is not None
+        ):
+            raise ValueError("WORKER_RUN_ONCE_REPORT_DATE cannot be combined with worker backfill")
         return self
 
 

@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -339,6 +340,37 @@ async def test_job_029_empty_task_bundle_fails_closed() -> None:
 
     assert result.status == "blocked"
     assert result.task_results == ()
+
+
+@pytest.mark.asyncio
+async def test_job_029_worker_persists_materialized_gate_evidence_and_blocks_the_report() -> None:
+    task = _Task(task_id="cn.daily-bars")
+
+    class _Materializer:
+        async def materialize(
+            self,
+            report_date: date,
+            *,
+            task_results: tuple[ScheduledTaskResult, ...],
+        ) -> object:
+            assert report_date == date(2026, 7, 27)
+            assert task_results[0].run_id is not None
+            return SimpleNamespace(
+                snapshot=SimpleNamespace(snapshot_id="snapshot-job-029"),
+                quality=SimpleNamespace(status="blocked"),
+            )
+
+    worker = ScheduledIngestionWorker(
+        tasks=[task],
+        report_date_lock=_Lock(),
+        input_materializer=_Materializer(),  # type: ignore[arg-type]
+    )
+
+    result = await worker.run_for_date(date(2026, 7, 27))
+
+    assert result.status == "blocked"
+    assert result.snapshot_id == "snapshot-job-029"
+    assert result.quality_status == "blocked"
 
 
 @pytest.mark.asyncio

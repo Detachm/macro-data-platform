@@ -351,14 +351,14 @@ async def test_db_002_migration_upgrades_0002_to_current_schema(database: Databa
                         "WHERE schemaname = 'public' AND tablename IN "
                         "('report_input_snapshots', 'daily_reports', 'daily_report_source_refs', "
                         "'delivery_attempts', 'macro_release_revisions', 'market_bar_revisions', "
-                        "'report_generation_attempts')"
+                        "'report_generation_attempts', 'scheduled_task_checkpoints')"
                     )
                 )
             ).all()
         )
         preserved_run = await session.get(ProviderRunRow, _previous_schema_run_id)
         preserved_instrument = await session.get(InstrumentRow, _previous_schema_instrument_id)
-    assert revision == "0007"
+    assert revision == "0008"
     assert tables == {
         "report_input_snapshots",
         "daily_reports",
@@ -367,6 +367,7 @@ async def test_db_002_migration_upgrades_0002_to_current_schema(database: Databa
         "macro_release_revisions",
         "market_bar_revisions",
         "report_generation_attempts",
+        "scheduled_task_checkpoints",
     }
     assert preserved_run is not None
     assert preserved_run.idempotency_key is None

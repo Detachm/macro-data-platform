@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal, Protocol
+from typing import cast as typing_cast
 from uuid import UUID
 
 from sqlalchemy import DateTime, cast, delete, func, literal, or_, select, union_all, update
@@ -59,6 +60,7 @@ from macro_platform.storage.models import (
     ProviderRunRow,
     ReportGenerationAttemptRow,
     ReportInputSnapshotRow,
+    ScheduledTaskCheckpointRow,
 )
 from macro_platform.storage.reporting import (
     DeliveryAttempt,
@@ -819,6 +821,124 @@ def _date_only_window(start: datetime, end: datetime) -> tuple[date, date]:
 class IngestionRunLease:
     run_id: UUID
     attempt_no: int
+
+
+@dataclass(frozen=True)
+class ScheduledTaskCheckpoint:
+    report_date: date
+    task_id: str
+    provider_role: str
+    dataset: Dataset
+    region: str
+    request_as_of: datetime
+    status: Literal["active", "completed"]
+    next_cursor: str | None
+    source_watermark: str | None
+    run_id: UUID | None
+    records_accepted: int
+    records_rejected: int
+
+
+class ScheduledTaskCheckpointRepository:
+    """Persist scheduler progress independently from page-level fact commits."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def begin_or_load(
+        self,
+        *,
+        report_date: date,
+        task_id: str,
+        provider_role: str,
+        dataset: Dataset,
+        region: str,
+        request_as_of: datetime,
+    ) -> ScheduledTaskCheckpoint:
+        await self._session.execute(
+            insert(ScheduledTaskCheckpointRow)
+            .values(
+                report_date=report_date,
+                task_id=task_id,
+                provider_role=provider_role,
+                dataset=dataset.value,
+                region=region,
+                request_as_of=request_as_of,
+                status="active",
+                records_accepted=0,
+                records_rejected=0,
+            )
+            .on_conflict_do_nothing(
+                index_elements=(
+                    ScheduledTaskCheckpointRow.report_date,
+                    ScheduledTaskCheckpointRow.task_id,
+                )
+            )
+        )
+        row = await self._session.get(ScheduledTaskCheckpointRow, (report_date, task_id))
+        if row is None:
+            raise RuntimeError("scheduled task checkpoint was not persisted")
+        if (
+            row.provider_role != provider_role
+            or row.dataset != dataset.value
+            or row.region != region
+        ):
+            raise ValueError("scheduled task checkpoint identity was reused for another task")
+        return _scheduled_task_checkpoint(row)
+
+    async def advance(
+        self,
+        checkpoint: ScheduledTaskCheckpoint,
+        *,
+        run_id: UUID,
+        next_cursor: str | None,
+        source_watermark: str | None,
+        records_accepted: int,
+        records_rejected: int,
+    ) -> ScheduledTaskCheckpoint:
+        if checkpoint.status == "completed":
+            raise ValueError("completed scheduled task checkpoint cannot advance")
+        completed = next_cursor is None
+        updated = await self._session.execute(
+            update(ScheduledTaskCheckpointRow)
+            .where(
+                ScheduledTaskCheckpointRow.report_date == checkpoint.report_date,
+                ScheduledTaskCheckpointRow.task_id == checkpoint.task_id,
+                ScheduledTaskCheckpointRow.status == "active",
+            )
+            .values(
+                status="completed" if completed else "active",
+                run_id=run_id,
+                next_cursor=next_cursor,
+                source_watermark=source_watermark,
+                records_accepted=ScheduledTaskCheckpointRow.records_accepted + records_accepted,
+                records_rejected=ScheduledTaskCheckpointRow.records_rejected + records_rejected,
+            )
+            .returning(ScheduledTaskCheckpointRow)
+        )
+        row = updated.scalar_one_or_none()
+        if row is None:
+            raise RuntimeError("scheduled task checkpoint was lost before it advanced")
+        return _scheduled_task_checkpoint(row)
+
+
+def _scheduled_task_checkpoint(row: ScheduledTaskCheckpointRow) -> ScheduledTaskCheckpoint:
+    if row.status not in {"active", "completed"}:
+        raise RuntimeError("scheduled task checkpoint has an invalid status")
+    return ScheduledTaskCheckpoint(
+        report_date=row.report_date,
+        task_id=row.task_id,
+        provider_role=row.provider_role,
+        dataset=Dataset(row.dataset),
+        region=row.region,
+        request_as_of=row.request_as_of,
+        status=typing_cast(Literal["active", "completed"], row.status),
+        next_cursor=row.next_cursor,
+        source_watermark=row.source_watermark,
+        run_id=row.run_id,
+        records_accepted=row.records_accepted,
+        records_rejected=row.records_rejected,
+    )
 
 
 class IngestionRunRepository:
