@@ -11,7 +11,11 @@ from dataclasses import asdict, dataclass
 from types import ModuleType
 from typing import Any, Literal, Protocol
 
-TargetIndex = Literal["hang_seng_index", "hang_seng_tech_index"]
+TargetIndex = Literal[
+    "hang_seng_index",
+    "hang_seng_china_enterprises_index",
+    "hang_seng_tech_index",
+]
 
 
 class XtQuantMetadataClient(Protocol):
@@ -42,6 +46,7 @@ class EntitlementProbeResult:
     status: Literal["confirmed", "incomplete", "ambiguous"]
     sectors_scanned: int
     symbols_scanned: int
+    symbols_unreadable: int
     matches: tuple[IndexIdentityMatch, ...]
     missing_targets: tuple[TargetIndex, ...]
     ambiguous_targets: tuple[TargetIndex, ...]
@@ -49,7 +54,7 @@ class EntitlementProbeResult:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Confirm HSI and HSTECH XtQuant symbols from instrument metadata"
+        description="Confirm HSI, HSCEI and HSTECH XtQuant symbols from instrument metadata"
     )
     parser.add_argument("--host", required=True)
     parser.add_argument("--port", type=int, default=58615)
@@ -81,8 +86,13 @@ def probe_hk_index_entitlements(
         }
     )
     matches: list[IndexIdentityMatch] = []
+    symbols_unreadable = 0
     for symbol in symbols:
-        detail = client.get_instrument_detail(symbol, iscomplete=False)
+        try:
+            detail = client.get_instrument_detail(symbol, iscomplete=False)
+        except Exception:  # noqa: BLE001 - proprietary metadata can reject unrelated symbols
+            symbols_unreadable += 1
+            continue
         if not detail:
             continue
         name = str(detail.get("InstrumentName") or detail.get("ProductName") or "").strip()
@@ -99,7 +109,11 @@ def probe_hk_index_entitlements(
             )
         )
 
-    required: tuple[TargetIndex, ...] = ("hang_seng_index", "hang_seng_tech_index")
+    required: tuple[TargetIndex, ...] = (
+        "hang_seng_index",
+        "hang_seng_china_enterprises_index",
+        "hang_seng_tech_index",
+    )
     counts = {target: sum(match.target == target for match in matches) for target in required}
     missing = tuple(target for target in required if counts[target] == 0)
     ambiguous = tuple(target for target in required if counts[target] > 1)
@@ -114,6 +128,7 @@ def probe_hk_index_entitlements(
         status=status,
         sectors_scanned=len(selected_sectors),
         symbols_scanned=len(symbols),
+        symbols_unreadable=symbols_unreadable,
         matches=tuple(matches),
         missing_targets=missing,
         ambiguous_targets=ambiguous,
@@ -142,6 +157,15 @@ def _classify_exact_index_name(name: str) -> TargetIndex | None:
         "hangsengtechindexhstech",
     }:
         return "hang_seng_tech_index"
+    if normalized in {
+        "恒生中国企业指数",
+        "恒生中国企业指数hscei",
+        "国企指数",
+        "国企指数hscei",
+        "hangsengchinaenterprisesindex",
+        "hangsengchinaenterprisesindexhscei",
+    }:
+        return "hang_seng_china_enterprises_index"
     if normalized in {"恒生指数", "恒生指数hsi", "hangsengindex", "hangsengindexhsi"}:
         return "hang_seng_index"
     return None

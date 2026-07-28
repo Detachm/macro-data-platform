@@ -1,7 +1,7 @@
-# XtQuant 宿主机服务、token 轮换与指数权限探测
+# XtQuant 宿主机服务、凭据边界与指数权限探测
 
 本手册对应 #50。目标是把付费 XtQuant data centre（数据中心）作为独立、受监督的宿主机服务运行，
-只允许 K3s 中的宏观 worker 访问，并用最小化元数据确认恒生指数与恒生科技指数的真实 source
+只允许 K3s 中的宏观 worker 访问，并用最小化元数据确认恒生指数、恒生中国企业指数与恒生科技指数的真实 source
 symbol。禁止猜代码，也禁止把 token 或付费行情 payload 写入 Git、日志、Issue 或聊天。
 
 ## 1. 当前事实与安全边界
@@ -10,8 +10,8 @@ symbol。禁止猜代码，也禁止把 token 或付费行情 payload 写入 Git
 
 - 宿主机 `58615` 当前没有监听。
 - Beast 活跃工作树存在大量其他人的未提交改动，不能直接做批量 token 清理。
-- Beast 当前分支有 159 个 tracked YAML，其中 139 个 `xtquant_server.token` 为非空；旧 token 已进入
-  共享 Git 历史，必须在供应商侧撤销。本文不显示、复制或散列该 token。
+- Beast 现有服务一直使用同一个付费 XtQuant token。项目负责人于 2026-07-28 决定继续使用该 token，
+  本轮不安排轮换；本文不显示、复制或散列它。
 - Beast 旧启动函数会主动杀掉占用目标端口的进程；生产服务不得复用这种行为。本项目的新入口遇到端口
   占用会直接失败，让值班人判断冲突来源。
 - 已验证的 XtQuant CPython 3.12 vendor package 可以从 Beast 的 versioned `site-packages` 目录导入；
@@ -23,31 +23,26 @@ symbol。禁止猜代码，也禁止把 token 或付费行情 payload 写入 Git
 - `macro-data-xtquant-server serve`：从环境读取 token，初始化 HK 市场并在明确 IP/端口监听。
 - `macro-data-xtquant-server check`：只做 TCP readiness（就绪检查），不读取 token、不取行情。
 - `macro-data-xtquant-probe`：只扫描 sector/instrument identity metadata（板块/合约标识元数据），输出
-  HSI/HSTECH 的匹配标识，不输出价格、成交量、原始响应或凭据。
+  HSI/HSCEI/HSTECH 的匹配标识，不输出价格、成交量、原始响应或凭据。
 - `deploy/systemd/xtquant-data-center.service`：自动重启、启动后等待 readiness、最小权限和文件系统保护。
 
-## 2. 必须由项目负责人完成：供应商 token 轮换
+## 2. 已确认的 token 决策
 
-这是唯一不能由仓库代码代替的步骤。
+继续使用 Beast 当前付费 token，不为本次上线创建新 token。落地要求是隔离，不是更换：
 
-1. 在 XtQuant/迅投的账号管理入口创建新的独立 production token。
-2. 不要在聊天、命令参数、工单或普通文本编辑器历史中传递。
-3. 先把新 token 写入第 5 节的 root-only EnvironmentFile（环境文件）并完成一次服务鉴权。
-4. 随即在供应商侧撤销旧 token；不能只从当前文件删除。
-5. 记录轮换时间、操作人和供应商返回的撤销成功状态，但不记录 token。
+1. token 只进入宿主机 root-only EnvironmentFile 或现有受限 Beast 配置；K8s Pod 不持有它。
+2. 不在聊天、命令参数、工单、日志、Issue、PR 或普通文本编辑器历史中传递。
+3. 运维检查只验证文件权限、鉴权布尔结果和服务状态，不打印、复制或散列 token。
+4. 只有项目负责人明确决定，或供应商确认失效/泄露时，才启动后续轮换流程。
 
-旧 token 已在 Git 历史中，因此即使清理当前分支也仍按泄露处理。除非 Beast 仓库安全负责人决定统一重写
-共享历史，否则不要擅自 force-push；撤销旧 token 才是首要控制。
-
-## 3. Beast 当前分支清理要求
+## 3. Beast 配置收口（独立任务）
 
 由 Beast/HK 数据负责人从干净分支单独提交，不要在当前脏工作树上批量改：
 
-- 139 个 tracked YAML 的 `xtquant_server.token` 改为空或删除。
-- loader 从 `XTQUANT_TOKEN` 环境读取；生产时 YAML 非空 token 应直接报错，防止旧模式回流。
+- 逐步把 tracked YAML 中的 token 改为空或删除，loader 改从 `XTQUANT_TOKEN` 环境读取。
 - fixture 使用明确的 `test-only` 值，不复用真实格式或真实长度。
 - CI 扫描当前 tree 和新增 commit，证明无 token；不得在 CI 打印命中行。
-- 活跃 checkout 清理完成后，再用“仅计数、不显示值”的脚本复核非空 tracked token 数为 0。
+- 活跃 checkout 清理完成后，再用“仅计数、不显示值”的脚本复核非空 tracked token 数。
 
 本项目不在 Beast 脏工作树中自动执行这些修改，以免覆盖现有 Mammoth 任务和研究数据。
 
@@ -103,7 +98,7 @@ sudoedit /etc/macro-data-platform/xtquant.env
 
 编辑时：
 
-- `XTQUANT_TOKEN`：填新 token。
+- `XTQUANT_TOKEN`：填项目负责人确认继续使用的当前 token。
 - `XTQUANT_BIND_ADDRESS`：填第 4 节确认的 K3s 节点 InternalIP，不能是 `0.0.0.0`。
 - `XTQUANT_PORT=58615`。
 - `XTQUANT_DATA_HOME=/mnt/data/macro-data-platform/xtquant`。
@@ -141,7 +136,7 @@ systemd 在 5 秒后重启。端口被其他进程占用时不会 kill 对方，
 sudo journalctl -u xtquant-data-center.service -n 100 --no-pager
 ```
 
-若日志意外出现 token，立即停止服务、再次轮换并修复日志边界。
+若日志意外出现 token，立即停止服务并修复日志边界；是否轮换由项目负责人按暴露范围决定。
 
 ## 6. 进程与主机重启验收
 
@@ -158,7 +153,7 @@ sudo systemctl show xtquant-data-center.service \
 预期服务自动恢复且 `NRestarts` 增加。然后安排宿主机重启，确认 unit 随 `multi-user.target` 自动启动。
 不要在 07:50–08:30 日报窗口执行故障演练。
 
-## 7. 确认 HSI/HSTECH 的真实 XtQuant symbol
+## 7. 确认 HSI/HSCEI/HSTECH 的真实 XtQuant symbol
 
 服务健康后从宿主机执行探测。命令不需要 token；它只连接已运行的 data centre：
 
@@ -170,13 +165,16 @@ uv run macro-data-xtquant-probe --host "$node_ip" --port 58615
 探测器自动选择 HK index-like sector，扫描 instrument metadata，并且仅在以下条件同时满足时返回 0：
 
 - 恰好一个名称严格对应“恒生指数 / Hang Seng Index”；
+- 恰好一个名称严格对应“国企指数 / 恒生中国企业指数 / Hang Seng China Enterprises Index”；
 - 恰好一个名称严格对应“恒生科技指数 / Hang Seng TECH Index”。
 
 输出只包含目标名、source symbol、instrument name、exchange ID 和 product type，以及扫描数量；不会
 输出 sector 全列表、价格、成交量、K 线或原始响应。若自动 sector 选择不完整，可由 Beast 负责人先
 安全查看 sector 名称，再显式传一个或多个 `--sector`；仍不得手填或猜 symbol。
 
-确认结果需由第二人复核名称和产品类型。随后在 macro platform 新 PR 中：
+2026-07-28 本机回环探测已经确认：`HSI.HK`、`HSCEI.HK`、`HSTECH.HK` 均唯一匹配，交易所为
+HK、产品类型为 `-1`；三项近期 `1d raw` live smoke 同时通过。临时服务已关闭。正式宿主机部署后
+仍需由第二人复核名称和产品类型。macro platform 接入要求：
 
 1. 扩展 `HK_XTQUANT_DEFAULT_INSTRUMENTS` 与稳定 canonical identity。
 2. 添加 provider contract、日期精度、freshness 和质量门禁测试。
@@ -185,8 +183,7 @@ uv run macro-data-xtquant-probe --host "$node_ip" --port 58615
 
 ## 8. 回滚与故障处理
 
-- 新 token 鉴权失败：停止新服务，核对供应商授权；旧 token 若尚未撤销，也不得重新写回 Git。只有项目
-  负责人可以决定短时回退，且必须记录时间边界。
+- 当前 token 鉴权失败：停止服务并核对供应商授权；只有项目负责人可以决定是否更换 token。
 - SDK 升级失败：恢复上一条 versioned `PYTHONPATH`，`daemon-reload` 后重启；不修改 token。
 - 端口冲突：用 `ss`/`systemctl status` 找 owner；不执行按端口 kill。
 - worker 不可达：先确认 host self-check，再核对 bind address、Pod CIDR、防火墙和 NetworkPolicy。
@@ -196,9 +193,9 @@ uv run macro-data-xtquant-probe --host "$node_ip" --port 58615
 
 以下证据全部完成后才能关闭：
 
-- 供应商侧旧 token 已撤销，Beast 当前分支非空 tracked token 数为 0。
-- EnvironmentFile 权限为 `0600`，unit 使用专用用户；Git/CI/log 无真实凭据。
+- 项目负责人确认的当前 token 可鉴权；EnvironmentFile 权限为 `0600`，unit 使用专用用户，
+  macro platform 的 Git/CI/log 无真实凭据。
 - `58615` 只有 worker Pod 可达，LAN/其他 Pod 不可达。
 - SIGKILL 和宿主机重启后服务自动恢复。
-- HSI/HSTECH symbol 由 metadata 唯一确认并进入 allowlist/contract/quality gate。
+- HSI/HSCEI/HSTECH symbol 由 metadata 唯一确认并进入 allowlist/contract/quality gate。
 - 连续两个报告日使用 live XtQuant 完成，不回退 fixture，不重复投递。

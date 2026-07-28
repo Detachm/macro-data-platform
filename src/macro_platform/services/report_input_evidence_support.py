@@ -124,6 +124,18 @@ MARKET_INPUT_SPECS = (
         ),
     ),
     MarketInputSpec(
+        input_id="market.hk.core_indices.previous_close",
+        task_id="hk.core-index-bars",
+        region=Region.HK,
+        expected_instrument_ids=frozenset(
+            {
+                "ins_hk_index_hsi",
+                "ins_hk_index_hscei",
+                "ins_hk_index_hstech",
+            }
+        ),
+    ),
+    MarketInputSpec(
         input_id="market.us.core_indices.previous_close",
         task_id="us.daily-bars",
         region=Region.US,

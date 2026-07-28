@@ -365,6 +365,11 @@ def test_xtquant_entitlement_probe_returns_only_confirmed_index_identities() -> 
                 "ProductType": {"unexpected": "vendor-payload"},
                 "PreClose": 4567.89,
             },
+            "source-three.HK": {
+                "InstrumentName": "国企指数",
+                "ExchangeID": "HK",
+                "ProductType": -1,
+            },
             "unrelated.HK": {
                 "InstrumentName": "恒生指数期货",
                 "ExchangeID": "HK",
@@ -380,9 +385,36 @@ def test_xtquant_entitlement_probe_returns_only_confirmed_index_identities() -> 
     assert {match.source_symbol for match in result.matches} == {
         "source-one.HK",
         "source-two.HK",
+        "source-three.HK",
     }
-    assert {match.product_type for match in result.matches} == {"index", None}
+    assert {match.product_type for match in result.matches} == {"index", -1, None}
+    assert result.symbols_unreadable == 0
     assert all(not hasattr(match, "pre_close") for match in result.matches)
+
+
+def test_xtquant_entitlement_probe_skips_unreadable_unrelated_metadata() -> None:
+    class PartiallyUnreadableMetadataClient(_MetadataClient):
+        def get_instrument_detail(
+            self, stock_code: str, iscomplete: bool = False
+        ) -> dict[str, Any] | None:
+            if stock_code == "unreadable.HK":
+                raise RuntimeError("metadata permission denied")
+            return super().get_instrument_detail(stock_code, iscomplete=iscomplete)
+
+    client = PartiallyUnreadableMetadataClient(
+        {
+            "hsi.HK": {"InstrumentName": "恒生指数"},
+            "hscei.HK": {"InstrumentName": "恒生中国企业指数"},
+            "hstech.HK": {"InstrumentName": "恒生科技指数"},
+            "unreadable.HK": {"InstrumentName": "unreachable"},
+        }
+    )
+
+    result = probe_hk_index_entitlements(client)
+
+    assert result.status == "confirmed"
+    assert result.symbols_scanned == 4
+    assert result.symbols_unreadable == 1
 
 
 def test_xtquant_entitlement_cli_emits_minimal_confirmed_json(
@@ -391,6 +423,7 @@ def test_xtquant_entitlement_cli_emits_minimal_confirmed_json(
     client = _MetadataClient(
         {
             "hsi.HK": {"ProductName": "恒生指数", "ProductType": 1},
+            "hscei.HK": {"InstrumentName": "恒生中国企业指数", "ExchangeID": "HK"},
             "hstech.HK": {"InstrumentName": "恒生科技指数", "ExchangeID": "HK"},
         }
     )
@@ -408,7 +441,7 @@ def test_xtquant_entitlement_cli_emits_minimal_confirmed_json(
     assert raised.value.code == 0
     assert client.connected == ("127.0.0.1", 58615)
     assert payload["status"] == "confirmed"
-    assert payload["symbols_scanned"] == 2
+    assert payload["symbols_scanned"] == 3
     assert "PreClose" not in payload
 
 
@@ -426,13 +459,17 @@ def test_xtquant_entitlement_probe_fails_when_identity_is_missing_or_ambiguous()
             {
                 "hsi-one.HK": {"InstrumentName": "恒生指数"},
                 "hsi-two.HK": {"InstrumentName": "Hang Seng Index"},
+                "hscei.HK": {"InstrumentName": "恒生中国企业指数"},
                 "hstech.HK": {"InstrumentName": "恒生科技指数"},
             }
         )
     )
 
     assert incomplete.status == "incomplete"
-    assert incomplete.missing_targets == ("hang_seng_tech_index",)
+    assert incomplete.missing_targets == (
+        "hang_seng_china_enterprises_index",
+        "hang_seng_tech_index",
+    )
     assert ambiguous.status == "ambiguous"
     assert ambiguous.ambiguous_targets == ("hang_seng_index",)
 

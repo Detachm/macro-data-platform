@@ -31,6 +31,7 @@ from macro_platform.contracts.provider import (
     ProviderCapabilities,
     ProviderPage,
 )
+from macro_platform.jobs.hk_xtquant_ingestion import HkXtQuantIngestHandler
 from macro_platform.jobs.ingestion_checkpoint import CommittedPage, IngestionCheckpointService
 from macro_platform.jobs.news_macro_ingestion import MacroReleaseIngestHandler, NewsIngestHandler
 from macro_platform.jobs.runner import IngestionExecutionContext, JobRunner
@@ -42,6 +43,10 @@ from macro_platform.jobs.scheduler import (
     ScheduledTaskResult,
 )
 from macro_platform.normalization.common import canonical_json_checksum
+from macro_platform.providers.hk.xtquant import (
+    HK_XTQUANT_CORE_INDEX_INSTRUMENTS,
+    HkXtQuantDailyBarsProvider,
+)
 from macro_platform.services.report_input_materializer import (
     PostgresReportInputEvidenceStore,
     PostgresReportInputSnapshotStore,
@@ -168,6 +173,38 @@ async def test_job_029_reclaimed_checkpoint_fences_a_stale_worker(database: Data
 async def test_job_029_checkpointed_calendar_and_headline_tasks_persist_facts(
     database: Database,
 ) -> None:
+    class _IndexFrame:
+        def reset_index(self) -> _IndexFrame:
+            return self
+
+        def to_dict(self, *, orient: str) -> list[dict[str, object]]:
+            assert orient == "records"
+            return [
+                {
+                    "index": "20260727",
+                    "time": int(datetime(2026, 7, 27, tzinfo=UTC).timestamp() * 1000),
+                    "open": 100.0,
+                    "high": 102.0,
+                    "low": 99.0,
+                    "close": 101.0,
+                    "volume": None,
+                    "amount": None,
+                    "preClose": 100.0,
+                }
+            ]
+
+    class _IndexClient:
+        def connect(self, *_: object, **__: object) -> None:
+            return None
+
+        def download_history_data2(self, *_: object, **__: object) -> None:
+            return None
+
+        def get_market_data_ex(self, **kwargs: object) -> dict[str, _IndexFrame]:
+            stock_list = kwargs["stock_list"]
+            assert isinstance(stock_list, list)
+            return {str(symbol): _IndexFrame() for symbol in stock_list}
+
     release_source = SourceRef(
         provider_id="job-029.release-provider",
         provider_record_id="calendar-row-1",
@@ -306,6 +343,32 @@ async def test_job_029_checkpointed_calendar_and_headline_tasks_persist_facts(
             return ProviderPage(items=[unapproved_us_release], fetched_at=NOW, complete=True)
 
     request_as_of = NOW + timedelta(days=1)
+    hk_index_provider = HkXtQuantDailyBarsProvider(
+        instruments=HK_XTQUANT_CORE_INDEX_INSTRUMENTS,
+        client=_IndexClient(),
+        cursor_signing_secret="integration-test-cursor-secret",
+        clock=lambda: NOW,
+    )
+    hk_market_result = await JobRunner(
+        HkXtQuantIngestHandler(
+            hk_index_provider,
+            instrument_ids=tuple(
+                instrument.instrument_id for instrument in HK_XTQUANT_CORE_INDEX_INSTRUMENTS
+            ),
+            now=lambda: NOW,
+        ),
+        database=database,
+        now=lambda: NOW,
+    ).execute(
+        IngestJobRequest(
+            provider_role="hk.bars.primary",
+            dataset=Dataset.BARS,
+            regions={Region.HK},
+            start=NOW - timedelta(days=14),
+            end=NOW,
+            as_of=request_as_of,
+        )
+    )
     release_result = await JobRunner(
         MacroReleaseIngestHandler(
             _ReleaseProvider(),
@@ -409,10 +472,11 @@ async def test_job_029_checkpointed_calendar_and_headline_tasks_persist_facts(
 
     assert (
         release_result.records_inserted,
+        hk_market_result.records_inserted,
         cn_news_result.records_inserted,
         news_result.records_inserted,
         unapproved_us_result.records_inserted,
-    ) == (1, 1, 1, 1)
+    ) == (1, 3, 1, 1, 1)
     assert replayed_news_result.run_id != news_result.run_id
     assert replayed_news_result.records_accepted == 1
     async with database.session() as session:
@@ -428,6 +492,14 @@ async def test_job_029_checkpointed_calendar_and_headline_tasks_persist_facts(
         as_of=NOW,
         cutoff_at=NOW,
         task_results=(
+            ScheduledTaskResult(
+                task_id="hk.core-index-bars",
+                provider_role="hk.bars.primary",
+                dataset=Dataset.BARS,
+                region=Region.HK,
+                status="succeeded",
+                run_id=hk_market_result.run_id,
+            ),
             ScheduledTaskResult(
                 task_id="cn.macro-release-calendar",
                 provider_role="cn.macro.primary",
@@ -457,8 +529,12 @@ async def test_job_029_checkpointed_calendar_and_headline_tasks_persist_facts(
     by_input_id = {item.input_id: item for item in evidence}
     assert by_input_id["calendar.macro_releases_7d"].status == "missing"
     hk_market = by_input_id["market.hk.core_indices.previous_close"]
-    assert hk_market.status == "missing"
-    assert "HK equities" in hk_market.reason
+    assert hk_market.status == "available"
+    assert {fact["instrument_id"] for fact in hk_market.facts} == {
+        "ins_hk_index_hsi",
+        "ins_hk_index_hscei",
+        "ins_hk_index_hstech",
+    }
     cn_news = by_input_id["news.cn.official_headlines_24h"]
     assert cn_news.status == "available"
     assert cn_news.facts[0]["news_id"] == cn_news_event.news_id

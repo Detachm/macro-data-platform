@@ -19,14 +19,16 @@
 
 ## 已注册任务与运行方式
 
-- 生产仅在 `PROVIDER_MODE=live` 时注册 `cn.daily-bars`、可选的 `hk.daily-bars`、`us.daily-bars`、
-  `cn.macro-release-calendar`、`cn.official-headlines`、`hk.official-headlines`；它们分别调用
-  BaoStock、XtQuant、Twelve Data、NBS 发布日程、NBS 数据发布列表和 HKMA 的 checkpointed
-  handler。fixture role 不会注册。
+- 生产仅在 `PROVIDER_MODE=live` 时注册 `cn.daily-bars`、必需的 `hk.core-index-bars`、可选的
+  `hk.equity-bars`、`us.daily-bars`、`cn.macro-release-calendar`、`cn.official-headlines`、
+  `hk.official-headlines`；它们分别调用 BaoStock、XtQuant、Twelve Data、NBS 发布日程、NBS
+  数据发布列表和 HKMA 的 checkpointed handler。fixture role 不会注册。
 - 每个 task 的 `(report_date, task_id)` checkpoint 保存原始 request clock 和 next cursor。进程在
   page commit 后退出时，下一 worker 从该 cursor 继续；完成 task 复放其 durable run result，不重新
-  访问 provider。normalized facts 仍由 page commit 和事实表唯一约束去重。XtQuant 的 HK 任务只采集
-  审核过的十个个股，不能作为冻结的 `market.hk.core_indices.previous_close` 质量证据。
+  访问 provider。normalized facts 仍由 page commit 和事实表唯一约束去重。XtQuant 的必需任务只采集
+  HSI/HSCEI/HSTECH，提交的 durable records 可作为冻结的
+  `market.hk.core_indices.previous_close` 质量证据；十个个股使用独立 supplemental role，避免与指数
+  请求共享幂等身份。
 - 默认上海 07:50 开始，08:15 为 input cutoff。通过 `WORKER_SCHEDULE_*`、
   `WORKER_REPORT_CUTOFF_*`、`WORKER_MAX_REPORT_ATTEMPTS`、市场/新闻 `WORKER_*_FRESHNESS_*` 配置时区、时刻、
   报告级重试上限、轮询和时效阈值。采集开始时刻必须早于 cutoff；provider 任务在 07:50 发起，若
@@ -41,9 +43,10 @@
 - 显式回填：`macro-data-worker --backfill-start 2026-07-20 --backfill-end 2026-07-28`。首尾日期均包含，
   不可与单日模式混用。也可使用对应 `WORKER_RUN_ONCE_REPORT_DATE` 或 `WORKER_BACKFILL_*` 环境变量。
 
-HK 核心指数和冻结的全区域 `calendar.macro_releases_7d` 尚不能证明完整获批 live 覆盖。
-materializer 会把相应必需输入写为 `missing`，报告质量为 `blocked`；历史行、fixture 或其他未登记
-来源也不能填充这些输入。CN news 已由 `CnNbsNewsProvider` 提供 NBS 数据发布标题 metadata；任务没有
+HK 核心指数已通过 XtQuant entitlement 和三项 `1d raw` live smoke；冻结的全区域
+`calendar.macro_releases_7d` 仍不能证明完整获批 live 覆盖。materializer 会把缺少的日历必需输入写为
+`missing`，报告质量为 `blocked`；历史行、fixture 或其他未登记来源也不能填充。CN news 已由
+`CnNbsNewsProvider` 提供 NBS 数据发布标题 metadata；任务没有
 提交最近 24 小时内的官方标题时仍标记 `missing`。系统同时把一次确定性的 `report_day_policy` 固化进
 snapshot：正常交易日缺失仍阻断；周末/区域休市只把对应 market input 降为 optional，新闻和宏观日历
 绝不降级。完整规则见 ADR 0010。CN NBS 日历只覆盖 CN，不能单独满足该全区域输入。这是预期的安全

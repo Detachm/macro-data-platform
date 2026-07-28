@@ -128,11 +128,6 @@ class PostgresReportInputEvidenceStore(ReportInputEvidenceStore):
             )
         return (
             *market,
-            _unsupported_live_input(
-                "market.hk.core_indices.previous_close",
-                "XtQuant live coverage contains approved HK equities, not the required "
-                "HK core-index input",
-            ),
             cn_news,
             hk_news,
             _global_calendar_evidence(

@@ -153,6 +153,13 @@ def test_api_and_worker_have_probes_and_worker_has_no_host_mount_or_xtquant_toke
     assert "XTQUANT_TOKEN" not in rendered
 
 
+def test_runtime_config_contains_all_required_hk_core_indices() -> None:
+    config = _resource("ConfigMap", "macro-runtime-config")
+    symbols = set(config["data"]["HK_XTQUANT_SYMBOLS"].split(","))
+
+    assert {"HSI.HK", "HSCEI.HK", "HSTECH.HK"} <= symbols
+
+
 def test_namespace_defaults_to_deny_and_only_worker_gets_provider_ports() -> None:
     default_deny = _resource("NetworkPolicy", "default-deny")
     assert default_deny["spec"] == {
