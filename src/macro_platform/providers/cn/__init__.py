@@ -16,7 +16,10 @@ from macro_platform.providers.cn.baostock import (
 )
 from macro_platform.providers.cn.live import (
     CnLiveMacroProvider,
+    CnLiveNewsProvider,
+    CnNbsNewsProvider,
     CnNbsReleaseProvider,
+    parse_nbs_data_release_news,
     parse_nbs_release_calendar,
 )
 from macro_platform.providers.registry import ProviderRegistry
@@ -77,7 +80,10 @@ __all__ = [
     "CnContractFixtureProvider",
     "CnSyntheticProvider",
     "CnLiveMacroProvider",
+    "CnLiveNewsProvider",
+    "CnNbsNewsProvider",
     "CnNbsReleaseProvider",
+    "parse_nbs_data_release_news",
     "parse_nbs_release_calendar",
     "register_cn_baostock_provider_roles",
     "register_cn_provider_roles",

@@ -15,7 +15,7 @@ from macro_platform.providers.cn.baostock import (
     BAOSTOCK_DEFAULT_INSTRUMENTS,
     BaoStockDailyBarsProvider,
 )
-from macro_platform.providers.cn.live import CnNbsReleaseProvider
+from macro_platform.providers.cn.live import CnNbsNewsProvider, CnNbsReleaseProvider
 from macro_platform.providers.hk.live import HkCsdProvider, HkmaPressReleaseProvider
 from macro_platform.providers.hk.xtquant import (
     HK_XTQUANT_DEFAULT_INSTRUMENTS,
@@ -129,6 +129,31 @@ async def test_cn_nbs_release_calendar_live_smoke() -> None:
         )
         assert page.source_watermark
         assert page.items
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.live
+@pytest.mark.asyncio
+async def test_cn_nbs_data_release_news_live_smoke() -> None:
+    _require_live_smoke()
+    context = _live_context()
+    provider = CnNbsNewsProvider()
+    try:
+        page = await provider.fetch_news(
+            NewsQuery(
+                regions={Region.CN},
+                published_from=datetime(2020, 1, 1, tzinfo=UTC),
+                published_to=datetime(2030, 1, 1, tzinfo=UTC),
+                as_of=context.as_of,
+                limit=10,
+            ),
+            context,
+        )
+        assert page.source_watermark
+        assert page.items
+        assert all(item.time_precision == "date" for item in page.items)
+        assert all(item.body is None for item in page.items)
     finally:
         await provider.aclose()
 

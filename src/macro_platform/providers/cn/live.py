@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from html.parser import HTMLParser
 from typing import ClassVar
+from urllib.parse import urljoin
 from zoneinfo import ZoneInfo
 
 import httpx
 
-from macro_platform.contracts.common import Region
+from macro_platform.contracts.common import AvailabilityBasis, Region, UsageRights
 from macro_platform.contracts.macro import MacroRelease, MacroReleaseQuery
+from macro_platform.contracts.news import ContentMode, NewsEvent, NewsQuery, SourceTier
 from macro_platform.contracts.provider import (
     Dataset,
     FetchContext,
@@ -18,7 +21,7 @@ from macro_platform.contracts.provider import (
     ProviderHealth,
     ProviderPage,
 )
-from macro_platform.normalization.common import canonical_json_checksum
+from macro_platform.normalization.common import canonical_json_checksum, canonicalize_url
 from macro_platform.providers.base import (
     ProviderCursorError,
     ProviderSchemaError,
@@ -31,12 +34,16 @@ from macro_platform.providers.live import (
     health_status_for_error,
     source_ref,
     stable_provider_record_id,
+    validate_allowlisted_url,
 )
 
 CN_NBS_RELEASE_CALENDAR_URL = "https://www.stats.gov.cn/sj/fbrc/bnxxfb/"
+CN_NBS_NEWS_URL = "https://www.stats.gov.cn/sj/zxfb/"
 CN_NBS_ALLOWED_HOSTS = frozenset({"www.stats.gov.cn"})
 CN_NBS_PROVIDER_ID = "cn.nbs.release-calendar.v1"
+CN_NBS_NEWS_PROVIDER_ID = "cn.nbs.data-release-news.v1"
 CN_NBS_SERIES_ID = "macro:CN:NBS:release_calendar"
+_CN_NBS_NEWS_PAGE_SIZE = 500
 _CN_TIMEZONE = ZoneInfo("Asia/Shanghai")
 _MONTH_PATTERN = re.compile(r"^(?P<day>\d{1,2})\s*/(?:[^\d]*)?(?P<time>\d{1,2}:\d{2})?$")
 _YEAR_PATTERN = re.compile(r"(?P<year>20\d{2})年国家统计局")
@@ -167,6 +174,293 @@ class CnNbsReleaseProvider(LiveHttpProvider):
             fetched_at=fetched_at,
             complete=not has_more,
         )
+
+
+class CnNbsNewsProvider(LiveHttpProvider):
+    """Headline-only adapter for the NBS ``数据发布`` listing.
+
+    The listing exposes a title, official article URL and publication date. It
+    does not prove the historical instant at which an item became visible, so
+    the adapter deliberately uses the local first-observation time as
+    ``available_at`` and refuses historical point-in-time reads.
+    """
+
+    provider_id: ClassVar[str] = CN_NBS_NEWS_PROVIDER_ID
+    source_name: ClassVar[str] = "National Bureau of Statistics of China data releases"
+
+    def __init__(
+        self,
+        *,
+        client: httpx.AsyncClient | None = None,
+        base_url: str = CN_NBS_NEWS_URL,
+        timeout_seconds: float = 30,
+        clock: Callable[[], datetime] | None = None,
+        cursor_signing_secret: str | None = None,
+    ) -> None:
+        super().__init__(
+            client=client,
+            base_url=base_url,
+            allowed_hosts=CN_NBS_ALLOWED_HOSTS,
+            timeout_seconds=timeout_seconds,
+            clock=clock or _utc_now,
+            cursor_signing_secret=cursor_signing_secret,
+        )
+
+    def capabilities(self) -> ProviderCapabilities:
+        return ProviderCapabilities(
+            provider_id=self.provider_id,
+            regions={Region.CN},
+            datasets={Dataset.NEWS},
+            max_page_size=_CN_NBS_NEWS_PAGE_SIZE,
+            supports_point_in_time=False,
+            supports_revisions=False,
+            supports_full_text=False,
+            external_llm_allowed=True,
+        )
+
+    async def healthcheck(self) -> ProviderHealth:
+        checked_at = self._clock().astimezone(UTC)
+        try:
+            await self._get_text(
+                context_deadline=checked_at + _duration_seconds(self._timeout_seconds)
+            )
+        except Exception as exc:  # noqa: BLE001 - health must not take the process down
+            return ProviderHealth(
+                provider_id=self.provider_id,
+                status=health_status_for_error(exc),
+                checked_at=checked_at,
+                latency_ms=0,
+                message=type(exc).__name__,
+            )
+        return ProviderHealth(
+            provider_id=self.provider_id,
+            status="ok",
+            checked_at=checked_at,
+            latency_ms=0,
+        )
+
+    async def fetch_news(self, query: NewsQuery, context: FetchContext) -> ProviderPage[NewsEvent]:
+        if Region.CN not in query.regions:
+            return ProviderPage(items=[], fetched_at=self._clock().astimezone(UTC), complete=True)
+        if query.content_mode is ContentMode.FULL_TEXT:
+            raise UnsupportedCapabilityError(
+                "NBS data-release adapter only exposes headline metadata"
+            )
+        fingerprint = self._cursor_fingerprint(query, context)
+        offset, previous_record_key, snapshot_at, snapshot_watermark = self._decode_cursor(
+            query.cursor, fingerprint
+        )
+        html, response, fetched_at = await self._get_text(context_deadline=context.deadline_at)
+        if query.as_of < fetched_at:
+            raise UnsupportedCapabilityError(
+                "NBS data releases do not provide historical point-in-time snapshots"
+            )
+        items = parse_nbs_data_release_news(
+            html,
+            fetched_at=fetched_at,
+            source_url=str(response.url),
+            provider_id=self.provider_id,
+            source_name=self.source_name,
+        )
+        source_watermark = canonical_json_checksum(
+            [
+                {
+                    "provider_record_id": item.source.provider_record_id,
+                    "title": item.title,
+                    "published_date": item.published_date,
+                }
+                for item in items
+            ]
+        )
+        assert_cursor_snapshot(snapshot_watermark, source_watermark)
+        assert_cursor_snapshot_at(snapshot_at, fetched_at)
+        items = [item for item in items if _news_matches_query(item, query)]
+        items.sort(key=lambda item: (_news_sort_at(item), item.news_id), reverse=True)
+        if offset > 0 and (offset > len(items) or items[offset - 1].news_id != previous_record_key):
+            raise ProviderCursorError(
+                "NBS news cursor predecessor does not match the source snapshot",
+                code="SNAPSHOT_CHANGED",
+            )
+        if offset > len(items):
+            raise ProviderCursorError(
+                "NBS news cursor is past the result set", code="INVALID_CURSOR"
+            )
+        page_size = min(query.limit, _CN_NBS_NEWS_PAGE_SIZE)
+        page_items = items[offset : offset + page_size]
+        has_more = offset + len(page_items) < len(items)
+        next_cursor = (
+            self._encode_cursor(
+                offset=offset + len(page_items),
+                fingerprint=fingerprint,
+                snapshot_at=fetched_at.isoformat(),
+                snapshot_watermark=source_watermark,
+                last_record_key=page_items[-1].news_id,
+            )
+            if has_more
+            else None
+        )
+        return ProviderPage(
+            items=page_items,
+            next_cursor=next_cursor,
+            source_watermark=source_watermark,
+            fetched_at=fetched_at,
+            complete=not has_more,
+        )
+
+
+def parse_nbs_data_release_news(
+    html: str,
+    *,
+    fetched_at: datetime,
+    source_url: str,
+    provider_id: str,
+    source_name: str,
+) -> list[NewsEvent]:
+    records = _NbsNewsListParser.parse(html)
+    if not records:
+        raise ProviderSchemaError(
+            "NBS data-release listing has no parseable rows", code="SCHEMA_DRIFT"
+        )
+    parsed: list[NewsEvent] = []
+    seen_urls: set[str] = set()
+    for record in records:
+        canonical_url = canonicalize_url(urljoin(source_url, record.href))
+        try:
+            validate_allowlisted_url(canonical_url, CN_NBS_ALLOWED_HOSTS)
+        except ValueError as exc:
+            raise ProviderSchemaError(
+                "NBS data-release article URL is outside the approved host",
+                code="SCHEMA_DRIFT",
+            ) from exc
+        if canonical_url in seen_urls:
+            continue
+        seen_urls.add(canonical_url)
+        try:
+            published_date = date.fromisoformat(record.published_date)
+        except ValueError as exc:
+            raise ProviderSchemaError(
+                "NBS data-release publication date is invalid", code="SCHEMA_DRIFT"
+            ) from exc
+        provider_record_id = stable_provider_record_id("cn-nbs-data-release", canonical_url)
+        parsed.append(
+            NewsEvent(
+                news_id=stable_provider_record_id(
+                    "news", provider_id, provider_record_id, canonical_url, published_date
+                ),
+                title=record.title,
+                summary=None,
+                body=None,
+                content_mode=ContentMode.HEADLINE,
+                language="zh-CN",
+                source_name=source_name,
+                source_tier=SourceTier.OFFICIAL,
+                canonical_url=canonical_url,
+                published_at=None,
+                published_date=published_date,
+                time_precision="date",
+                first_seen_at=fetched_at,
+                available_at=fetched_at,
+                availability_basis=AvailabilityBasis.FIRST_SEEN,
+                regions=[Region.CN],
+                topics=["economic_data"],
+                content_hash_sha256=canonical_json_checksum(
+                    {"title": record.title, "summary": None, "body": None}
+                ),
+                usage_rights=UsageRights(
+                    storage_allowed=True,
+                    internal_analysis_allowed=True,
+                    external_llm_allowed=True,
+                    embedding_allowed=True,
+                    redistribution_allowed=False,
+                ),
+                source=source_ref(
+                    provider_id=provider_id,
+                    provider_record_id=provider_record_id,
+                    source_name=source_name,
+                    source_url=canonical_url,
+                    retrieved_at=fetched_at,
+                    checksum_payload={
+                        "title": record.title,
+                        "link": canonical_url,
+                        "date": published_date,
+                    },
+                ),
+            )
+        )
+    return parsed
+
+
+@dataclass(frozen=True)
+class _NbsNewsRecord:
+    title: str
+    href: str
+    published_date: str
+
+
+class _NbsNewsListParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.records: list[_NbsNewsRecord] = []
+        self._list_depth = 0
+        self._in_item = False
+        self._in_date = False
+        self._title: str | None = None
+        self._href: str | None = None
+        self._date_parts: list[str] = []
+
+    @classmethod
+    def parse(cls, html: str) -> list[_NbsNewsRecord]:
+        parser = cls()
+        parser.feed(html)
+        parser.close()
+        return parser.records
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        if tag == "div":
+            classes = set((attributes.get("class") or "").split())
+            if self._list_depth:
+                self._list_depth += 1
+            elif "list-content" in classes:
+                self._list_depth = 1
+            return
+        if not self._list_depth:
+            return
+        if tag == "li":
+            self._in_item = True
+            self._title = None
+            self._href = None
+            self._date_parts = []
+        elif tag == "a" and self._in_item and self._title is None:
+            title = (attributes.get("title") or "").strip()
+            href = (attributes.get("href") or "").strip()
+            if title and href:
+                self._title = title
+                self._href = href
+        elif tag == "span" and self._in_item:
+            self._in_date = True
+
+    def handle_data(self, data: str) -> None:
+        if self._in_date:
+            self._date_parts.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "span":
+            self._in_date = False
+        elif tag == "li" and self._in_item:
+            published_date = "".join(self._date_parts).strip()
+            if self._title and self._href and published_date:
+                self.records.append(
+                    _NbsNewsRecord(
+                        title=self._title,
+                        href=self._href,
+                        published_date=published_date,
+                    )
+                )
+            self._in_item = False
+            self._in_date = False
+        elif tag == "div" and self._list_depth:
+            self._list_depth -= 1
 
 
 def parse_nbs_release_calendar(
@@ -351,6 +645,36 @@ def _release_sort_at(item: MacroRelease) -> datetime:
     return datetime.combine(item.scheduled_date, time.min, UTC)
 
 
+def _news_matches_query(item: NewsEvent, query: NewsQuery) -> bool:
+    if item.published_at is not None:
+        in_window = query.published_from <= item.published_at < query.published_to
+    else:
+        assert item.published_date is not None
+        day_start = datetime.combine(item.published_date, time.min, UTC)
+        day_end = day_start + timedelta(days=1)
+        in_window = day_start < query.published_to and day_end > query.published_from
+    return (
+        in_window
+        and item.available_at <= query.as_of
+        and (not query.languages or item.language in query.languages)
+        and (not query.source_tiers or item.source_tier in query.source_tiers)
+        and (not query.topics or bool(set(query.topics).intersection(item.topics)))
+        and (
+            not query.entity_ids
+            or bool(
+                set(query.entity_ids).intersection(entity.entity_id for entity in item.entities)
+            )
+        )
+    )
+
+
+def _news_sort_at(item: NewsEvent) -> datetime:
+    if item.published_at is not None:
+        return item.published_at
+    assert item.published_date is not None
+    return datetime.combine(item.published_date, time.min, UTC)
+
+
 def _duration_seconds(seconds: float) -> timedelta:
     return timedelta(seconds=seconds)
 
@@ -360,12 +684,18 @@ def _utc_now() -> datetime:
 
 
 CnLiveMacroProvider = CnNbsReleaseProvider
+CnLiveNewsProvider = CnNbsNewsProvider
 
 __all__ = [
     "CN_NBS_ALLOWED_HOSTS",
+    "CN_NBS_NEWS_PROVIDER_ID",
+    "CN_NBS_NEWS_URL",
     "CN_NBS_PROVIDER_ID",
     "CN_NBS_RELEASE_CALENDAR_URL",
     "CnLiveMacroProvider",
+    "CnLiveNewsProvider",
+    "CnNbsNewsProvider",
     "CnNbsReleaseProvider",
+    "parse_nbs_data_release_news",
     "parse_nbs_release_calendar",
 ]

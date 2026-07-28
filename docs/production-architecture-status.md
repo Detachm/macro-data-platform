@@ -63,7 +63,7 @@ Delivery audit + message_id + metrics + backup
 
 ### 已接入
 
-- CN：BaoStock 核心指数日线、NBS 发布日历候选任务。
+- CN：BaoStock 核心指数日线、NBS 发布日历、NBS 数据发布官方标题 metadata。
 - HK：XtQuant 已审核个股日线、HKMA 官方标题。
 - US：Twelve Data 的 SPY/QQQ/DIA 日线。
 - fixture 仅用于离线测试，生产环境禁止回退到 fixture。
@@ -71,7 +71,6 @@ Delivery audit + message_id + metrics + backup
 ### 尚需补齐
 
 - XtQuant HK 核心指数，例如恒生指数、恒生科技指数；实际 source symbol 必须通过付费数据中心能力探测确认，不能猜测。
-- CN 官方新闻。
 - HK/US 宏观发布日历。
 - 宿主机 XtQuant `58615` 常驻服务及健康检查。
 

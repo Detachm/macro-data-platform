@@ -14,7 +14,7 @@ from macro_platform.contracts.macro import (
 )
 from macro_platform.contracts.news import NewsQuery
 from macro_platform.contracts.provider import Dataset, FetchContext
-from macro_platform.providers.cn.live import CnNbsReleaseProvider
+from macro_platform.providers.cn.live import CnNbsNewsProvider, CnNbsReleaseProvider
 from macro_platform.providers.hk.live import HkCsdProvider, HkmaPressReleaseProvider
 from tests.contract.provider_suite import (
     assert_available_at_not_after_as_of,
@@ -36,6 +36,7 @@ CONTEXT = FetchContext(
 async def test_live_capabilities_are_limited_to_the_allowlisted_matrix() -> None:
     expected = {
         CnNbsReleaseProvider: ({Region.CN}, {Dataset.MACRO_RELEASES}),
+        CnNbsNewsProvider: ({Region.CN}, {Dataset.NEWS}),
         HkCsdProvider: ({Region.HK}, {Dataset.MACRO_SERIES, Dataset.MACRO_OBSERVATIONS}),
         HkmaPressReleaseProvider: ({Region.HK}, {Dataset.NEWS}),
     }
@@ -81,6 +82,46 @@ async def test_cn_live_release_contract_has_provenance_and_bounded_page() -> Non
     assert_available_at_not_after_as_of(page, NOW)
     assert page.complete is True
     assert page.items[0].time_precision == "instant"
+    await provider.aclose()
+
+
+@pytest.mark.asyncio
+async def test_cn_nbs_live_news_contract_is_official_headline_metadata_only() -> None:
+    html = """
+    <div class="list-content">
+      <ul><li>
+        <a href="./202607/t20260727_1964194.html" title="CN official data release">item</a>
+        <span>2026-07-27</span>
+      </li></ul>
+    </div>
+    """
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, text=html, request=request)
+        )
+    )
+    provider = CnNbsNewsProvider(client=client, clock=lambda: NOW)
+
+    page = await provider.fetch_news(
+        NewsQuery(
+            regions={Region.CN},
+            published_from=datetime(2026, 7, 26, tzinfo=UTC),
+            published_to=datetime(2026, 7, 28, tzinfo=UTC),
+            as_of=NOW,
+            limit=1,
+        ),
+        CONTEXT,
+    )
+
+    assert_page_contract(page)
+    assert_page_provenance(page, provider.provider_id)
+    assert_available_at_not_after_as_of(page, NOW)
+    assert_news_contract(page)
+    assert page.items[0].source_tier.value == "official"
+    assert page.items[0].content_mode.value == "headline"
+    assert page.items[0].summary is None
+    assert page.items[0].body is None
+    assert page.items[0].time_precision == "date"
     await provider.aclose()
 
 

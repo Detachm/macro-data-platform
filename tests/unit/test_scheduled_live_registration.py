@@ -12,7 +12,7 @@ from macro_platform.providers.cn.baostock import (
     BaoStockDailyBarsProvider,
     register_cn_baostock_provider_roles,
 )
-from macro_platform.providers.cn.live import CnNbsReleaseProvider
+from macro_platform.providers.cn.live import CnNbsNewsProvider, CnNbsReleaseProvider
 from macro_platform.providers.hk.live import HkmaPressReleaseProvider
 from macro_platform.providers.hk.xtquant import (
     HkXtQuantDailyBarsProvider,
@@ -53,6 +53,9 @@ async def test_job_029_registers_all_available_reviewed_live_tasks() -> None:
     registry.bind_role(
         "cn.macro.primary", cn_macro.provider_id, required_dataset=Dataset.MACRO_RELEASES
     )
+    cn_news = CnNbsNewsProvider(cursor_signing_secret="test-cursor-secret")
+    registry.register(cn_news)
+    registry.bind_role("cn.news.primary", cn_news.provider_id, required_dataset=Dataset.NEWS)
     hk_news = HkmaPressReleaseProvider(cursor_signing_secret="test-cursor-secret")
     registry.register(hk_news)
     registry.bind_role("hk.news.primary", hk_news.provider_id, required_dataset=Dataset.NEWS)
@@ -70,6 +73,7 @@ async def test_job_029_registers_all_available_reviewed_live_tasks() -> None:
             ("hk.daily-bars", "hk.bars.primary"),
             ("us.daily-bars", "us.market.primary"),
             ("cn.macro-release-calendar", "cn.macro.primary"),
+            ("cn.official-headlines", "cn.news.primary"),
             ("hk.official-headlines", "hk.news.primary"),
         ]
         assert {task.task_id: task.required for task in tasks} == {
@@ -77,6 +81,7 @@ async def test_job_029_registers_all_available_reviewed_live_tasks() -> None:
             "hk.daily-bars": False,
             "us.daily-bars": True,
             "cn.macro-release-calendar": True,
+            "cn.official-headlines": True,
             "hk.official-headlines": True,
         }
     finally:

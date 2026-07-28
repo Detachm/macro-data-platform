@@ -18,7 +18,7 @@ from macro_platform.contracts.macro import (
     MacroSeriesQuery,
     RevisionPolicy,
 )
-from macro_platform.contracts.news import NewsQuery
+from macro_platform.contracts.news import ContentMode, NewsQuery
 from macro_platform.contracts.provider import FetchContext
 from macro_platform.providers.base import (
     ProviderAuthenticationError,
@@ -30,7 +30,12 @@ from macro_platform.providers.base import (
     ProviderUnavailableError,
     UnsupportedCapabilityError,
 )
-from macro_platform.providers.cn.live import CnNbsReleaseProvider, parse_nbs_release_calendar
+from macro_platform.providers.cn.live import (
+    CnNbsNewsProvider,
+    CnNbsReleaseProvider,
+    parse_nbs_data_release_news,
+    parse_nbs_release_calendar,
+)
 from macro_platform.providers.factory import create_provider_registry
 from macro_platform.providers.hk.live import HkCsdProvider, HkmaPressReleaseProvider
 from macro_platform.providers.registry import ProviderRegistryError
@@ -108,6 +113,71 @@ def test_cn_nbs_date_only_release_keeps_date_precision() -> None:
     assert releases[0].time_precision == "date"
 
 
+def test_cn_nbs_news_parser_maps_metadata_and_deduplicates_responsive_links() -> None:
+    events = parse_nbs_data_release_news(
+        _recorded_fixture("cn/live/nbs_data_releases.html"),
+        fetched_at=NOW,
+        source_url="https://www.stats.gov.cn/sj/zxfb/",
+        provider_id=CnNbsNewsProvider.provider_id,
+        source_name=CnNbsNewsProvider.source_name,
+    )
+
+    assert [event.published_date for event in events] == [
+        date(2026, 7, 27),
+        date(2026, 7, 24),
+    ]
+    assert events[0].title == "2026年1—6月份全国规模以上工业企业利润增长18.7%"
+    assert str(events[0].canonical_url) == (
+        "https://www.stats.gov.cn/sj/zxfb/202607/t20260727_1964194.html"
+    )
+    assert events[0].body is None
+    assert events[0].summary is None
+    assert events[0].time_precision == "date"
+    assert events[0].availability_basis.value == "first_seen"
+    assert events[0].available_at == NOW
+    assert events[0].source.source_url == events[0].canonical_url
+
+
+@pytest.mark.asyncio
+async def test_cn_nbs_news_adapter_pages_a_frozen_headline_only_snapshot() -> None:
+    html = _recorded_fixture("cn/live/nbs_data_releases.html")
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, text=html, request=request)
+        )
+    )
+    provider = CnNbsNewsProvider(
+        client=client,
+        clock=lambda: NOW,
+        cursor_signing_secret="test-cursor-secret",
+    )
+    query = NewsQuery(
+        regions={Region.CN},
+        published_from=datetime(2026, 7, 23, tzinfo=UTC),
+        published_to=datetime(2026, 7, 28, tzinfo=UTC),
+        as_of=NOW,
+        limit=1,
+    )
+
+    first = await provider.fetch_news(query, CONTEXT)
+    assert [item.published_date for item in first.items] == [date(2026, 7, 27)]
+    assert first.next_cursor is not None
+    assert first.items[0].content_mode is ContentMode.HEADLINE
+
+    second = await provider.fetch_news(
+        query.model_copy(update={"cursor": first.next_cursor}), CONTEXT
+    )
+    assert [item.published_date for item in second.items] == [date(2026, 7, 24)]
+    assert second.complete is True
+
+    with pytest.raises(UnsupportedCapabilityError, match="headline metadata"):
+        await provider.fetch_news(
+            query.model_copy(update={"content_mode": ContentMode.FULL_TEXT}), CONTEXT
+        )
+
+    await provider.aclose()
+
+
 def test_recorded_live_fixture_manifests_are_provenanced() -> None:
     cn_manifest = json.loads(_recorded_fixture("cn/live/manifest.json"))
     hk_manifest = json.loads(_recorded_fixture("hk/live/manifest.json"))
@@ -146,6 +216,31 @@ async def test_recorded_upstream_fixtures_parse_through_live_adapters() -> None:
     )
     assert {item.time_precision for item in nbs_page.items} == {"instant", "date"}
     await nbs_provider.aclose()
+
+    nbs_news_provider = CnNbsNewsProvider(
+        client=httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    200,
+                    text=_recorded_fixture("cn/live/nbs_data_releases.html"),
+                    request=request,
+                )
+            )
+        ),
+        clock=lambda: NOW,
+    )
+    nbs_news_page = await nbs_news_provider.fetch_news(
+        NewsQuery(
+            regions={Region.CN},
+            published_from=datetime(2026, 7, 23, tzinfo=UTC),
+            published_to=datetime(2026, 7, 28, tzinfo=UTC),
+            as_of=NOW,
+        ),
+        CONTEXT,
+    )
+    assert nbs_news_page.items[0].published_date == date(2026, 7, 27)
+    assert nbs_news_page.items[0].body is None
+    await nbs_news_provider.aclose()
 
     csd_payload = json.loads(_recorded_fixture("hk/live/csd_510-60004.json"))
     csd_provider = HkCsdProvider(
@@ -743,5 +838,6 @@ async def test_provider_factory_keeps_fixture_and_live_roles_separate() -> None:
         Settings(app_env="test", provider_mode="live", service_token=SecretStr("token"))
     )
     assert live_registry.resolve("cn.macro.primary").capabilities().datasets
+    assert live_registry.resolve("cn.news.primary").capabilities().datasets
     assert live_registry.resolve("hk.news.primary").capabilities().datasets
     await live_registry.close()
