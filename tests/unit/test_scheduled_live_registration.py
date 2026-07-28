@@ -72,6 +72,13 @@ async def test_job_029_registers_all_available_reviewed_live_tasks() -> None:
             ("cn.macro-release-calendar", "cn.macro.primary"),
             ("hk.official-headlines", "hk.news.primary"),
         ]
+        assert {task.task_id: task.required for task in tasks} == {
+            "cn.daily-bars": True,
+            "hk.daily-bars": False,
+            "us.daily-bars": True,
+            "cn.macro-release-calendar": True,
+            "hk.official-headlines": True,
+        }
     finally:
         await registry.close()
         await database.dispose()

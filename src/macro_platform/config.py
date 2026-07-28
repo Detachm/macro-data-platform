@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, time
 from functools import lru_cache
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -56,6 +56,11 @@ class Settings(BaseSettings):
             ZoneInfo(self.worker_schedule_timezone)
         except ZoneInfoNotFoundError as error:
             raise ValueError("WORKER_SCHEDULE_TIMEZONE must be an IANA timezone") from error
+        if time(self.worker_schedule_hour_local, self.worker_schedule_minute_local) >= time(
+            self.worker_report_cutoff_hour_local,
+            self.worker_report_cutoff_minute_local,
+        ):
+            raise ValueError("WORKER_SCHEDULE time must be before WORKER_REPORT_CUTOFF")
         if (
             self.app_env == "production"
             and self.service_token.get_secret_value() == "development-only-token"

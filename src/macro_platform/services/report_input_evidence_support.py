@@ -124,25 +124,6 @@ MARKET_INPUT_SPECS = (
         ),
     ),
     MarketInputSpec(
-        input_id="market.hk.core_indices.previous_close",
-        task_id="hk.daily-bars",
-        region=Region.HK,
-        expected_instrument_ids=frozenset(
-            {
-                "ins_hk_equity_00700",
-                "ins_hk_equity_09988",
-                "ins_hk_equity_03690",
-                "ins_hk_equity_01810",
-                "ins_hk_equity_00941",
-                "ins_hk_equity_00005",
-                "ins_hk_equity_00388",
-                "ins_hk_equity_01299",
-                "ins_hk_equity_02318",
-                "ins_hk_equity_09618",
-            }
-        ),
-    ),
-    MarketInputSpec(
         input_id="market.us.core_indices.previous_close",
         task_id="us.daily-bars",
         region=Region.US,

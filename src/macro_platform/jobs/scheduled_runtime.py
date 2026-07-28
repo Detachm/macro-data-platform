@@ -102,6 +102,7 @@ def build_registered_tasks(
             checkpoint_store=checkpoint_store,
             calendar_timezone=calendar_timezone,
             lookback_days=settings.worker_bar_lookback_days,
+            required=False,
             now=now,
         ),
         _daily_bar_task(
@@ -166,11 +167,12 @@ def _daily_bar_task(
     checkpoint_store: ScheduledTaskCheckpointStore,
     calendar_timezone: ZoneInfo,
     lookback_days: int,
+    required: bool = True,
     now: Callable[[], datetime],
 ) -> CheckpointedScheduledTask:
     return CheckpointedScheduledTask(
         task_id=task_id,
-        required=True,
+        required=required,
         provider_role=provider_role,
         dataset=Dataset.BARS,
         region=region,
@@ -381,6 +383,7 @@ async def run_scheduler(
                     hour=resolved_settings.worker_report_cutoff_hour_local,
                     minute=resolved_settings.worker_report_cutoff_minute_local,
                 ),
+                sleeper=sleeper,
             ),
         )
         if resolved_backfill_start is not None and resolved_backfill_end is not None:
@@ -474,9 +477,10 @@ def _first_safe_run_time(
     cutoff_hour: int,
     cutoff_minute: int,
 ) -> time_of_day:
-    """Do not execute a daily input run before its frozen reporting cutoff."""
+    """Return the collection start, which must leave time before the cutoff."""
 
-    return max(
-        time_of_day(hour=schedule_hour, minute=schedule_minute),
-        time_of_day(hour=cutoff_hour, minute=cutoff_minute),
-    )
+    schedule_time = time_of_day(hour=schedule_hour, minute=schedule_minute)
+    cutoff_time = time_of_day(hour=cutoff_hour, minute=cutoff_minute)
+    if schedule_time >= cutoff_time:
+        raise ValueError("worker schedule time must be before the report cutoff")
+    return schedule_time

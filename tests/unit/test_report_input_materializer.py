@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
@@ -133,6 +133,33 @@ async def test_rpt_029_materializer_derives_quality_and_persists_an_immutable_sn
     assert prompt.source_ref_ids == ["source-cn-1"]
     assert prompt.input_payload["editor_context"] == result.snapshot.payload["editor_context"]
     assert "usage_rights" not in result.snapshot.payload
+    assert snapshot_store.saved == [result.snapshot]
+
+
+@pytest.mark.asyncio
+async def test_rpt_029_materializer_waits_until_cutoff_before_collecting_evidence() -> None:
+    clock = {"now": NOW - timedelta(minutes=15)}
+    delays: list[float] = []
+    evidence_store = _EvidenceStore(())
+    snapshot_store = _SnapshotStore([])
+
+    async def advance_to_cutoff(delay: float) -> None:
+        delays.append(delay)
+        clock["now"] = NOW
+
+    materializer = ReportInputSnapshotMaterializer(
+        evidence_store=evidence_store,
+        snapshot_store=snapshot_store,
+        now=lambda: clock["now"],
+        cutoff_at=lambda _: NOW,
+        sleeper=advance_to_cutoff,
+    )
+
+    result = await materializer.materialize(REPORT_DATE, task_results=())
+
+    assert delays == [900.0]
+    assert result.snapshot.as_of == NOW
+    assert evidence_store.task_results == ()
     assert snapshot_store.saved == [result.snapshot]
 
 

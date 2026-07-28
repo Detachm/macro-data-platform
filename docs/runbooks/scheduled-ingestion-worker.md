@@ -15,16 +15,17 @@ checkpoint 恢复、backfill 和质量门禁的公共执行边界；API 继续�
 
 ## 已注册任务与运行方式
 
-- 生产仅在 `PROVIDER_MODE=live` 时注册 `cn.daily-bars`、`hk.daily-bars`、`us.daily-bars`、
+- 生产仅在 `PROVIDER_MODE=live` 时注册 `cn.daily-bars`、可选的 `hk.daily-bars`、`us.daily-bars`、
   `cn.macro-release-calendar`、`hk.official-headlines`；它们分别调用 BaoStock、XtQuant、Twelve
   Data、NBS、HKMA 的 checkpointed handler。fixture role 不会注册。
 - 每个 task 的 `(report_date, task_id)` checkpoint 保存原始 request clock 和 next cursor。进程在
   page commit 后退出时，下一 worker 从该 cursor 继续；完成 task 复放其 durable run result，不重新
-  访问 provider。normalized facts 仍由 page commit 和事实表唯一约束去重。
+  访问 provider。normalized facts 仍由 page commit 和事实表唯一约束去重。XtQuant 的 HK 任务只采集
+  审核过的十个个股，不能作为冻结的 `market.hk.core_indices.previous_close` 质量证据。
 - 默认上海 07:50 开始，08:15 为 input cutoff。通过 `WORKER_SCHEDULE_*`、
   `WORKER_REPORT_CUTOFF_*`、`WORKER_MAX_REPORT_ATTEMPTS`、市场/新闻 `WORKER_*_FRESHNESS_*` 配置时区、时刻、
-  报告级重试上限、轮询和时效阈值。若开始时刻早于 cutoff，实际 input run 在 cutoff 发起，避免遗漏
-  截止前到达的数据。
+  报告级重试上限、轮询和时效阈值。采集开始时刻必须早于 cutoff；provider 任务在 07:50 发起，若
+  提前完成则 materializer 等到 08:15 再冻结 snapshot。首次见到时间晚于 cutoff 的事实标记为 `late`。
 - 市场日线 freshness 使用 XSHG、XHKG、XNYS 的交易日历来确定上一交易会话，不以工作日近似；日历
   无法覆盖的报告日会以 `unavailable` 阻断报告，待日历版本更新后再重跑。
 - 常规常驻：`macro-data-worker`。
@@ -32,7 +33,7 @@ checkpoint 恢复、backfill 和质量门禁的公共执行边界；API 继续�
 - 显式回填：`macro-data-worker --backfill-start 2026-07-20 --backfill-end 2026-07-28`。首尾日期均包含，
   不可与单日模式混用。也可使用对应 `WORKER_RUN_ONCE_REPORT_DATE` 或 `WORKER_BACKFILL_*` 环境变量。
 
-CN news 和冻结的全区域 `calendar.macro_releases_7d` 尚不能证明完整获批 live 覆盖。materializer
+HK 核心指数、CN news 和冻结的全区域 `calendar.macro_releases_7d` 尚不能证明完整获批 live 覆盖。materializer
 将相应必需输入写为 `missing`，报告质量为 `blocked`；历史行、fixture 或其他未登记来源也不能填充
 这些输入。CN NBS 日历只覆盖 CN，不能单独满足该全区域输入。这是预期的安全状态，直到各地区
 provider Issue 实现完成。

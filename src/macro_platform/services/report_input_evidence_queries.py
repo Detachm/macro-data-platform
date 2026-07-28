@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import func, literal, or_, select, union_all
+from sqlalchemy import case, func, literal, or_, select, tuple_, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 from sqlalchemy.sql.selectable import Subquery
@@ -37,12 +37,10 @@ def _market_bar_versions(available_at: datetime, *, run_ids: tuple[UUID, ...]) -
         MarketBarRow.ingestion_run_id.label("ingestion_run_id"),
         MarketBarRow.provider_record_id.label("provider_record_id"),
         literal(0).label("revision_rank"),
+        case((MarketBarRow.ingestion_run_id.in_(run_ids), 1), else_=0).label("evidence_rank"),
         MarketBarRow.payload["source"]["checksum_sha256"].as_string().label("source_checksum"),
         MarketBarRow.payload.label("payload"),
-    ).where(
-        MarketBarRow.available_at <= available_at,
-        MarketBarRow.ingestion_run_id.in_(run_ids),
-    )
+    ).where(MarketBarRow.available_at <= available_at)
     revision_versions = (
         select(
             MarketBarRow.bar_id.label("bar_id"),
@@ -55,19 +53,20 @@ def _market_bar_versions(available_at: datetime, *, run_ids: tuple[UUID, ...]) -
             .as_string()
             .label("provider_record_id"),
             literal(1).label("revision_rank"),
+            case((MarketBarRevisionRow.ingestion_run_id.in_(run_ids), 1), else_=0).label(
+                "evidence_rank"
+            ),
             MarketBarRevisionRow.source_checksum_sha256.label("source_checksum"),
             MarketBarRevisionRow.payload.label("payload"),
         )
         .join(MarketBarRow, MarketBarRow.bar_id == MarketBarRevisionRow.bar_id)
-        .where(
-            MarketBarRevisionRow.available_at <= available_at,
-            MarketBarRevisionRow.ingestion_run_id.in_(run_ids),
-        )
+        .where(MarketBarRevisionRow.available_at <= available_at)
     )
     versions = union_all(base_versions, revision_versions).subquery()
     rank = func.row_number().over(
         partition_by=versions.c.bar_id,
         order_by=(
+            versions.c.evidence_rank.desc(),
             versions.c.available_at.desc(),
             versions.c.revision_rank.desc(),
             versions.c.source_checksum.desc(),
@@ -82,6 +81,7 @@ def _market_bar_versions(available_at: datetime, *, run_ids: tuple[UUID, ...]) -
         versions.c.ingestion_run_id,
         versions.c.provider_record_id,
         versions.c.revision_rank,
+        versions.c.evidence_rank,
         versions.c.payload,
         rank.label("rank"),
     ).subquery()
@@ -95,6 +95,7 @@ def _market_bar_versions(available_at: datetime, *, run_ids: tuple[UUID, ...]) -
             ranked.c.ingestion_run_id,
             ranked.c.provider_record_id,
             ranked.c.revision_rank,
+            ranked.c.evidence_rank,
             ranked.c.payload,
         )
         .where(ranked.c.rank == 1)
@@ -160,17 +161,18 @@ async def late_market_instruments(
 async def market_has_revision_before_cutoff(
     session: AsyncSession,
     *,
-    bar_ids: set[str],
-    run_ids: tuple[UUID, ...],
+    selected_versions: set[tuple[str, str]],
     cutoff_at: datetime,
 ) -> bool:
-    if not bar_ids or not run_ids:
+    if not selected_versions:
         return False
     revision_id = await session.scalar(
         select(MarketBarRevisionRow.revision_id)
         .where(
-            MarketBarRevisionRow.bar_id.in_(sorted(bar_ids)),
-            MarketBarRevisionRow.ingestion_run_id.in_(run_ids),
+            tuple_(
+                MarketBarRevisionRow.bar_id,
+                MarketBarRevisionRow.source_checksum_sha256,
+            ).in_(sorted(selected_versions)),
             MarketBarRevisionRow.available_at <= cutoff_at,
         )
         .limit(1)
@@ -190,12 +192,10 @@ def _macro_release_versions(available_at: datetime, *, run_ids: tuple[UUID, ...]
         .as_string()
         .label("provider_record_id"),
         literal(0).label("revision_rank"),
+        case((MacroReleaseRow.ingestion_run_id.in_(run_ids), 1), else_=0).label("evidence_rank"),
         MacroReleaseRow.source_checksum_sha256.label("source_checksum"),
         MacroReleaseRow.payload.label("payload"),
-    ).where(
-        MacroReleaseRow.available_at <= available_at,
-        MacroReleaseRow.ingestion_run_id.in_(run_ids),
-    )
+    ).where(MacroReleaseRow.available_at <= available_at)
     revision_versions = (
         select(
             MacroReleaseRow.release_id.label("release_id"),
@@ -208,19 +208,20 @@ def _macro_release_versions(available_at: datetime, *, run_ids: tuple[UUID, ...]
             .as_string()
             .label("provider_record_id"),
             literal(1).label("revision_rank"),
+            case((MacroReleaseRevisionRow.ingestion_run_id.in_(run_ids), 1), else_=0).label(
+                "evidence_rank"
+            ),
             MacroReleaseRevisionRow.source_checksum_sha256.label("source_checksum"),
             MacroReleaseRevisionRow.payload.label("payload"),
         )
         .join(MacroReleaseRow, MacroReleaseRow.release_id == MacroReleaseRevisionRow.release_id)
-        .where(
-            MacroReleaseRevisionRow.available_at <= available_at,
-            MacroReleaseRevisionRow.ingestion_run_id.in_(run_ids),
-        )
+        .where(MacroReleaseRevisionRow.available_at <= available_at)
     )
     versions = union_all(base_versions, revision_versions).subquery()
     rank = func.row_number().over(
         partition_by=versions.c.release_id,
         order_by=(
+            versions.c.evidence_rank.desc(),
             versions.c.available_at.desc(),
             versions.c.revision_rank.desc(),
             versions.c.source_checksum.desc(),
@@ -235,6 +236,7 @@ def _macro_release_versions(available_at: datetime, *, run_ids: tuple[UUID, ...]
         versions.c.ingestion_run_id,
         versions.c.provider_record_id,
         versions.c.revision_rank,
+        versions.c.evidence_rank,
         versions.c.payload,
         rank.label("rank"),
     ).subquery()
@@ -248,6 +250,7 @@ def _macro_release_versions(available_at: datetime, *, run_ids: tuple[UUID, ...]
             ranked.c.ingestion_run_id,
             ranked.c.provider_record_id,
             ranked.c.revision_rank,
+            ranked.c.evidence_rank,
             ranked.c.payload,
         )
         .where(ranked.c.rank == 1)
@@ -322,17 +325,18 @@ async def has_late_macro_release(
 async def macro_has_revision_before_cutoff(
     session: AsyncSession,
     *,
-    release_ids: set[str],
-    run_ids: tuple[UUID, ...],
+    selected_versions: set[tuple[str, str]],
     cutoff_at: datetime,
 ) -> bool:
-    if not release_ids or not run_ids:
+    if not selected_versions:
         return False
     revision_id = await session.scalar(
         select(MacroReleaseRevisionRow.revision_id)
         .where(
-            MacroReleaseRevisionRow.release_id.in_(sorted(release_ids)),
-            MacroReleaseRevisionRow.ingestion_run_id.in_(run_ids),
+            tuple_(
+                MacroReleaseRevisionRow.release_id,
+                MacroReleaseRevisionRow.source_checksum_sha256,
+            ).in_(sorted(selected_versions)),
             MacroReleaseRevisionRow.available_at <= cutoff_at,
         )
         .limit(1)

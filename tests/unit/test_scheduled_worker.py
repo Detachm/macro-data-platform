@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from structlog.testing import capture_logs
 
+from macro_platform.config import Settings
 from macro_platform.jobs.scheduler import (
     RetryableScheduledTaskError,
     ScheduledIngestionWorker,
@@ -208,7 +209,7 @@ def test_rpt_029_duplicate_declared_fact_id_blocks_even_when_payload_is_nonempty
     ]
 
 
-def test_job_029_scheduler_does_not_start_before_the_report_cutoff() -> None:
+def test_job_029_scheduler_starts_collection_before_the_report_cutoff() -> None:
     assert (
         _first_safe_run_time(
             schedule_hour=7,
@@ -216,8 +217,26 @@ def test_job_029_scheduler_does_not_start_before_the_report_cutoff() -> None:
             cutoff_hour=8,
             cutoff_minute=15,
         )
-        == datetime(2026, 7, 27, 8, 15).time()
+        == datetime(2026, 7, 27, 7, 50).time()
     )
+
+
+def test_job_029_scheduler_rejects_a_collection_start_at_or_after_cutoff() -> None:
+    with pytest.raises(ValueError, match="must be before the report cutoff"):
+        _first_safe_run_time(
+            schedule_hour=8,
+            schedule_minute=15,
+            cutoff_hour=8,
+            cutoff_minute=15,
+        )
+
+    with pytest.raises(ValueError, match="must be before WORKER_REPORT_CUTOFF"):
+        Settings(
+            worker_schedule_hour_local=8,
+            worker_schedule_minute_local=16,
+            worker_report_cutoff_hour_local=8,
+            worker_report_cutoff_minute_local=15,
+        )
 
 
 @dataclass

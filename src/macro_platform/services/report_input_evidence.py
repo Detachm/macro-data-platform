@@ -117,6 +117,11 @@ class PostgresReportInputEvidenceStore(ReportInputEvidenceStore):
         return (
             *market,
             _unsupported_live_input(
+                "market.hk.core_indices.previous_close",
+                "XtQuant live coverage contains approved HK equities, not the required "
+                "HK core-index input",
+            ),
+            _unsupported_live_input(
                 "news.cn.official_headlines_24h",
                 "CN official headlines have no approved live provider",
             ),
@@ -217,8 +222,7 @@ class PostgresReportInputEvidenceStore(ReportInputEvidenceStore):
             )
         revised = await market_has_revision_before_cutoff(
             session,
-            bar_ids={bar.bar_id for bar in bars},
-            run_ids=task_result.evidence_run_ids,
+            selected_versions={(bar.bar_id, bar.source.checksum_sha256) for bar in bars},
             cutoff_at=cutoff_at,
         )
         status, reason = source_status(
@@ -277,7 +281,6 @@ class PostgresReportInputEvidenceStore(ReportInputEvidenceStore):
                     NewsEventRegionRow.region == region.value,
                     NewsEventRow.status.in_(("active", "corrected")),
                     NewsEventRow.provider_record_id.in_(sorted(commits.provider_record_ids)),
-                    NewsEventRow.ingestion_run_id.in_(task_result.evidence_run_ids),
                     NewsEventRow.available_at <= cutoff_at,
                     or_(
                         NewsEventRow.published_at >= window_start,
@@ -299,7 +302,6 @@ class PostgresReportInputEvidenceStore(ReportInputEvidenceStore):
                         NewsEventRegionRow.region == region.value,
                         NewsEventRow.status.in_(("active", "corrected")),
                         NewsEventRow.provider_record_id.in_(sorted(commits.provider_record_ids)),
-                        NewsEventRow.ingestion_run_id.in_(task_result.evidence_run_ids),
                         NewsEventRow.available_at > cutoff_at,
                         NewsEventRow.available_at <= as_of,
                         or_(
@@ -412,6 +414,7 @@ class PostgresReportInputEvidenceStore(ReportInputEvidenceStore):
                         "display_text": "No macro releases are scheduled in the next seven days.",
                         "value": 0,
                         "unit": "events",
+                        "available_at": cutoff_at.isoformat().replace("+00:00", "Z"),
                         "report_date": report_date.isoformat(),
                         "source_ref_ids": [],
                     },
@@ -419,8 +422,9 @@ class PostgresReportInputEvidenceStore(ReportInputEvidenceStore):
             )
         revised = await macro_has_revision_before_cutoff(
             session,
-            release_ids={release.release_id for release in releases},
-            run_ids=task_result.evidence_run_ids,
+            selected_versions={
+                (release.release_id, release.source.checksum_sha256) for release in releases
+            },
             cutoff_at=cutoff_at,
         )
         status: Literal["available", "revised"] = "revised" if revised else "available"

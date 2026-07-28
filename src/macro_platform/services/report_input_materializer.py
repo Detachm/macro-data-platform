@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+import asyncio
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from typing import Protocol
@@ -60,6 +61,7 @@ class ReportInputSnapshotMaterializer:
         snapshot_store: ReportInputSnapshotStore,
         now: Callable[[], datetime] = utc_now,
         cutoff_at: Callable[[date], datetime],
+        sleeper: Callable[[float], Awaitable[None]] = asyncio.sleep,
         snapshot_version: str = "1.0",
     ) -> None:
         if not snapshot_version.strip():
@@ -68,6 +70,7 @@ class ReportInputSnapshotMaterializer:
         self._snapshot_store = snapshot_store
         self._now = now
         self._cutoff_at = cutoff_at
+        self._sleeper = sleeper
         self._snapshot_version = snapshot_version
         self._quality_gate = ReportInputQualityGate()
 
@@ -77,8 +80,13 @@ class ReportInputSnapshotMaterializer:
         *,
         task_results: tuple[ScheduledTaskResult, ...],
     ) -> MaterializedReportInput:
-        as_of = self._now().astimezone(UTC)
         cutoff_at = self._cutoff_at(report_date).astimezone(UTC)
+        as_of = self._now().astimezone(UTC)
+        if as_of < cutoff_at:
+            await self._sleeper((cutoff_at - as_of).total_seconds())
+            as_of = self._now().astimezone(UTC)
+            if as_of < cutoff_at:
+                raise RuntimeError("materializer sleeper returned before the report cutoff")
         evidence = await self._evidence_store.collect(
             report_date=report_date,
             as_of=as_of,

@@ -316,6 +316,26 @@ async def test_job_029_checkpointed_calendar_and_headline_tasks_persist_facts(
             as_of=request_as_of,
         )
     )
+    replayed_news_result = await JobRunner(
+        NewsIngestHandler(
+            _NewsProvider(),  # type: ignore[arg-type]
+            provider_role="hk.news.primary",
+            region=Region.HK,
+            timeout_seconds=30,
+            now=lambda: NOW,
+        ),
+        database=database,
+        now=lambda: NOW,
+    ).execute(
+        IngestJobRequest(
+            provider_role="hk.news.primary",
+            dataset=Dataset.NEWS,
+            regions={Region.HK},
+            start=NOW - timedelta(days=1),
+            end=NOW + timedelta(days=1),
+            as_of=request_as_of + timedelta(minutes=1),
+        )
+    )
     unapproved_us_result = await JobRunner(
         MacroReleaseIngestHandler(
             _UnapprovedUsFixtureProvider(),
@@ -342,6 +362,8 @@ async def test_job_029_checkpointed_calendar_and_headline_tasks_persist_facts(
         news_result.records_inserted,
         unapproved_us_result.records_inserted,
     ) == (1, 1, 1)
+    assert replayed_news_result.run_id != news_result.run_id
+    assert replayed_news_result.records_accepted == 1
     async with database.session() as session:
         stored_release = await session.get(MacroReleaseRow, release.release_id)
         stored_series = await session.get(MacroSeriesRow, release.series_id)
@@ -349,6 +371,7 @@ async def test_job_029_checkpointed_calendar_and_headline_tasks_persist_facts(
     assert stored_release is not None
     assert stored_series is not None
     assert stored_news is not None
+    assert stored_news.ingestion_run_id == news_result.run_id
     evidence = await PostgresReportInputEvidenceStore(database).collect(
         report_date=NOW.date(),
         as_of=NOW,
@@ -368,12 +391,15 @@ async def test_job_029_checkpointed_calendar_and_headline_tasks_persist_facts(
                 dataset=Dataset.NEWS,
                 region=Region.HK,
                 status="succeeded",
-                run_id=news_result.run_id,
+                run_id=replayed_news_result.run_id,
             ),
         ),
     )
     by_input_id = {item.input_id: item for item in evidence}
     assert by_input_id["calendar.macro_releases_7d"].status == "missing"
+    hk_market = by_input_id["market.hk.core_indices.previous_close"]
+    assert hk_market.status == "missing"
+    assert "HK equities" in hk_market.reason
     assert by_input_id["news.cn.official_headlines_24h"].status == "missing"
     hk_news = by_input_id["news.hk.official_headlines_24h"]
     assert hk_news.status == "available"
@@ -864,6 +890,11 @@ async def test_job_029_market_evidence_uses_the_latest_revision_payload_before_c
         database=database,
         now=lambda: NOW,
     ).execute(_request(revision_report_date, NOW + timedelta(days=1), "revision"))
+    replayed = await JobRunner(
+        _MarketBarsPageHandler(revised_bars),
+        database=database,
+        now=lambda: NOW,
+    ).execute(_request(revision_report_date, NOW + timedelta(days=1), "replayed-revision"))
 
     evidence = await PostgresReportInputEvidenceStore(database).collect(
         report_date=revision_report_date,
@@ -896,9 +927,27 @@ async def test_job_029_market_evidence_uses_the_latest_revision_payload_before_c
             ),
         ),
     )
+    replayed_evidence = await PostgresReportInputEvidenceStore(database).collect(
+        report_date=revision_report_date,
+        as_of=NOW,
+        cutoff_at=NOW,
+        task_results=(
+            ScheduledTaskResult(
+                task_id="cn.daily-bars",
+                provider_role="cn.bars.primary",
+                dataset=Dataset.BARS,
+                region=Region.CN,
+                status="succeeded",
+                run_id=replayed.run_id,
+            ),
+        ),
+    )
 
     market = {item.input_id: item for item in evidence}["market.cn.core_indices.previous_close"]
     base_only_market = {item.input_id: item for item in base_only_evidence}[
+        "market.cn.core_indices.previous_close"
+    ]
+    replayed_market = {item.input_id: item for item in replayed_evidence}[
         "market.cn.core_indices.previous_close"
     ]
     assert market.status == "revised"
@@ -906,3 +955,5 @@ async def test_job_029_market_evidence_uses_the_latest_revision_payload_before_c
     assert {fact["value"] for fact in market.facts} == {"11.5"}
     assert base_only_market.status == "available"
     assert {fact["close"] for fact in base_only_market.facts} == {"10.5"}
+    assert replayed_market.status == "revised"
+    assert {fact["close"] for fact in replayed_market.facts} == {"11.5"}
