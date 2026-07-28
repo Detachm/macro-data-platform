@@ -133,26 +133,28 @@ PostgreSQL 设计：
 
 1. 新增 `FEISHU_ALERT_CHAT_ID` 运行时配置、预警消息合同和所有终态失败的预警群投递；现有
    `FEISHU_CHAT_ID` 只用于正常日报。
-2. 轮换 Beast 明文 XtQuant token，恢复并托管 `58615` 数据中心。
-3. 扩展 HK 核心指数，并补齐 CN 新闻、HK/US 日历。
+2. 按 #50 轮换 Beast 明文 XtQuant token，恢复并托管 `58615` 数据中心，同时扩展 HK
+   核心指数。
+3. 按 #51 补齐 CN 新闻、HK/US 日历和节假日报告策略。
 4. 实现 #33 的 ingest → quality → generate → validate → deliver 完整状态机。
 5. 实现周末/节假日宏观版，不把休市当作必需行情缺失。
-6. 安装单节点 K3s，并落地 Namespace、Deployment、StatefulSet、Service、Job、CronJob、PVC
-   和 Secrets；当前仓库尚无 Kubernetes 清单。
+6. 按 #49 安装单节点 K3s，并落地 Namespace、Deployment、StatefulSet、Service、Job、
+   CronJob、PVC 和 Secrets；当前仓库尚无 Kubernetes 清单。
 7. 增加运行相关 ID、结构化日志、指标、健康检查、终态告警和受保护运维入口。
 8. 增加 PostgreSQL + mocked providers/LLM/Feishu 的 CI E2E。
 9. 完成 provider 连续两个报告日验证和完整链路连续五个工作日 soak。
 
-GitHub 当前只开放主任务 #33。K3s/PostgreSQL 持久化备份、Beast 凭据治理和质量门禁发现的
-provider 缺口应建立独立跟踪项，不重新打开已经完成的旧 provider issue。
+GitHub 当前开放的生产任务是 #33、#49、#50 和 #51，分别跟踪编排、部署/存储、
+Beast/HK 行情和新闻/日历/节假日策略；不重新打开已经完成的旧 provider issue。
 
 ## 9. 落地顺序与上线门槛
 
 推荐顺序：
 
-1. 轮换已暴露的 XtQuant token，并恢复宿主机 `58615` 常驻服务。
-2. 探测并接入付费 XtQuant HK 核心指数，补齐其他必需输入。
-3. 安装 K3s，完成 PostgreSQL PVC、Secret、迁移和 `/archive` 备份。
+1. 完成 #50：轮换已暴露的 XtQuant token，恢复宿主机 `58615` 常驻服务并接入付费
+   XtQuant HK 核心指数。
+2. 完成 #51：补齐 CN 新闻、HK/US 日历及节假日报告策略。
+3. 完成 #49：安装 K3s，完成 PostgreSQL PVC、Secret、迁移和 `/archive` 备份。
 4. 完成 #33 编排、双群告警、周末策略和运维入口。
 5. 执行 E2E、两日报告日 provider 验证和五工作日生产式 soak。
 
