@@ -38,7 +38,7 @@ Traefik/ServiceLB，并启用 Secret 静态加密。升级前重新核对
 ```bash
 findmnt -T /var/lib
 curl -sfL https://get.k3s.io \
-  | INSTALL_K3S_VERSION='v1.36.2+k3s1' \
+  | sudo env INSTALL_K3S_VERSION='v1.36.2+k3s1' \
     INSTALL_K3S_EXEC='server --disable=traefik --disable=servicelb --secrets-encryption' \
     sh -
 
