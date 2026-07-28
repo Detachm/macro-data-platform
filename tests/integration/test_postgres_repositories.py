@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Iterator, Mapping
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
@@ -43,6 +44,11 @@ from macro_platform.contracts.provider import Dataset, IngestJobRequest, IngestJ
 from macro_platform.contracts.report import ReportValidationIssue
 from macro_platform.jobs.ingestion_checkpoint import CommittedPage, IngestionCheckpointService
 from macro_platform.jobs.runner import IngestionExecutionContext, JobRunner
+from macro_platform.services.report_delivery import (
+    FeishuSendResult,
+    PostgresReportDeliveryStore,
+    ReportDeliveryService,
+)
 from macro_platform.storage.database import Database
 from macro_platform.storage.models import (
     DailyReportRow,
@@ -233,6 +239,7 @@ def _report_commands(token: str) -> tuple[ReportInputSnapshot, StoredDailyReport
         DeliveryAttempt(
             delivery_id=uuid4(),
             report_id=report_id,
+            report_version=stored_report.report_version,
             delivery_target="feishu:contract-test",
             idempotency_key=f"delivery-{token}",
             request_payload={"report_id": report_id},
@@ -358,7 +365,7 @@ async def test_db_002_migration_upgrades_0002_to_current_schema(database: Databa
         )
         preserved_run = await session.get(ProviderRunRow, _previous_schema_run_id)
         preserved_instrument = await session.get(InstrumentRow, _previous_schema_instrument_id)
-    assert revision == "0010"
+    assert revision == "0011"
     assert tables == {
         "report_input_snapshots",
         "daily_reports",
@@ -680,6 +687,99 @@ async def test_rep_027_002_ingestion_run_and_report_recover_after_restart(
     assert recovered_snapshot == snapshot
     assert recovered_report == report
     assert recovered_delivery == delivery
+
+
+async def test_rpt_032_delivery_attempt_persists_feishu_audit_fields(
+    database: Database,
+) -> None:
+    token = uuid4().hex
+    snapshot, report, delivery = _report_commands(token)
+
+    async with UnitOfWork(database).transaction() as session:
+        repository = ReportRepository(session)
+        assert await repository.put_input_snapshot(snapshot)
+        assert await repository.put_report(report)
+        assert await repository.reserve_delivery_attempt(delivery)
+        assert await repository.update_delivery_attempt(
+            delivery_id=delivery.delivery_id,
+            expected_attempt_no=1,
+            status="succeeded",
+            response_payload={"provider": "feishu", "result": "succeeded"},
+            message_id="om_contract_message",
+        )
+
+    async with database.session() as session:
+        persisted = await ReportRepository(session).load_delivery_attempt(delivery.delivery_id)
+        persisted_row = await session.get(DeliveryAttemptRow, delivery.delivery_id)
+
+    assert persisted is not None
+    assert persisted.report_version == report.report_version
+    assert persisted.status == "succeeded"
+    assert persisted.message_id == "om_contract_message"
+    assert persisted.error_code is None
+    assert persisted_row is not None
+    assert persisted_row.created_at is not None
+    assert persisted_row.updated_at is not None
+
+
+async def test_rpt_032_postgres_delivery_store_commits_idempotency_before_send(
+    database: Database,
+) -> None:
+    token = uuid4().hex
+    snapshot, report, _ = _report_commands(token)
+    validated = report.model_copy(update={"lifecycle_status": "validated"})
+
+    async with UnitOfWork(database).transaction() as session:
+        repository = ReportRepository(session)
+        assert await repository.put_input_snapshot(snapshot)
+        assert await repository.put_report(report)
+        assert await repository.update_report_validation(
+            validated,
+            expected_lifecycle_status="generated",
+        )
+
+    class _SuccessfulTransport:
+        def __init__(self) -> None:
+            self.requests: list[tuple[str, Mapping[str, Any], str]] = []
+
+        async def send_card(
+            self,
+            *,
+            chat_id: str,
+            card: Mapping[str, Any],
+            request_uuid: str,
+        ) -> FeishuSendResult:
+            self.requests.append((chat_id, card, request_uuid))
+            return FeishuSendResult(
+                message_id="om_postgres_delivery",
+                response_payload={"code": 0},
+            )
+
+    transport = _SuccessfulTransport()
+    delivery_store = PostgresReportDeliveryStore(database)
+    service = ReportDeliveryService(transport)
+
+    first = await service.deliver(
+        delivery_store,
+        report_id=validated.report_id,
+        chat_id="oc_postgres_delivery",
+    )
+    replay = await service.deliver(
+        delivery_store,
+        report_id=validated.report_id,
+        chat_id="oc_postgres_delivery",
+    )
+
+    assert first.status == "succeeded"
+    assert first.delivery_attempt is not None
+    assert replay.delivery_attempt == first.delivery_attempt
+    assert len(transport.requests) == 1
+    assert len(transport.requests[0][2]) == 50
+    async with database.session() as session:
+        persisted = await ReportRepository(session).load_delivery_attempt(
+            first.delivery_attempt.delivery_id
+        )
+    assert persisted == first.delivery_attempt
 
 
 async def test_rep_027_production_runner_replays_completed_ingestion_without_provider_call(

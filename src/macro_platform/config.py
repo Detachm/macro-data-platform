@@ -49,6 +49,13 @@ class Settings(BaseSettings):
     worker_run_once_report_date: date | None = None
     worker_backfill_start_date: date | None = None
     worker_backfill_end_date: date | None = None
+    feishu_delivery_enabled: bool = False
+    feishu_app_id: str | None = None
+    feishu_app_secret: SecretStr | None = None
+    feishu_chat_id: str | None = None
+    feishu_api_base_url: str = "https://open.feishu.cn"
+    feishu_timeout_seconds: int = Field(default=15, ge=1, le=300)
+    feishu_delivery_max_attempts: int = Field(default=3, ge=1, le=5)
 
     @model_validator(mode="after")
     def reject_development_secret_in_production(self) -> Settings:
@@ -91,6 +98,20 @@ class Settings(BaseSettings):
             and self.worker_backfill_start_date is not None
         ):
             raise ValueError("WORKER_RUN_ONCE_REPORT_DATE cannot be combined with worker backfill")
+        if self.feishu_delivery_enabled and (
+            not self.feishu_app_id
+            or not self.feishu_app_id.strip()
+            or self.feishu_app_secret is None
+            or not self.feishu_app_secret.get_secret_value().strip()
+            or not self.feishu_chat_id
+            or not self.feishu_chat_id.strip()
+        ):
+            raise ValueError(
+                "FEISHU_APP_ID, FEISHU_APP_SECRET, and FEISHU_CHAT_ID are required "
+                "when Feishu delivery is enabled"
+            )
+        if self.feishu_delivery_enabled and not self.feishu_api_base_url.startswith("https://"):
+            raise ValueError("FEISHU_API_BASE_URL must use HTTPS when delivery is enabled")
         return self
 
 

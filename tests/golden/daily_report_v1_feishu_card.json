@@ -1,8 +1,5 @@
 {
   "schema": "2.0",
-  "report_contract_version": "1.0",
-  "report_id": "daily-report-2026-07-23-v1",
-  "publication_decision": "published",
   "header": {
     "title": {
       "tag": "plain_text",
@@ -23,7 +20,27 @@
       },
       {
         "tag": "markdown",
+        "content": "**中国内地**\n沪深主要指数收高，成交额较前一交易日回升；官方头条暂无重大政策冲击。"
+      },
+      {
+        "tag": "markdown",
+        "content": "**香港**\n恒指与恒生科技指数上涨，南向资金净流入。"
+      },
+      {
+        "tag": "markdown",
+        "content": "**美国**\n标普 500 与纳指收高，VIX 回落。"
+      },
+      {
+        "tag": "markdown",
+        "content": "**未来日程**\n• 2026-07-29 09:30（CN）中国制造业 PMI\n• 2026-07-29 20:30（US）美国 PCE 物价指数"
+      },
+      {
+        "tag": "markdown",
         "content": "**数据质量**\n必需数据均在截止时间前到达，未发现过期或权限问题。"
+      },
+      {
+        "tag": "markdown",
+        "content": "**来源**\n• [CN market daily fixture](https://example.invalid/sources/cn-market-2026-07-22)\n• [HK market daily fixture](https://example.invalid/sources/hk-market-2026-07-22)\n• [US market daily fixture](https://example.invalid/sources/us-market-2026-07-22)\n• [CN official headlines fixture](https://example.invalid/sources/cn-news-2026-07-22-001)\n• [HK official headlines fixture](https://example.invalid/sources/hk-news-2026-07-22-001)\n• [Macro release calendar fixture](https://example.invalid/sources/calendar-2026-07-23)"
       },
       {
         "tag": "markdown",
