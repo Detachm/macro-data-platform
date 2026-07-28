@@ -78,3 +78,6 @@ Fixture 文件和所覆盖的错误/时间场景记录在
 
 已验证日报的飞书交付审计、幂等与联调前置条件见
 [`docs/feishu-delivery.md`](docs/feishu-delivery.md)。完整自动交付编排仍由 #33 负责。
+
+生产目标架构、已确认运行规则、当前完成状态及剩余上线门槛见
+[`docs/production-architecture-status.md`](docs/production-architecture-status.md)。
