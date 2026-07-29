@@ -721,9 +721,7 @@ async def test_hkma_press_release_adapter_falls_back_to_the_official_listing() -
         CONTEXT,
     )
 
-    assert [item.title for item in page.items] == [
-        "HKMA launches quantum preparedness whitepaper"
-    ]
+    assert [item.title for item in page.items] == ["HKMA launches quantum preparedness whitepaper"]
     assert str(page.items[0].canonical_url) == (
         "https://www.hkma.gov.hk/eng/news-and-media/press-releases/2026/07/20260727-3/"
     )
