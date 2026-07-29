@@ -1,0 +1,93 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: macro-host-runtime
+provisioner: kubernetes.io/no-provisioner
+reclaimPolicy: Retain
+volumeBindingMode: WaitForFirstConsumer
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: macro-xtquant-runtime
+  labels:
+    app.kubernetes.io/name: xtquant-runtime
+    app.kubernetes.io/part-of: macro-data-platform
+spec:
+  capacity:
+    storage: 1Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadOnlyMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: macro-host-runtime
+  local:
+    path: /home/hliu/beast/services/mammoth/site-packages/xtquant_251211_interim-release_cp36m-37m-38-39-310-311-312_linux-gnu_x86_64
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: macro-data-platform/xtquant-runtime
+              operator: In
+              values:
+                - "true"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: xtquant-runtime
+  namespace: macro-data-platform
+  labels:
+    app.kubernetes.io/name: xtquant-runtime
+    app.kubernetes.io/part-of: macro-data-platform
+spec:
+  accessModes:
+    - ReadOnlyMany
+  storageClassName: macro-host-runtime
+  volumeName: macro-xtquant-runtime
+  resources:
+    requests:
+      storage: 512Mi
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: macro-xtquant-cache
+  labels:
+    app.kubernetes.io/name: xtquant-cache
+    app.kubernetes.io/part-of: macro-data-platform
+spec:
+  capacity:
+    storage: 20Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadOnlyMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: macro-host-runtime
+  local:
+    path: /mnt/data/macro-data-platform/xtquant/datadir
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: macro-data-platform/xtquant-runtime
+              operator: In
+              values:
+                - "true"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: xtquant-cache
+  namespace: macro-data-platform
+  labels:
+    app.kubernetes.io/name: xtquant-cache
+    app.kubernetes.io/part-of: macro-data-platform
+spec:
+  accessModes:
+    - ReadOnlyMany
+  storageClassName: macro-host-runtime
+  volumeName: macro-xtquant-cache
+  resources:
+    requests:
+      storage: 1Gi

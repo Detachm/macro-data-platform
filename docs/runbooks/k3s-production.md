@@ -10,8 +10,8 @@
 
 部署严格分三阶段：
 
-1. `phase-1-infrastructure`：Namespace、配置、NetworkPolicy、PostgreSQL StatefulSet/PVC 和
-   09:00 备份 CronJob。
+1. `phase-1-infrastructure`：Namespace、配置、NetworkPolicy、PostgreSQL StatefulSet/PVC、
+   `/archive` 备份 PVC、只读 XtQuant vendor runtime PVC 和 09:00 备份 CronJob。
 2. `phase-2-migration`：单次 Alembic Job；失败时停止发布。
 3. `phase-3-workloads`：API、单副本 worker 和 `/archive` 容量监控。
 
@@ -22,6 +22,8 @@ XtQuant token 永远留在宿主机 Beast 服务；Pod 只取得节点 IP 和 `5
 
 - `/archive`：独立 `/dev/sda1`、XFS、约 29.1 TiB，通过 `Retain` 静态 Local PV 与 PVC 提供给
   备份/恢复 Pod；不使用会被 Pod Security baseline 拒绝的直接 `hostPath`。
+- XtQuant CPython 3.12 vendor package 与 data centre cache：分别通过只读静态 Local PV/PVC 以
+  原始绝对路径只挂载给 worker；vendor 二进制、付费行情 cache、token 均不复制进镜像或 Git。
 - K3s 默认 `local-path` 位于 `/var/lib/rancher/k3s/storage`；上线前必须用 `findmnt` 确认它落在
   NVMe 根盘，而不是 `/archive`。
 - 宿主机已有其他 PostgreSQL 占用 `5432`；本项目的 Service 仅为 ClusterIP，不使用 host port，
@@ -89,11 +91,14 @@ sudo install -d -o 999 -g 999 -m 0700 \
 sudo stat -c '%U %G %a %n' /archive/macro-data-platform/postgres-backups
 sudo k3s kubectl label node "$(hostname -s)" \
   macro-data-platform/archive=true --overwrite
+sudo k3s kubectl label node "$(hostname -s)" \
+  macro-data-platform/xtquant-runtime=true --overwrite
 ```
 
 预期权限为 `999:999 700`。节点标签必须与静态 Local PV 的 node affinity 一致；PVC 会把这条明确
-目录提供给 Pod，而不是开放 `/archive` 根目录。备份脚本会把 `daily/`、`weekly/` 保持为 `0700`，
-dump 文件保持为 `0600`。
+目录提供给 Pod，而不是开放 `/archive` 根目录。第二个标签必须与已验证的 XtQuant vendor runtime
+Local PV node affinity 一致。备份脚本会把 `daily/`、`weekly/` 保持为 `0700`，dump 文件保持为
+`0600`。
 
 ## 5. 构建并导入应用镜像
 
@@ -170,7 +175,8 @@ sudo k3s kubectl -n macro-data-platform get pvc,pod,cronjob
 
 数据库 PVC 必须为 `Bound`、容量 `100Gi`、StorageClass 为 `local-path`；备份 PVC
 `postgres-backup-archive` 必须绑定 `macro-postgres-archive`、StorageClass 为 `macro-archive`、回收策略为
-`Retain`。PostgreSQL Pod 必须为 `Ready`。
+`Retain`；`xtquant-runtime`、`xtquant-cache` 必须分别绑定只读 `macro-xtquant-runtime`、
+`macro-xtquant-cache`。PostgreSQL Pod 必须为 `Ready`。
 
 ### 7.2 迁移发布门
 

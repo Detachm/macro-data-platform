@@ -228,6 +228,9 @@ class _XtQuantClient:
         assert port == 58615
         assert remember_if_success is True
 
+    def disconnect(self) -> None:
+        return None
+
     def download_history_data2(
         self,
         stock_list: list[str],

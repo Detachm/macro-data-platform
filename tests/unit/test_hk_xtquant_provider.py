@@ -72,6 +72,9 @@ class _Client:
         assert isinstance(stock_list, list)
         return {str(symbol): _Frame(self._records) for symbol in stock_list}
 
+    def disconnect(self) -> None:
+        self.calls.append(("disconnect",))
+
 
 def _provider(client: _Client | None = None) -> HkXtQuantDailyBarsProvider:
     return HkXtQuantDailyBarsProvider(
@@ -151,6 +154,18 @@ async def test_xtquant_maps_hk_daily_bar_via_shared_datacentre_protocol() -> Non
             },
         ),
     ]
+
+
+@pytest.mark.asyncio
+async def test_xtquant_provider_disconnects_its_rpc_client_idempotently() -> None:
+    client = _Client([_row()])
+    provider = _provider(client)
+
+    await provider.fetch_bars(_query(), CONTEXT)
+    await provider.aclose()
+    await provider.aclose()
+
+    assert client.calls.count(("disconnect",)) == 1
 
 
 @pytest.mark.asyncio

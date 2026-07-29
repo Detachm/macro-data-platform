@@ -808,10 +808,15 @@ async def test_live_adapter_rejects_html_login_as_authorization_failure() -> Non
 
 def test_production_requires_explicit_live_provider_mode() -> None:
     with pytest.raises(ValueError, match="PROVIDER_MODE=live"):
-        Settings(app_env="production", service_token=SecretStr("runtime-token"))
+        Settings(
+            _env_file=None,
+            app_env="production",
+            service_token=SecretStr("runtime-token"),
+        )
 
     with pytest.raises(ValueError, match="PROVIDER_CURSOR_SECRET"):
         Settings(
+            _env_file=None,
             app_env="production",
             provider_mode="live",
             service_token=SecretStr("runtime-token"),

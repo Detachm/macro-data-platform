@@ -96,6 +96,8 @@ class XtQuantClient(Protocol):
         fill_data: bool = True,
     ) -> Mapping[str, object]: ...
 
+    def disconnect(self) -> None: ...
+
 
 @dataclass(frozen=True, slots=True)
 class HkXtQuantInstrument:
@@ -342,7 +344,13 @@ class HkXtQuantDailyBarsProvider:
         )
 
     async def aclose(self) -> None:
-        """XtQuant connection lifecycle belongs to the shared data-centre process."""
+        """Release this worker's RPC client without stopping the shared data centre."""
+
+        with self._client_lock:
+            client = self._client
+            self._client = None
+            if client is not None:
+                client.disconnect()
 
     async def fetch_bars(self, query: BarQuery, context: FetchContext) -> ProviderPage[MarketBar]:
         if query.interval is not Interval.D1 or query.adjustment is not Adjustment.RAW:

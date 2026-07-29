@@ -15,8 +15,8 @@ symbol。禁止猜代码，也禁止把 token 或付费行情 payload 写入 Git
 - Beast 旧启动函数会主动杀掉占用目标端口的进程；生产服务不得复用这种行为。本项目的新入口遇到端口
   占用会直接失败，让值班人判断冲突来源。
 - 已验证的 XtQuant CPython 3.12 vendor package 可以从 Beast 的 versioned `site-packages` 目录导入；
-  宿主机服务通过受控 `PYTHONPATH` 使用它，K8s 镜像不携带 token。
-- 当前账号有 sudo 但需要交互密码，因此本轮没有读防火墙规则、创建系统用户、安装 unit 或启动服务。
+  宿主机服务通过受控 `PYTHONPATH` 使用它，worker 通过只读静态 Local PV/PVC 使用同一版本；K8s
+  镜像不复制 vendor package，Pod 不携带 token。
 
 仓库提供：
 
@@ -142,6 +142,29 @@ sudo stat -c '%U %G %a %n' /etc/macro-data-platform/xtquant.env
 ```
 
 预期为 `root root 600`。
+
+worker 也需要客户端 Python runtime 和 data centre 提供的本机 cache 路径，但不需要 token。phase 1
+用两个 Local PV 固定到已验证的 versioned vendor 目录和 `/mnt/data/.../xtquant/datadir`；两个 PVC 均以
+`ReadOnlyMany` 挂给 worker。cache 必须保持 data centre 返回的同一绝对路径，否则 SDK 连接成功也会读到
+空结果。部署前确认目录存在并设置节点标签：
+
+```bash
+test -d \
+  /home/hliu/beast/services/mammoth/site-packages/xtquant_251211_interim-release_cp36m-37m-38-39-310-311-312_linux-gnu_x86_64/xtquant
+test -d /mnt/data/macro-data-platform/xtquant/datadir
+sudo k3s kubectl label node "$(hostname -s)" \
+  macro-data-platform/xtquant-runtime=true --overwrite
+sudo k3s kubectl -n macro-data-platform get pvc xtquant-runtime xtquant-cache
+```
+
+worker startup/readiness probe 会实际导入 `xtquant.xtdata` 并检查 cache 可读；vendor/cache 目录缺失、
+native library 不兼容或 PVC 未绑定都会阻止 rollout。worker 的 `LD_LIBRARY_PATH` 指向 vendor 自带 `.libs`，镜像仅补充该
+版本在 Debian 13 上仍需要的 `libexpat1`。升级 SDK 时新增版本化目录，先验证 CPython/架构和动态库，
+再在 PR 中更新 Local PV path 并滚动 worker；不要原地覆盖当前目录。
+
+滚动发布时 kubelet 的 `preStop` 先向 worker 发送 `SIGINT`，让 registry 调用 XtQuant provider
+`disconnect()`，再由 60 秒 termination grace 收尾。这样只释放 Pod 的 RPC client，不停止共享 data
+centre，也避免旧 Pod 非优雅退出后留下会触发 `rpc auth failed` 的陈旧会话。
 
 ### 5.3 安装并启动 unit
 

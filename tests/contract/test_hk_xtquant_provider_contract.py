@@ -58,6 +58,9 @@ class _Client:
     def connect(self, *_: object, **__: object) -> None:
         return None
 
+    def disconnect(self) -> None:
+        return None
+
     def download_history_data2(self, *_: object, **__: object) -> None:
         return None
 

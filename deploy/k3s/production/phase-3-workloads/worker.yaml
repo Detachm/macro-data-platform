@@ -51,6 +51,12 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.hostIP
+            - name: PYTHONPATH
+              value: /opt/xtquant-runtime
+            - name: LD_LIBRARY_PATH
+              value: /opt/xtquant-runtime/xtquant/.libs
+            - name: HK_XTQUANT_DATA_PATH
+              value: /mnt/data/macro-data-platform/xtquant/datadir
           startupProbe:
             exec:
               command:
@@ -77,6 +83,13 @@ spec:
             periodSeconds: 30
             timeoutSeconds: 3
             failureThreshold: 3
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - sh
+                  - -ec
+                  - kill -INT 1; sleep 5
           resources:
             requests:
               cpu: 250m
@@ -89,3 +102,19 @@ spec:
             capabilities:
               drop:
                 - ALL
+          volumeMounts:
+            - name: xtquant-runtime
+              mountPath: /opt/xtquant-runtime
+              readOnly: true
+            - name: xtquant-cache
+              mountPath: /mnt/data/macro-data-platform/xtquant/datadir
+              readOnly: true
+      volumes:
+        - name: xtquant-runtime
+          persistentVolumeClaim:
+            claimName: xtquant-runtime
+            readOnly: true
+        - name: xtquant-cache
+          persistentVolumeClaim:
+            claimName: xtquant-cache
+            readOnly: true
