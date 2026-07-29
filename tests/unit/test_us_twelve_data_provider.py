@@ -120,7 +120,7 @@ async def test_PRV_001_fetch_bars_maps_raw_daily_bar_and_redacts_api_key_from_pr
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url == httpx.URL(
             "https://api.twelvedata.com/time_series?"
-            "symbol=SPY&interval=1day&start_date=2026-07-22&end_date=2026-07-22&"
+            "symbol=SPY&interval=1day&start_date=2026-07-22&end_date=2026-07-23&"
             "outputsize=5000&order=ASC"
         )
         assert request.headers["Authorization"] == "apikey unit-test-api-key"

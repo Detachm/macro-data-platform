@@ -5,7 +5,9 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
+from html.parser import HTMLParser
 from typing import Any, ClassVar, Literal
+from urllib.parse import urljoin
 
 import httpx
 
@@ -30,6 +32,8 @@ from macro_platform.normalization.common import canonical_json_checksum, canonic
 from macro_platform.providers.base import (
     ProviderCursorError,
     ProviderSchemaError,
+    ProviderTimeoutError,
+    ProviderUnavailableError,
     UnsupportedCapabilityError,
 )
 from macro_platform.providers.live import (
@@ -46,6 +50,7 @@ HK_CSD_ALLOWED_HOSTS = frozenset({"www.censtatd.gov.hk"})
 HK_CSD_DATASET_ALLOWLIST = frozenset({"510-60004"})
 HK_CSD_PROVIDER_ID = "hk.censtatd.v1"
 HKMA_PRESS_RELEASES_URL = "https://api.hkma.gov.hk/public/press-releases"
+HKMA_PRESS_RELEASES_LISTING_URL = "https://www.hkma.gov.hk/eng/news-and-media/press-releases/"
 HKMA_ALLOWED_HOSTS = frozenset({"api.hkma.gov.hk"})
 HKMA_PRESS_RELEASE_PROVIDER_ID = "hk.hkma.press-releases.v1"
 _MAX_API_PAGE_SIZE = 100
@@ -502,6 +507,14 @@ class HkmaPressReleaseProvider(LiveHttpProvider):
     async def _fetch_snapshot(
         self, *, context_deadline: datetime
     ) -> tuple[list[dict[str, Any]], str, datetime, str]:
+        try:
+            return await self._fetch_api_snapshot(context_deadline=context_deadline)
+        except (ProviderTimeoutError, ProviderUnavailableError):
+            return await self._fetch_listing_snapshot(context_deadline=context_deadline)
+
+    async def _fetch_api_snapshot(
+        self, *, context_deadline: datetime
+    ) -> tuple[list[dict[str, Any]], str, datetime, str]:
         records: list[dict[str, Any]] = []
         seen_keys: set[str] = set()
         offset = 0
@@ -549,6 +562,45 @@ class HkmaPressReleaseProvider(LiveHttpProvider):
         source_watermark = canonical_json_checksum({"datasize": total, "records": records})
         return records, source_url, fetched_at, source_watermark
 
+    async def _fetch_listing_snapshot(
+        self, *, context_deadline: datetime
+    ) -> tuple[list[dict[str, Any]], str, datetime, str]:
+        remaining = (
+            context_deadline.astimezone(UTC) - self._clock().astimezone(UTC)
+        ).total_seconds()
+        if remaining <= 0:
+            raise ProviderTimeoutError("HKMA fallback deadline has elapsed", retryable=True)
+        try:
+            response = await self._client.get(
+                HKMA_PRESS_RELEASES_LISTING_URL,
+                timeout=min(self._timeout_seconds, remaining),
+            )
+        except httpx.TimeoutException as error:
+            raise ProviderTimeoutError("HKMA fallback request timed out", retryable=True) from error
+        except httpx.HTTPError as error:
+            raise ProviderUnavailableError(
+                "HKMA fallback request failed", retryable=True
+            ) from error
+        if response.status_code >= 500:
+            raise ProviderUnavailableError("HKMA fallback is unavailable", retryable=True)
+        if response.status_code >= 400:
+            raise ProviderSchemaError(
+                f"HKMA fallback returned HTTP {response.status_code}", code="PROVIDER_HTTP_ERROR"
+            )
+        parser = _HkmaPressReleaseListingParser()
+        parser.feed(response.text)
+        records = parser.records
+        if not records:
+            raise ProviderSchemaError(
+                "HKMA fallback listing contains no press releases", code="SCHEMA_DRIFT"
+            )
+        fetched_at = self._clock().astimezone(UTC)
+        source_url = str(response.url)
+        source_watermark = canonical_json_checksum(
+            {"source": "official_listing", "records": records}
+        )
+        return records, source_url, fetched_at, source_watermark
+
     async def _fetch_page(
         self, *, offset: int, context_deadline: datetime
     ) -> tuple[dict[str, Any], httpx.Response, datetime]:
@@ -556,6 +608,77 @@ class HkmaPressReleaseProvider(LiveHttpProvider):
             params={"lang": "en", "offset": offset, "pagesize": _MAX_API_PAGE_SIZE},
             context_deadline=context_deadline,
         )
+
+
+class _HkmaPressReleaseListingParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.records: list[dict[str, Any]] = []
+        self._container_depth = 0
+        self._in_list_item = False
+        self._list_item_text: list[str] = []
+        self._pending_date: str | None = None
+        self._href: str | None = None
+        self._title: str | None = None
+        self._anchor_text: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        if tag == "div":
+            if self._container_depth:
+                self._container_depth += 1
+            elif attributes.get("id") == "press-release-result":
+                self._container_depth = 1
+            return
+        if not self._container_depth:
+            return
+        if tag == "li":
+            self._in_list_item = True
+            self._list_item_text = []
+            self._href = None
+            self._title = None
+            self._anchor_text = []
+        elif tag == "a" and self._in_list_item:
+            href = attributes.get("href")
+            if href is not None and href.startswith("/eng/news-and-media/press-releases/"):
+                self._href = href
+                self._title = attributes.get("title")
+
+    def handle_data(self, data: str) -> None:
+        if not self._container_depth or not self._in_list_item:
+            return
+        self._list_item_text.append(data)
+        if self._href is not None:
+            self._anchor_text.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "div" and self._container_depth:
+            self._container_depth -= 1
+            return
+        if tag != "li" or not self._container_depth or not self._in_list_item:
+            return
+        text = " ".join("".join(self._list_item_text).split())
+        if self._href is None:
+            self._pending_date = _hkma_listing_date(text)
+        elif self._pending_date is not None:
+            title = (self._title or " ".join("".join(self._anchor_text).split())).strip()
+            if title:
+                self.records.append(
+                    {
+                        "title": title,
+                        "link": urljoin(HKMA_PRESS_RELEASES_LISTING_URL, self._href),
+                        "date": self._pending_date,
+                    }
+                )
+            self._pending_date = None
+        self._in_list_item = False
+
+
+def _hkma_listing_date(value: str) -> str | None:
+    try:
+        return datetime.strptime(value, "%d %b %Y").date().isoformat()
+    except ValueError:
+        return None
 
 
 def _news_event(

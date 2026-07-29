@@ -20,6 +20,7 @@
 - Base URL 与端点（不得写 token）：`GET https://api.twelvedata.com/time_series`；使用 `symbol=<SPY|QQQ|DIA>`、`interval=1day`、`start_date`、`end_date`、`outputsize`、`order=ASC`，并以仅来自运行时 Secret Manager 的 `Authorization: apikey <secret>` header 鉴权，避免凭据出现在 URL 或 HTTP request log 中。
 - 请求参数、分页/cursor 语义：以单 symbol、有限日期窗口请求；上游端点不提供 cursor，adapter 对完整有界响应生成签名 cursor，并以已提交的 checkpoint cursor 恢复。adapter 必须限制窗口和响应条数，并拒绝重复或倒序日期，不得把超出静态 allowlist 的 symbol 请求给 provider。
 - 频率、时区和上游时间字段：Twelve Data 的 `1day` 行以交易所本地交易日日期给出；按 `America/New_York` 交易日历构造 `trading_date`、session 边界和 UTC 时间。日线不把请求的 `timezone` 参数当作时间语义。
+- 实盘确认 `time_series.end_date` 为排他边界；adapter 会向上游多请求一个日历日，再以内部半开查询区间过滤，避免上一交易日少一根 bar。
 - 历史深度、更新延迟、修订策略：深度、额度和可用历史依套餐而定；日线响应没有可审计的 dissemination timestamp 时，base 和每个 checksum 修订版本各自以首次见到时间保存 `available_at`，绝不从交易日日期伪造发布时间。
 - 代码、单位、币种和空值规则：仅允许原始 provider symbol `SPY`、`QQQ`、`DIA`；adapter 内建 effective-dated instrument mapping：`SPY / ARCX / 1993-01-22`、`QQQ / XNAS / 1999-03-10`、`DIA / ARCX / 1998-01-14`，在写 bar 前先持久化，满足外键和稳定 instrument ID。OHLCV 使用 `Decimal(str(raw))`，价格币种为 `USD`；缺任一 OHLC 或无法解析日期的行 quarantine。
 - 限流、并发、超时和重试要求：遵守当前 Basic 套餐额度；限制并发、设置连接/读取超时。429 按 `Retry-After` 或 bounded exponential backoff 重试；401/403 与授权页不得重试。

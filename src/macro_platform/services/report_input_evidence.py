@@ -349,11 +349,54 @@ class PostgresReportInputEvidenceStore(ReportInputEvidenceStore):
                     required=True,
                     reason="official headlines were committed after the report cutoff",
                 )
+            coverage_row = await session.scalar(
+                select(NewsEventRow)
+                .join(
+                    NewsEventRegionRow,
+                    NewsEventRegionRow.news_id == NewsEventRow.news_id,
+                )
+                .where(
+                    NewsEventRegionRow.region == region.value,
+                    NewsEventRow.status.in_(("active", "corrected")),
+                    NewsEventRow.provider_record_id.in_(sorted(commits.provider_record_ids)),
+                    NewsEventRow.available_at <= cutoff_at,
+                )
+                .order_by(NewsEventRow.available_at.desc(), NewsEventRow.news_id)
+                .limit(1)
+            )
+            if coverage_row is None:
+                return InputQualityEvidence(
+                    input_id=input_id,
+                    status="missing",
+                    required=True,
+                    reason="official headline coverage has no citable source record",
+                )
+            coverage_event = NewsEvent.model_validate(coverage_row.payload)
+            coverage_source = source_reference(coverage_event.source)
+            section_id = "cn_highlights" if region is Region.CN else "hk_highlights"
             return InputQualityEvidence(
                 input_id=input_id,
-                status="missing",
+                status="available",
                 required=True,
-                reason="no official headline materialized in the last 24 hours",
+                reason="official headline coverage completed with no releases in the last 24 hours",
+                facts=(
+                    {
+                        "fact_id": f"fact.{input_id}.{region.value.lower()}.empty",
+                        "input_id": input_id,
+                        "fact_type": "news_coverage",
+                        "section_id": section_id,
+                        "label": f"{region.value} official headlines in the last 24 hours",
+                        "display_text": (
+                            "No new official headlines were released in the last 24 hours."
+                        ),
+                        "value": 0,
+                        "unit": "events",
+                        "available_at": cutoff_at.isoformat().replace("+00:00", "Z"),
+                        "report_date": report_date.isoformat(),
+                        "source_ref_ids": [coverage_source["source_ref_id"]],
+                    },
+                ),
+                source_references=(coverage_source,),
             )
         events = tuple(NewsEvent.model_validate(row.payload) for row in rows)
         status, reason = source_status(

@@ -44,11 +44,14 @@
 - 显式回填：`macro-data-worker --backfill-start 2026-07-20 --backfill-end 2026-07-28`。首尾日期均包含，
   不可与单日模式混用。也可使用对应 `WORKER_RUN_ONCE_REPORT_DATE` 或 `WORKER_BACKFILL_*` 环境变量。
 
-HK 核心指数已通过 XtQuant entitlement 和三项 `1d raw` live smoke。冻结的全区域
+HK 核心指数已通过 XtQuant entitlement 和三项 `1d raw` live smoke。vendor 日线 DataFrame 的
+`index` 是 UTC 日历日，而 `time` 是香港午夜；adapter 仅接受这个已验证的一天偏移，其他日期冲突仍隔离。
+冻结的全区域
 `calendar.macro_releases_7d` 分别要求 CN NBS、HK C&SD、US OMB/BLS + BEA 三个必需任务成功并提交
 durable page；合法空窗口会写入区域零事件事实，任一区域失败或缺少持久化证据仍为 `blocked`。历史行、
 fixture 或其他未登记来源不能填充。CN news 已由 `CnNbsNewsProvider` 提供 NBS 数据发布标题 metadata；任务没有
-提交最近 24 小时内的官方标题时仍标记 `missing`。系统同时把一次确定性的 `report_day_policy` 固化进
+提交最近 24 小时内的官方标题时，会在成功且有可引用官方扫描记录的前提下固化一条 0-event coverage
+fact；任务失败、无 committed page 或没有可引用来源时仍标记 `missing/unavailable`。系统同时把一次确定性的 `report_day_policy` 固化进
 snapshot：正常交易日缺失仍阻断；周末/区域休市只把对应 market input 降为 optional，新闻和宏观日历
 绝不降级。完整规则见 ADR 0010；日历来源和时间精度见 ADR 0013。
 
