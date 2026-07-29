@@ -39,7 +39,7 @@ spec:
               command:
                 - macro-data-archive-monitor
                 - --path
-                - /host-archive/macro-data-platform/postgres-backups
+                - /archive/backups
                 - --warning-percent
                 - "70"
                 - --critical-percent
@@ -71,10 +71,9 @@ spec:
                     - ALL
               volumeMounts:
                 - name: archive-backups
-                  mountPath: /host-archive
+                  mountPath: /archive/backups
                   readOnly: true
           volumes:
             - name: archive-backups
-              hostPath:
-                path: /archive
-                type: Directory
+              persistentVolumeClaim:
+                claimName: postgres-backup-archive

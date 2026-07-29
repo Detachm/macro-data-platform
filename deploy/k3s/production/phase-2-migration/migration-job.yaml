@@ -24,6 +24,55 @@ spec:
         runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
+      initContainers:
+        - name: wait-for-postgres
+          image: postgres:16.14-bookworm@sha256:92620daddcd947f8d5ab5ba66e848702fe443d87fed30c4cea8e389fd78dfc55
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -ec
+          args:
+            - |
+              readiness_attempt=0
+              until pg_isready \
+                --host=postgres \
+                --port=5432 \
+                --username="$POSTGRES_USER" \
+                --dbname="$POSTGRES_DB" \
+                --timeout=3 >/dev/null 2>&1
+              do
+                readiness_attempt=$((readiness_attempt + 1))
+                if [ "$readiness_attempt" -ge 60 ]; then
+                  echo "migration_gate status=failed reason=database_unavailable"
+                  exit 1
+                fi
+                sleep 2
+              done
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: macro-postgres
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: macro-postgres
+                  key: POSTGRES_USER
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          securityContext:
+            runAsUser: 999
+            runAsGroup: 999
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
       containers:
         - name: migration
           image: macro-data-platform:0.1.0

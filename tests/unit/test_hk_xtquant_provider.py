@@ -72,6 +72,9 @@ class _Client:
         assert isinstance(stock_list, list)
         return {str(symbol): _Frame(self._records) for symbol in stock_list}
 
+    def disconnect(self) -> None:
+        self.calls.append(("disconnect",))
+
 
 def _provider(client: _Client | None = None) -> HkXtQuantDailyBarsProvider:
     return HkXtQuantDailyBarsProvider(
@@ -151,6 +154,42 @@ async def test_xtquant_maps_hk_daily_bar_via_shared_datacentre_protocol() -> Non
             },
         ),
     ]
+
+
+@pytest.mark.asyncio
+async def test_xtquant_uses_hk_midnight_when_vendor_index_is_the_prior_utc_date() -> None:
+    row = _row(date_value="20260722")
+    row["time"] = int(datetime(2026, 7, 22, 16, tzinfo=UTC).timestamp() * 1000)
+
+    page = await _provider(_Client([row])).fetch_bars(_query(), CONTEXT)
+
+    assert len(page.items) == 1
+    assert page.items[0].trading_date == date(2026, 7, 23)
+    assert page.items[0].bar_start == datetime(2026, 7, 23, 1, 30, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_xtquant_still_quarantines_unrecognized_date_time_disagreement() -> None:
+    row = _row(date_value="20260721")
+    row["time"] = int(datetime(2026, 7, 22, 16, tzinfo=UTC).timestamp() * 1000)
+
+    page = await _provider(_Client([row])).fetch_bars(_query(), CONTEXT)
+
+    assert page.items == []
+    assert page.warnings[0].code == "PROVIDER_RECORD_QUARANTINED"
+    assert page.warnings[0].details["rejection"]["error_code"] == "PROVIDER_SCHEMA_CHANGED"
+
+
+@pytest.mark.asyncio
+async def test_xtquant_provider_disconnects_its_rpc_client_idempotently() -> None:
+    client = _Client([_row()])
+    provider = _provider(client)
+
+    await provider.fetch_bars(_query(), CONTEXT)
+    await provider.aclose()
+    await provider.aclose()
+
+    assert client.calls.count(("disconnect",)) == 1
 
 
 @pytest.mark.asyncio

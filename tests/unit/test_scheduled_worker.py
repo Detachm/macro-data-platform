@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -28,6 +30,7 @@ from macro_platform.services.report_input_quality import (
     REQUIRED_REPORT_INPUT_IDS,
     ReportInputQualityGate,
 )
+from macro_platform.services.workflow_operations import WorkerReadinessStatus
 from macro_platform.storage.reporting import ReportInputSnapshot
 
 
@@ -652,6 +655,76 @@ def test_e2e_033_cli_readiness_mode_exits_with_the_check_result(
 
     assert caught.value.code == 1
     assert isinstance(captured["settings"], Settings)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("runtime_available", "expected_code"), [(True, 0), (False, 1)])
+async def test_worker_readiness_requires_the_xtquant_vendor_runtime(
+    runtime_available: bool,
+    expected_code: int,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class _Database:
+        def __init__(self, _url: object) -> None:
+            self.disposed = False
+
+        async def dispose(self) -> None:
+            self.disposed = True
+
+    class _Reader:
+        def __init__(self, _database: object, _settings: Settings) -> None:
+            pass
+
+        async def check(self) -> WorkerReadinessStatus:
+            return WorkerReadinessStatus(
+                status="ready",
+                database_ready=True,
+                schema_ready=True,
+                provider_mode_live=True,
+                us_provider_mode_live=True,
+                us_credentials_configured=True,
+                feishu_delivery_enabled=True,
+                feishu_credentials_configured=True,
+                daily_chat_configured=True,
+                alert_chat_configured=True,
+                chats_are_distinct=True,
+            )
+
+    monkeypatch.setattr(scheduled_cli, "Database", _Database)
+    monkeypatch.setattr(scheduled_cli, "PostgresWorkerReadinessReader", _Reader)
+    monkeypatch.setattr(
+        scheduled_cli,
+        "_xtquant_runtime_available",
+        lambda: runtime_available,
+    )
+
+    exit_code = await scheduled_cli._worker_readiness_exit_code(Settings(_env_file=None))
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == expected_code
+    assert payload["status"] == ("ready" if runtime_available else "not_ready")
+    assert ("HK_XTQUANT_RUNTIME_MISSING" in payload["unmet_requirements"]) is (
+        not runtime_available
+    )
+
+
+def test_worker_runtime_probe_requires_a_readable_cache_and_importable_sdk(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("HK_XTQUANT_DATA_PATH", raising=False)
+    assert scheduled_cli._xtquant_runtime_available() is False
+
+    monkeypatch.setenv("HK_XTQUANT_DATA_PATH", str(tmp_path))
+    monkeypatch.setattr(scheduled_cli.importlib, "import_module", lambda _name: object())
+    assert scheduled_cli._xtquant_runtime_available() is True
+
+    def missing_sdk(_name: str) -> object:
+        raise OSError("native dependency missing")
+
+    monkeypatch.setattr(scheduled_cli.importlib, "import_module", missing_sdk)
+    assert scheduled_cli._xtquant_runtime_available() is False
 
 
 @pytest.mark.asyncio

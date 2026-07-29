@@ -343,7 +343,7 @@ Provider roles: `cn.instruments.primary`, `cn.bars.primary`, `cn.macro.primary`,
 | 来源 | HKMA Press Releases API for official policy news; HKEXnews title search for listed issuer announcements | HKEX IIS paid feed |
 | 状态 | HKMA press-release adapter live-ready；HKEXnews fixture-only | gap |
 | 官方文档 | HKMA Press Releases API、HKEXnews About/title search、HKEX Terms | HKEX IIS technical docs |
-| Base URL/端点 | HKMA: `https://api.hkma.gov.hk/public/press-releases`; HKEXnews: `https://www1.hkexnews.hk/search/titlesearch.xhtml` | IIS feed endpoint after contract/certification |
+| Base URL/端点 | HKMA primary: `https://api.hkma.gov.hk/public/press-releases`; API timeout/5xx 时只降级到同一官方站点 `https://www.hkma.gov.hk/eng/news-and-media/press-releases/`; HKEXnews: `https://www1.hkexnews.hk/search/titlesearch.xhtml` | IIS feed endpoint after contract/certification |
 | 请求参数 | HKMA: `lang`, `offset`, optional common API params; HKEXnews: `category`, `market`, `stockId`, date/title filters | feed subscription params |
 | 分页 | HKMA uses `offset`/common API pagination; HKEXnews page pagination/sort | feed sequence |
 | 限流 | HKMA default 1 rps；HKEXnews fixture-only 不在线 | 按合同 |
@@ -499,7 +499,7 @@ Adapter authors must register capabilities according to this matrix:
 - CN core-index bars: BaoStock client 查询 `sh.000300` 最近 10 个日历日；无 token；成本为公共客户端请求。
 - HK daily bars: 已配置的 XtQuant data-centre 查询 `HSI.HK`、`HSCEI.HK`、`HSTECH.HK` 最近 14 个日历日；worker 无 token；成本计入内部 XtQuant 账户/缓存。
 - HK macro: 每日一次 C&SD table API 或 HKMA Open API，`pagesize<=100`; 无 token；成本为公共 API 请求。
-- HKMA press releases: 每日一次 `lang=en&offset=0`; 无 token；成本为公共 API 请求。
+- HKMA press releases: 每日一次 `lang=en&offset=0`; API timeout/5xx 时读取同一 HKMA 官网发布列表；无 token；成本为公共请求。
 - 所有未列为 `live-ready` 的 `fixture-only` 和 `gap` 来源在线 smoke 禁止运行。NBS 新闻 smoke 与其他公共来源一样必须显式设置 `RUN_LIVE_SMOKE=1`；XtQuant smoke 还必须设置 `RUN_XTQUANT_LIVE_SMOKE=1`，避免没有 vendor runtime 或共享数据中心时误跑。
 
 ## 运行指标与退出方案

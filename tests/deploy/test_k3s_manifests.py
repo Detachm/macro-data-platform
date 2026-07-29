@@ -87,17 +87,17 @@ def test_backup_is_atomic_verified_private_and_retained_by_count() -> None:
     assert cron_job["spec"]["timeZone"] == "Asia/Shanghai"
     assert cron_job["spec"]["concurrencyPolicy"] == "Forbid"
     pod_spec = cron_job["spec"]["jobTemplate"]["spec"]["template"]["spec"]
-    host_path = next(volume["hostPath"] for volume in pod_spec["volumes"] if "hostPath" in volume)
-    assert host_path == {
-        "path": "/archive/macro-data-platform/postgres-backups",
-        "type": "Directory",
-    }
+    archive = next(volume for volume in pod_spec["volumes"] if volume["name"] == "archive-backups")
+    assert archive["persistentVolumeClaim"] == {"claimName": "postgres-backup-archive"}
 
     script = _resource("ConfigMap", "postgres-backup-script")["data"]["backup.sh"]
     for required in (
         "umask 077",
         ".partial",
         "pg_restore --list",
+        "pg_isready",
+        "readiness_attempt",
+        '"$readiness_attempt" -ge 60',
         "chmod 0600",
         "14",
         "8",
@@ -118,11 +118,38 @@ def test_archive_capacity_monitor_alerts_on_the_confirmed_thresholds() -> None:
         "--minimum-total-bytes",
         "20000000000000",
     ]
+    pod_spec = cron_job["spec"]["jobTemplate"]["spec"]["template"]["spec"]
+    archive = next(volume for volume in pod_spec["volumes"] if volume["name"] == "archive-backups")
+    assert archive["persistentVolumeClaim"]["claimName"] == "postgres-backup-archive"
+
+
+def test_archive_is_a_retained_static_local_volume_behind_a_pvc() -> None:
+    storage_class = _resource("StorageClass", "macro-archive")
+    volume = _resource("PersistentVolume", "macro-postgres-archive")
+    claim = _resource("PersistentVolumeClaim", "postgres-backup-archive")
+
+    assert storage_class["provisioner"] == "kubernetes.io/no-provisioner"
+    assert storage_class["reclaimPolicy"] == "Retain"
+    assert volume["spec"]["persistentVolumeReclaimPolicy"] == "Retain"
+    assert volume["spec"]["local"]["path"] == ("/archive/macro-data-platform/postgres-backups")
+    assert volume["spec"]["nodeAffinity"]["required"]["nodeSelectorTerms"][0]["matchExpressions"][
+        0
+    ] == {
+        "key": "macro-data-platform/archive",
+        "operator": "In",
+        "values": ["true"],
+    }
+    assert claim["spec"]["volumeName"] == "macro-postgres-archive"
+    assert claim["spec"]["storageClassName"] == "macro-archive"
 
 
 def test_migration_is_a_non_retrying_release_gate() -> None:
     job = _resource("Job", "macro-data-migration")
     assert job["spec"]["backoffLimit"] == 0
+    init_container = job["spec"]["template"]["spec"]["initContainers"][0]
+    assert init_container["name"] == "wait-for-postgres"
+    assert "pg_isready" in init_container["args"][0]
+    assert '"$readiness_attempt" -ge 60' in init_container["args"][0]
     container = next(_containers(job))
     assert container["command"] == ["alembic", "upgrade", "head"]
     assert container["imagePullPolicy"] == "Never"
@@ -134,7 +161,7 @@ def test_migration_is_a_non_retrying_release_gate() -> None:
     ]
 
 
-def test_api_and_worker_have_probes_and_worker_has_no_host_mount_or_xtquant_token() -> None:
+def test_api_and_worker_have_probes_and_worker_mounts_only_the_xtquant_runtime_pvc() -> None:
     api = _resource("Deployment", "macro-data-api")
     worker = _resource("Deployment", "macro-data-worker")
     api_container = next(_containers(api))
@@ -146,11 +173,76 @@ def test_api_and_worker_have_probes_and_worker_has_no_host_mount_or_xtquant_toke
         "macro-data-worker",
         "--check-ready",
     ]
+    assert worker_container["lifecycle"]["preStop"]["exec"]["command"] == [
+        "sh",
+        "-ec",
+        "kill -INT 1; sleep 5",
+    ]
     host_env = next(item for item in worker_container["env"] if item["name"] == "HK_XTQUANT_HOST")
     assert host_env["valueFrom"]["fieldRef"]["fieldPath"] == "status.hostIP"
-    assert "volumes" not in worker["spec"]["template"]["spec"]
+    pythonpath = next(item for item in worker_container["env"] if item["name"] == "PYTHONPATH")
+    assert pythonpath["value"] == "/opt/xtquant-runtime"
+    library_path = next(
+        item for item in worker_container["env"] if item["name"] == "LD_LIBRARY_PATH"
+    )
+    assert library_path["value"] == "/opt/xtquant-runtime/xtquant/.libs"
+    data_path = next(
+        item for item in worker_container["env"] if item["name"] == "HK_XTQUANT_DATA_PATH"
+    )
+    assert data_path["value"] == "/mnt/data/macro-data-platform/xtquant/datadir"
+    assert worker_container["volumeMounts"] == [
+        {
+            "name": "xtquant-runtime",
+            "mountPath": "/opt/xtquant-runtime",
+            "readOnly": True,
+        },
+        {
+            "name": "xtquant-cache",
+            "mountPath": "/mnt/data/macro-data-platform/xtquant/datadir",
+            "readOnly": True,
+        },
+    ]
+    assert worker["spec"]["template"]["spec"]["volumes"] == [
+        {
+            "name": "xtquant-runtime",
+            "persistentVolumeClaim": {"claimName": "xtquant-runtime", "readOnly": True},
+        },
+        {
+            "name": "xtquant-cache",
+            "persistentVolumeClaim": {"claimName": "xtquant-cache", "readOnly": True},
+        },
+    ]
     rendered = yaml.safe_dump(worker)
+    assert "hostPath" not in rendered
     assert "XTQUANT_TOKEN" not in rendered
+
+
+def test_xtquant_vendor_runtime_is_a_read_only_static_local_volume() -> None:
+    storage_class = _resource("StorageClass", "macro-host-runtime")
+    volume = _resource("PersistentVolume", "macro-xtquant-runtime")
+    claim = _resource("PersistentVolumeClaim", "xtquant-runtime")
+
+    assert storage_class["provisioner"] == "kubernetes.io/no-provisioner"
+    assert volume["spec"]["accessModes"] == ["ReadOnlyMany"]
+    assert volume["spec"]["local"]["path"].endswith(
+        "xtquant_251211_interim-release_cp36m-37m-38-39-310-311-312_linux-gnu_x86_64"
+    )
+    assert volume["spec"]["nodeAffinity"]["required"]["nodeSelectorTerms"][0]["matchExpressions"][
+        0
+    ] == {
+        "key": "macro-data-platform/xtquant-runtime",
+        "operator": "In",
+        "values": ["true"],
+    }
+    assert claim["spec"]["accessModes"] == ["ReadOnlyMany"]
+    assert claim["spec"]["volumeName"] == "macro-xtquant-runtime"
+
+    cache = _resource("PersistentVolume", "macro-xtquant-cache")
+    cache_claim = _resource("PersistentVolumeClaim", "xtquant-cache")
+    assert cache["spec"]["accessModes"] == ["ReadOnlyMany"]
+    assert cache["spec"]["local"]["path"] == "/mnt/data/macro-data-platform/xtquant/datadir"
+    assert cache_claim["spec"]["accessModes"] == ["ReadOnlyMany"]
+    assert cache_claim["spec"]["volumeName"] == "macro-xtquant-cache"
 
 
 def test_runtime_config_contains_all_required_hk_core_indices() -> None:
@@ -178,8 +270,11 @@ def test_restore_drill_is_isolated_from_the_live_pvc() -> None:
     archive = next(volume for volume in volumes if volume["name"] == "archive-backups")
 
     assert restore_data["emptyDir"]["sizeLimit"] == "20Gi"
-    assert archive["hostPath"]["path"] == "/archive/macro-data-platform/postgres-backups"
-    assert all("persistentVolumeClaim" not in volume for volume in volumes)
+    assert archive["persistentVolumeClaim"]["claimName"] == "postgres-backup-archive"
+    assert all(
+        volume.get("persistentVolumeClaim", {}).get("claimName") != "postgres-data-postgres-0"
+        for volume in volumes
+    )
 
 
 def _env_example(relative_path: str) -> dict[str, str]:
@@ -189,3 +284,21 @@ def _env_example(relative_path: str) -> dict[str, str]:
             key, value = line.split("=", 1)
             values[key] = value
     return values
+
+
+def test_runtime_image_declares_a_numeric_non_root_user() -> None:
+    dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
+
+    assert "USER 100:101" in dockerfile
+    assert "USER app" not in dockerfile
+    assert "apt-get install --yes --no-install-recommends libexpat1" in dockerfile
+
+
+def test_k3s_containerd_streaming_port_uses_a_persistent_drop_in() -> None:
+    drop_in = Path("deploy/k3s/host/containerd/10-stream-server-port.toml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "version = 3" in drop_in
+    assert 'stream_server_port = "0"' in drop_in
+    assert 'stream_server_port = "10010"' not in drop_in

@@ -1,0 +1,142 @@
+#!/bin/sh
+
+set -eu
+
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
+chain="MACRO-XTQUANT"
+action="${1:-}"
+
+require_value() {
+  name="$1"
+  eval "value=\${$name:-}"
+  if [ -z "$value" ]; then
+    echo "xtquant_firewall status=invalid_config missing=$name" >&2
+    exit 2
+  fi
+}
+
+for name in \
+  XTQUANT_BIND_ADDRESS \
+  XTQUANT_POD_CIDR \
+  XTQUANT_CNI_INTERFACE \
+  XTQUANT_PORT
+do
+  require_value "$name"
+done
+
+case "$XTQUANT_BIND_ADDRESS" in
+  *:*)
+    echo "xtquant_firewall status=invalid_config reason=ipv4_required" >&2
+    exit 2
+    ;;
+esac
+
+case "$XTQUANT_PORT" in
+  *[!0-9]*|"")
+    echo "xtquant_firewall status=invalid_config reason=invalid_port" >&2
+    exit 2
+    ;;
+esac
+
+if [ "$XTQUANT_PORT" -lt 1 ] || [ "$XTQUANT_PORT" -gt 65535 ]; then
+  echo "xtquant_firewall status=invalid_config reason=invalid_port" >&2
+  exit 2
+fi
+
+bind_cidr="$XTQUANT_BIND_ADDRESS/32"
+
+delete_jump() {
+  while iptables -w 5 -C INPUT \
+    -d "$bind_cidr" -p tcp --dport "$XTQUANT_PORT" -j "$chain" \
+    >/dev/null 2>&1
+  do
+    iptables -w 5 -D INPUT \
+      -d "$bind_cidr" -p tcp --dport "$XTQUANT_PORT" -j "$chain"
+  done
+}
+
+remove_rules() {
+  delete_jump
+  if iptables -w 5 -n -L "$chain" >/dev/null 2>&1; then
+    iptables -w 5 -F "$chain"
+    iptables -w 5 -X "$chain"
+  fi
+}
+
+apply_rules() {
+  if ! ip -4 address show dev "$XTQUANT_CNI_INTERFACE" >/dev/null 2>&1; then
+    echo "xtquant_firewall status=invalid_config reason=cni_interface_missing" >&2
+    exit 2
+  fi
+
+  if ! ip -4 -o address show \
+    | awk '{print $4}' \
+    | cut -d/ -f1 \
+    | grep -Fqx "$XTQUANT_BIND_ADDRESS"
+  then
+    echo "xtquant_firewall status=invalid_config reason=bind_address_not_local" >&2
+    exit 2
+  fi
+
+  if ! iptables -w 5 -n -L "$chain" >/dev/null 2>&1; then
+    iptables -w 5 -N "$chain"
+  fi
+
+  delete_jump
+  iptables -w 5 -F "$chain"
+  iptables -w 5 -A "$chain" \
+    -i lo -d "$bind_cidr" -p tcp --dport "$XTQUANT_PORT" -j ACCEPT
+  iptables -w 5 -A "$chain" \
+    -i "$XTQUANT_CNI_INTERFACE" -s "$XTQUANT_POD_CIDR" \
+    -d "$bind_cidr" -p tcp --dport "$XTQUANT_PORT" \
+    -m mark --mark 0x20000/0x20000 -j ACCEPT
+  iptables -w 5 -A "$chain" \
+    -d "$bind_cidr" -p tcp --dport "$XTQUANT_PORT" \
+    -j REJECT --reject-with tcp-reset
+
+  position="$(
+    iptables -w 5 -L INPUT --line-numbers -n \
+      | awk '$2 == "KUBE-ROUTER-INPUT" {print $1 + 1; exit}'
+  )"
+  if [ -z "$position" ]; then
+    position=1
+  fi
+  iptables -w 5 -I INPUT "$position" \
+    -d "$bind_cidr" -p tcp --dport "$XTQUANT_PORT" -j "$chain"
+
+  echo "xtquant_firewall status=applied"
+}
+
+check_rules() {
+  iptables -w 5 -C INPUT \
+    -d "$bind_cidr" -p tcp --dport "$XTQUANT_PORT" -j "$chain"
+  iptables -w 5 -C "$chain" \
+    -i lo -d "$bind_cidr" -p tcp --dport "$XTQUANT_PORT" -j ACCEPT
+  iptables -w 5 -C "$chain" \
+    -i "$XTQUANT_CNI_INTERFACE" -s "$XTQUANT_POD_CIDR" \
+    -d "$bind_cidr" -p tcp --dport "$XTQUANT_PORT" \
+    -m mark --mark 0x20000/0x20000 -j ACCEPT
+  iptables -w 5 -C "$chain" \
+    -d "$bind_cidr" -p tcp --dport "$XTQUANT_PORT" \
+    -j REJECT --reject-with tcp-reset
+  echo "xtquant_firewall status=ready"
+}
+
+case "$action" in
+  apply)
+    apply_rules
+    ;;
+  remove)
+    remove_rules
+    echo "xtquant_firewall status=removed"
+    ;;
+  check)
+    check_rules
+    ;;
+  *)
+    echo "usage: $0 {apply|remove|check}" >&2
+    exit 2
+    ;;
+esac

@@ -3,15 +3,15 @@
 本手册对应 GitHub #49。目标是在本机单节点 K3s 上运行 API、worker 和 PostgreSQL，并把每日可验证
 逻辑备份写入独立的 32 TB `/archive` 物理盘。
 
-> 当前安全边界：仓库清单已经可审查；执行第 3 节会修改宿主机系统，必须由项目负责人明确批准并
-> 安排维护窗口。不要在现有宿主机 PostgreSQL 上执行本手册，也不要改动宿主机已有的 `5432` 服务。
+> 执行第 3 节会修改宿主机系统，必须由项目负责人明确批准并安排维护窗口。不要在现有宿主机
+> PostgreSQL 上执行本手册，也不要改动宿主机已有的 `5432` 服务。
 
 ## 1. 组件与发布阶段
 
 部署严格分三阶段：
 
-1. `phase-1-infrastructure`：Namespace、配置、NetworkPolicy、PostgreSQL StatefulSet/PVC 和
-   09:00 备份 CronJob。
+1. `phase-1-infrastructure`：Namespace、配置、NetworkPolicy、PostgreSQL StatefulSet/PVC、
+   `/archive` 备份 PVC、只读 XtQuant vendor runtime PVC 和 09:00 备份 CronJob。
 2. `phase-2-migration`：单次 Alembic Job；失败时停止发布。
 3. `phase-3-workloads`：API、单副本 worker 和 `/archive` 容量监控。
 
@@ -20,7 +20,10 @@ XtQuant token 永远留在宿主机 Beast 服务；Pod 只取得节点 IP 和 `5
 
 ## 2. 已确认的宿主机存储
 
-- `/archive`：独立 `/dev/sda1`、XFS、约 29.1 TiB，可用于数据库备份。
+- `/archive`：独立 `/dev/sda1`、XFS、约 29.1 TiB，通过 `Retain` 静态 Local PV 与 PVC 提供给
+  备份/恢复 Pod；不使用会被 Pod Security baseline 拒绝的直接 `hostPath`。
+- XtQuant CPython 3.12 vendor package 与 data centre cache：分别通过只读静态 Local PV/PVC 以
+  原始绝对路径只挂载给 worker；vendor 二进制、付费行情 cache、token 均不复制进镜像或 Git。
 - K3s 默认 `local-path` 位于 `/var/lib/rancher/k3s/storage`；上线前必须用 `findmnt` 确认它落在
   NVMe 根盘，而不是 `/archive`。
 - 宿主机已有其他 PostgreSQL 占用 `5432`；本项目的 Service 仅为 ClusterIP，不使用 host port，
@@ -37,16 +40,40 @@ Traefik/ServiceLB，并启用 Secret 静态加密。升级前重新核对
 
 ```bash
 findmnt -T /var/lib
-curl -sfL https://get.k3s.io \
-  | sudo env INSTALL_K3S_VERSION='v1.36.2+k3s1' \
-    INSTALL_K3S_EXEC='server --disable=traefik --disable=servicelb --secrets-encryption' \
-    sh -
+installer_path="$(mktemp --suffix=.k3s-install.sh)"
+curl --fail --silent --show-error --location \
+  https://get.k3s.io --output "$installer_path"
+sudo env \
+  HTTP_PROXY="${HTTP_PROXY:-}" \
+  HTTPS_PROXY="${HTTPS_PROXY:-}" \
+  NO_PROXY='127.0.0.1,localhost,10.42.0.0/16,10.43.0.0/16' \
+  INSTALL_K3S_VERSION='v1.36.2+k3s1' \
+  INSTALL_K3S_EXEC='server --disable=traefik --disable=servicelb --secrets-encryption' \
+  sh "$installer_path"
+rm -f -- "$installer_path"
 
 sudo systemctl is-active k3s
 sudo k3s kubectl get nodes -o wide
 sudo k3s kubectl get storageclass local-path
 findmnt -T /var/lib/rancher/k3s/storage
 ```
+
+安装前可先检查 `10010/tcp`；若首次启动因该端口冲突而失败，也按下列步骤处理。K3s 的
+containerd 默认把 CRI streaming server 固定到该端口；若已有 Ray 等受管服务占用，不要停止对方。
+containerd v3 官方支持导入配置片段，可让内核选择空闲端口：
+
+```bash
+sudo ss -ltnp '( sport = :10010 )'
+sudo install -d -o root -g root -m 0755 \
+  /var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.d
+sudo install -o root -g root -m 0644 \
+  deploy/k3s/host/containerd/10-stream-server-port.toml \
+  /var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.d/10-stream-server-port.toml
+sudo systemctl restart k3s
+```
+
+片段使用 `stream_server_port = "0"`，不会占用或修改既有进程。K3s 升级后复核生成配置仍包含
+`config-v3.toml.d/*.toml` import，并完成一次 `kubectl exec`/logs smoke。
 
 验收要求：节点为 `Ready`，`local-path` 存储目录位于 NVMe 文件系统，且 K3s 重启后仍能恢复。
 K3s stable channel 推荐用于生产；CronJob `.spec.timeZone` 在 Kubernetes v1.27 已稳定，本版本可直接
@@ -62,9 +89,15 @@ findmnt -T /archive
 sudo install -d -o 999 -g 999 -m 0700 \
   /archive/macro-data-platform/postgres-backups
 sudo stat -c '%U %G %a %n' /archive/macro-data-platform/postgres-backups
+sudo k3s kubectl label node "$(hostname -s)" \
+  macro-data-platform/archive=true --overwrite
+sudo k3s kubectl label node "$(hostname -s)" \
+  macro-data-platform/xtquant-runtime=true --overwrite
 ```
 
-预期权限为 `999:999 700`。备份脚本会把 `daily/`、`weekly/` 保持为 `0700`，dump 文件保持为
+预期权限为 `999:999 700`。节点标签必须与静态 Local PV 的 node affinity 一致；PVC 会把这条明确
+目录提供给 Pod，而不是开放 `/archive` 根目录。第二个标签必须与已验证的 XtQuant vendor runtime
+Local PV node affinity 一致。备份脚本会把 `daily/`、`weekly/` 保持为 `0700`，dump 文件保持为
 `0600`。
 
 ## 5. 构建并导入应用镜像
@@ -140,7 +173,10 @@ sudo k3s kubectl -n macro-data-platform rollout status statefulset/postgres --ti
 sudo k3s kubectl -n macro-data-platform get pvc,pod,cronjob
 ```
 
-PVC 必须为 `Bound`、容量 `100Gi`、StorageClass 为 `local-path`。PostgreSQL Pod 必须为 `Ready`。
+数据库 PVC 必须为 `Bound`、容量 `100Gi`、StorageClass 为 `local-path`；备份 PVC
+`postgres-backup-archive` 必须绑定 `macro-postgres-archive`、StorageClass 为 `macro-archive`、回收策略为
+`Retain`；`xtquant-runtime`、`xtquant-cache` 必须分别绑定只读 `macro-xtquant-runtime`、
+`macro-xtquant-cache`。PostgreSQL Pod 必须为 `Ready`。
 
 ### 7.2 迁移发布门
 

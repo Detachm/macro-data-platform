@@ -316,6 +316,64 @@ def test_rpt_031_fallback_is_deterministic_when_validated_facts_are_sufficient()
     assert ReportValidator().validate(first, snapshot).publishable
 
 
+def test_rpt_031_fallback_formats_live_fact_shapes_for_delivery() -> None:
+    snapshot = _snapshot()
+    facts = []
+    for fact in snapshot.payload["facts"]:
+        if fact["fact_id"] == "fact.market.cn.core_indices.previous_close":
+            fact = {
+                **fact,
+                "section_id": "cn_highlights",
+                "fact_type": "market_bar",
+                "canonical_symbol": "CSI300",
+                "trading_date": "2026-07-22",
+                "close": "4525.16",
+                "currency": "CNY",
+            }
+        elif fact["fact_id"] == "fact.calendar.us.pce_20260729":
+            fact = {
+                **fact,
+                "section_id": "upcoming_calendar",
+                "fact_type": "macro_release",
+                "region": "US",
+                "release_name": "美国 PCE",
+                "scheduled_at": "2026-07-29T12:30:00Z",
+                "scheduled_date": "2026-07-29",
+                "source_ref_ids": ["src-calendar-1"],
+            }
+        facts.append(fact)
+    snapshot = snapshot.model_copy(update={"payload": {**snapshot.payload, "facts": facts}})
+
+    report = ReportFallbackBuilder().build(
+        snapshot,
+        report_id="daily-report-fallback-live-shapes",
+        report_version="fallback-v1",
+        generated_at=NOW,
+    )
+
+    cn_item = next(
+        item
+        for item in report.payload["sections"]["cn_highlights"]["items"]
+        if "fact.market.cn.core_indices.previous_close" in item["fact_ids"]
+    )
+    calendar_item = next(
+        item
+        for item in report.payload["sections"]["upcoming_calendar"]["items"]
+        if "fact.calendar.us.pce_20260729" in item["fact_ids"]
+    )
+    assert cn_item["text"] == "CSI300 收盘 4525.16 CNY（2026-07-22）。"
+    assert calendar_item == {
+        "label": "fact.calendar.us.pce_20260729",
+        "text": "美国 PCE（US）：计划于 2026-07-29T12:30:00Z 发布。",
+        "fact_ids": ["fact.calendar.us.pce_20260729"],
+        "source_ref_ids": ["src-calendar-1"],
+        "region": "US",
+        "name": "美国 PCE",
+        "scheduled_at": "2026-07-29T12:30:00Z",
+        "scheduled_date": "2026-07-29",
+    }
+
+
 def test_rpt_031_fallback_preserves_fact_observation_periods() -> None:
     snapshot = _snapshot()
     facts = [

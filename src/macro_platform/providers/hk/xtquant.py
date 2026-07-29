@@ -96,6 +96,8 @@ class XtQuantClient(Protocol):
         fill_data: bool = True,
     ) -> Mapping[str, object]: ...
 
+    def disconnect(self) -> None: ...
+
 
 @dataclass(frozen=True, slots=True)
 class HkXtQuantInstrument:
@@ -342,7 +344,13 @@ class HkXtQuantDailyBarsProvider:
         )
 
     async def aclose(self) -> None:
-        """XtQuant connection lifecycle belongs to the shared data-centre process."""
+        """Release this worker's RPC client without stopping the shared data centre."""
+
+        with self._client_lock:
+            client = self._client
+            self._client = None
+            if client is not None:
+                client.disconnect()
 
     async def fetch_bars(self, query: BarQuery, context: FetchContext) -> ProviderPage[MarketBar]:
         if query.interval is not Interval.D1 or query.adjustment is not Adjustment.RAW:
@@ -769,10 +777,14 @@ def _trading_date(raw_row: Mapping[str, object]) -> date:
     raw_date = raw_row.get("index", raw_row.get("date"))
     parsed_date = _parse_date(raw_date) if raw_date is not None else None
     raw_time = raw_row.get("time")
-    timestamp_date = _timestamp_date(raw_time) if raw_time is not None else None
+    timestamp_local = _timestamp_local_datetime(raw_time) if raw_time is not None else None
+    timestamp_date = timestamp_local.date() if timestamp_local is not None else None
     if parsed_date is None and timestamp_date is None:
         raise ProviderSchemaError("XtQuant daily-bar row has neither date nor time")
     if parsed_date is not None and timestamp_date is not None and parsed_date != timestamp_date:
+        assert timestamp_local is not None
+        if parsed_date + timedelta(days=1) == timestamp_date and timestamp_local.time() == time.min:
+            return timestamp_date
         raise ProviderSchemaError("XtQuant daily-bar date and time disagree")
     if parsed_date is not None:
         return parsed_date
@@ -796,13 +808,13 @@ def _parse_date(value: object) -> date:
     raise ProviderSchemaError("XtQuant daily-bar date must be YYYYMMDD or ISO format")
 
 
-def _timestamp_date(value: object) -> date:
+def _timestamp_local_datetime(value: object) -> datetime:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ProviderSchemaError("XtQuant daily-bar time must be epoch milliseconds")
     if not math.isfinite(float(value)) or value <= 0:
         raise ProviderSchemaError("XtQuant daily-bar time must be a positive finite timestamp")
     try:
-        return datetime.fromtimestamp(float(value) / 1000, UTC).astimezone(_HK_TIMEZONE).date()
+        return datetime.fromtimestamp(float(value) / 1000, UTC).astimezone(_HK_TIMEZONE)
     except (OverflowError, OSError, ValueError) as error:
         raise ProviderSchemaError(
             "XtQuant daily-bar time is outside the supported range"

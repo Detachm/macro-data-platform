@@ -632,14 +632,48 @@ def _source_record(source: ReportSourceReference | dict[str, Any]) -> dict[str, 
 
 def _fact_item(raw: dict[str, Any]) -> dict[str, Any]:
     fact_id = raw["fact_id"]
-    display_text = str(raw.get("display_text", fact_id))
+    display_text = _fact_display_text(raw)
     source_ref_ids = [ref_id for ref_id in raw.get("source_ref_ids", []) if isinstance(ref_id, str)]
-    return {
+    item: dict[str, Any] = {
         "label": str(raw.get("label", fact_id)),
         "text": display_text,
         "fact_ids": [fact_id],
         "source_ref_ids": source_ref_ids,
     }
+    if raw.get("fact_type") == "macro_release":
+        item.update(
+            {
+                "region": raw.get("region"),
+                "name": raw.get("release_name") or raw.get("label"),
+                "scheduled_at": raw.get("scheduled_at"),
+                "scheduled_date": raw.get("scheduled_date"),
+            }
+        )
+    return item
+
+
+def _fact_display_text(raw: dict[str, Any]) -> str:
+    fact_id = str(raw["fact_id"])
+    fact_type = raw.get("fact_type")
+    if fact_type == "market_bar":
+        symbol = raw.get("canonical_symbol") or raw.get("instrument_id") or raw.get("label")
+        close = raw.get("close") or raw.get("value")
+        currency = raw.get("currency") or raw.get("unit")
+        trading_date = raw.get("trading_date")
+        if symbol is not None and close is not None:
+            date_text = f"（{trading_date}）" if trading_date else ""
+            currency_text = f" {currency}" if currency else ""
+            return f"{symbol} 收盘 {close}{currency_text}{date_text}。"
+    if fact_type == "news_coverage" and raw.get("value") == 0:
+        return "过去24小时未发布新的官方消息。"
+    if fact_type == "macro_release":
+        name = raw.get("release_name") or raw.get("label")
+        region = raw.get("region")
+        scheduled = raw.get("scheduled_at") or raw.get("scheduled_date")
+        if name is not None and scheduled is not None:
+            region_text = f"（{region}）" if region else ""
+            return f"{name}{region_text}：计划于 {scheduled} 发布。"
+    return str(raw.get("display_text", fact_id))
 
 
 def _fact_claim(raw: dict[str, Any]) -> dict[str, Any]:

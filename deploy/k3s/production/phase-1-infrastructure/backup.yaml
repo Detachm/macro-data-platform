@@ -27,6 +27,22 @@ data:
       echo "archive_capacity status=ok used_percent=$usage_percent"
     fi
 
+    readiness_attempt=0
+    until pg_isready \
+      --host=postgres \
+      --port=5432 \
+      --username="$POSTGRES_USER" \
+      --dbname="$POSTGRES_DB" \
+      --timeout=3 >/dev/null 2>&1
+    do
+      readiness_attempt=$((readiness_attempt + 1))
+      if [ "$readiness_attempt" -ge 60 ]; then
+        echo "postgres_backup status=failed reason=database_unavailable"
+        exit 1
+      fi
+      sleep 2
+    done
+
     stamp="$(date -u +%Y%m%dT%H%M%SZ)"
     final_path="$daily_dir/macro_data_$stamp.dump"
     partial_path="$final_path.partial"
@@ -148,6 +164,5 @@ spec:
                 name: postgres-backup-script
                 defaultMode: 0555
             - name: archive-backups
-              hostPath:
-                path: /archive/macro-data-platform/postgres-backups
-                type: Directory
+              persistentVolumeClaim:
+                claimName: postgres-backup-archive

@@ -3,6 +3,8 @@ kind: Kustomization
 resources:
   - namespace.yaml
   - app-config.yaml
+  - archive-volume.yaml
+  - xtquant-runtime-volume.yaml
   - postgres.yaml
   - backup.yaml
   - network-policies.yaml

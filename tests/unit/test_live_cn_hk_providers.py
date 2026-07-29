@@ -691,6 +691,46 @@ async def test_hkma_press_release_adapter_uses_bounded_opaque_pagination() -> No
 
 
 @pytest.mark.asyncio
+async def test_hkma_press_release_adapter_falls_back_to_the_official_listing() -> None:
+    calls: list[str] = []
+    listing = """
+    <div class="press-release-result" id="press-release-result">
+      <ul>
+        <li>27 Jul 2026</li>
+        <li><a href="/eng/news-and-media/press-releases/2026/07/20260727-3/"
+          title="HKMA launches quantum preparedness whitepaper">release</a></li>
+      </ul>
+    </div>
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        if request.url.host == "api.hkma.gov.hk":
+            return httpx.Response(502, request=request)
+        return httpx.Response(200, text=listing, request=request)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = HkmaPressReleaseProvider(client=client, clock=lambda: NOW)
+    page = await provider.fetch_news(
+        NewsQuery(
+            regions={Region.HK},
+            published_from=datetime(2026, 7, 26, tzinfo=UTC),
+            published_to=datetime(2026, 7, 28, tzinfo=UTC),
+            as_of=NOW,
+        ),
+        CONTEXT,
+    )
+
+    assert [item.title for item in page.items] == ["HKMA launches quantum preparedness whitepaper"]
+    assert str(page.items[0].canonical_url) == (
+        "https://www.hkma.gov.hk/eng/news-and-media/press-releases/2026/07/20260727-3/"
+    )
+    assert [httpx.URL(url).host for url in calls] == ["api.hkma.gov.hk", "www.hkma.gov.hk"]
+
+    await provider.aclose()
+
+
+@pytest.mark.asyncio
 async def test_hkma_press_release_adapter_quarantines_duplicate_pages() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if "offset=2" in str(request.url):
@@ -808,10 +848,15 @@ async def test_live_adapter_rejects_html_login_as_authorization_failure() -> Non
 
 def test_production_requires_explicit_live_provider_mode() -> None:
     with pytest.raises(ValueError, match="PROVIDER_MODE=live"):
-        Settings(app_env="production", service_token=SecretStr("runtime-token"))
+        Settings(
+            _env_file=None,
+            app_env="production",
+            service_token=SecretStr("runtime-token"),
+        )
 
     with pytest.raises(ValueError, match="PROVIDER_CURSOR_SECRET"):
         Settings(
+            _env_file=None,
             app_env="production",
             provider_mode="live",
             service_token=SecretStr("runtime-token"),

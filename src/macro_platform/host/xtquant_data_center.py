@@ -12,6 +12,7 @@ import socket
 import threading
 import time
 from collections.abc import Sequence
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
@@ -49,15 +50,23 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run or check the host XtQuant data centre")
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("serve", help="run the supervised data-centre process")
-    check_parser = subparsers.add_parser("check", help="perform a safe TCP readiness check")
+    check_parser = subparsers.add_parser("check", help="perform a safe readiness check")
     check_parser.add_argument("--timeout-seconds", type=float, default=3.0)
     check_parser.add_argument("--wait-seconds", type=float, default=0.0)
     check_parser.add_argument("--interval-seconds", type=float, default=2.0)
+    check_parser.add_argument(
+        "--protocol",
+        action="store_true",
+        help="require an XtQuant protocol handshake after TCP connect",
+    )
     arguments = parser.parse_args()
 
     if arguments.command == "check":
         bind_address, port = _connection_target_from_environment()
-        ready = wait_until_tcp_ready(
+        wait_for_readiness = (
+            wait_until_protocol_ready if arguments.protocol else wait_until_tcp_ready
+        )
+        ready = wait_for_readiness(
             bind_address,
             port,
             timeout_seconds=arguments.timeout_seconds,
@@ -183,6 +192,41 @@ def wait_until_tcp_ready(
         time.sleep(min(interval_seconds, remaining))
 
 
+def protocol_ready(address: str, port: int, *, timeout_seconds: float) -> bool:
+    if not tcp_ready(address, port, timeout_seconds=timeout_seconds):
+        return False
+    client = _load_xtdata_client()
+    try:
+        client.__dict__["enable_hello"] = False
+        client.connect(address, port, remember_if_success=False)
+        return True
+    except Exception:
+        return False
+    finally:
+        with suppress(Exception):
+            client.disconnect()
+
+
+def wait_until_protocol_ready(
+    address: str,
+    port: int,
+    *,
+    timeout_seconds: float,
+    wait_seconds: float,
+    interval_seconds: float,
+) -> bool:
+    if timeout_seconds <= 0 or wait_seconds < 0 or interval_seconds <= 0:
+        raise ValueError("protocol check durations must be positive")
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        if protocol_ready(address, port, timeout_seconds=timeout_seconds):
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(interval_seconds, remaining))
+
+
 def _connection_target_from_environment() -> tuple[str, int]:
     address = _parse_bind_address(os.environ.get("XTQUANT_BIND_ADDRESS", ""))
     return address, _parse_port(os.environ.get("XTQUANT_PORT", "58615"))
@@ -229,6 +273,10 @@ def _load_data_center() -> XtQuantDataCenter:
     return module
 
 
+def _load_xtdata_client() -> ModuleType:
+    return importlib.import_module("xtquant.xtdata")
+
+
 def _install_signal_handlers(stop_event: threading.Event) -> None:
     def request_stop(_signal_number: int, _frame: object) -> None:
         stop_event.set()
@@ -242,7 +290,9 @@ __all__: Sequence[str] = (
     "config_from_environment",
     "main",
     "port_available",
+    "protocol_ready",
     "serve",
     "tcp_ready",
+    "wait_until_protocol_ready",
     "wait_until_tcp_ready",
 )

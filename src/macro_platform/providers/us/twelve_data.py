@@ -345,7 +345,7 @@ class TwelveDataDailyBarsProvider:
             payload, request_fetched_at = await self._fetch_payload(
                 symbol=instrument.source_symbol,
                 start_date=start_date,
-                end_date=end_date,
+                end_date=end_date + timedelta(days=1),
                 outputsize=_MAX_OUTPUT_SIZE,
                 deadline_at=context.deadline_at,
             )
