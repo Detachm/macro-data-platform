@@ -110,7 +110,7 @@ class FeishuCardRenderer:
         if typed_report.publication.decision != "published":
             raise ReportDeliveryError("not-published reports cannot render a Feishu report card")
 
-        summary = _section_display_text(typed_report, "executive_summary")
+        summary = _summary_display_text(typed_report)
         cn_highlights = _section_display_text(typed_report, "cn_highlights")
         hk_highlights = _section_display_text(typed_report, "hk_highlights")
         us_highlights = _section_display_text(typed_report, "us_highlights")
@@ -923,18 +923,63 @@ def _section_display_text(report: DailyReport, section_id: str) -> str:
     section = report.sections[section_id]
     if section.text:
         return section.text
+    item_lines = _section_item_lines(report, section_id)
+    if item_lines:
+        return "\n".join(f"• {line}" for line in item_lines)
     if section.reason_code:
         return f"暂无可用数据（{section.reason_code}）"
     return "暂无可用数据"
 
 
+def _summary_display_text(report: DailyReport) -> str:
+    section = report.sections["executive_summary"]
+    if section.text and section.reason_code != "NO_VERIFIED_FACTS":
+        return section.text
+    if lines := _section_item_lines(report, "executive_summary"):
+        return "\n".join(f"• {line}" for line in lines)
+
+    summary_lines: list[str] = []
+    for label, section_id in (
+        ("中国内地", "cn_highlights"),
+        ("香港", "hk_highlights"),
+        ("美国", "us_highlights"),
+    ):
+        lines = _section_item_lines(report, section_id)
+        if lines:
+            summary_lines.append(f"• {label}：{lines[0]}")
+    calendar_lines = _calendar_item_lines(report)
+    if calendar_lines:
+        summary_lines.append(f"• 未来日程：{calendar_lines[0].removeprefix('• ')}")
+    return (
+        "\n".join(summary_lines)
+        if summary_lines
+        else _section_display_text(report, "executive_summary")
+    )
+
+
+def _section_item_lines(report: DailyReport, section_id: str) -> list[str]:
+    lines: list[str] = []
+    for item in report.sections[section_id].items:
+        visible = item.get("text") or item.get("label") or item.get("name")
+        if isinstance(visible, str) and visible.strip():
+            lines.append(visible.strip())
+    return lines
+
+
 def _calendar_display_text(report: DailyReport) -> str:
+    lines = _calendar_item_lines(report)
+    if lines:
+        return "\n".join(lines)
+    return _section_display_text(report, "upcoming_calendar")
+
+
+def _calendar_item_lines(report: DailyReport) -> list[str]:
     section = report.sections["upcoming_calendar"]
     lines: list[str] = []
     for item in section.items:
         region = item.get("region")
         name = item.get("name")
-        scheduled_at = item.get("scheduled_at")
+        scheduled_at = item.get("scheduled_at") or item.get("scheduled_date")
         if (
             not isinstance(region, str)
             or not region
@@ -945,9 +990,9 @@ def _calendar_display_text(report: DailyReport) -> str:
         ):
             continue
         lines.append(f"• {_format_scheduled_at(scheduled_at)}（{region}）{name}")
-    if lines:
-        return "\n".join(lines)
-    return _section_display_text(report, "upcoming_calendar")
+    if not lines:
+        lines = [f"• {line}" for line in _section_item_lines(report, "upcoming_calendar")]
+    return lines
 
 
 def _source_display_text(report: DailyReport) -> str:
@@ -955,11 +1000,19 @@ def _source_display_text(report: DailyReport) -> str:
     sources = [ReportSourceReference.model_validate(item) for item in source_items]
     if not sources:
         return "报告未提供来源链接"
+    unique_sources: list[ReportSourceReference] = []
+    seen_names: set[str] = set()
+    for source in sources:
+        normalized_name = source.source_name.strip().casefold()
+        if normalized_name in seen_names:
+            continue
+        seen_names.add(normalized_name)
+        unique_sources.append(source)
     return "\n".join(
         f"• [{source.source_name}]({source.source_url})"
         if source.source_url is not None
         else f"• {source.source_name}"
-        for source in sources
+        for source in unique_sources
     )
 
 

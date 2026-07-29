@@ -177,6 +177,97 @@ def test_report_delivery_card_matches_frozen_golden_fixture() -> None:
     assert card == expected
 
 
+def test_report_delivery_renders_fallback_items_summary_and_unique_sources() -> None:
+    report = _report()
+    payload = json.loads(json.dumps(report.payload))
+    payload["sections"]["executive_summary"] = {
+        "section_id": "executive_summary",
+        "status": "degraded",
+        "character_count": len("暂无已验证事实。"),
+        "max_characters": 800,
+        "text": "暂无已验证事实。",
+        "reason_code": "NO_VERIFIED_FACTS",
+    }
+    region_facts = (
+        (
+            "cn_highlights",
+            "沪深300 收盘 4525.16 CNY。",
+            "fact.market.cn.core_indices.previous_close",
+            "src-cn-market-1",
+        ),
+        (
+            "hk_highlights",
+            "HSI 收盘 25602.76 HKD。",
+            "fact.market.hk.core_indices.previous_close",
+            "src-hk-market-1",
+        ),
+        (
+            "us_highlights",
+            "SPX 收盘 6389.77 USD。",
+            "fact.market.us.core_indices.previous_close",
+            "src-us-market-1",
+        ),
+    )
+    for section_id, text, fact_id, source_ref_id in region_facts:
+        label = text.split(" 收盘", maxsplit=1)[0]
+        payload["sections"][section_id] = {
+            "section_id": section_id,
+            "status": "complete",
+            "character_count": len(label) + len(text),
+            "max_characters": 1000,
+            "items": [
+                {
+                    "label": label,
+                    "text": text,
+                    "fact_ids": [fact_id],
+                    "source_ref_ids": [source_ref_id],
+                }
+            ],
+        }
+    calendar_label = "美国 PCE"
+    calendar_text = "美国 PCE（US）：计划于 2026-07-30 发布。"
+    payload["sections"]["upcoming_calendar"] = {
+        "section_id": "upcoming_calendar",
+        "status": "complete",
+        "character_count": len(calendar_label) + len(calendar_text),
+        "max_characters": 1600,
+        "lookahead_days": 7,
+        "items": [
+            {
+                "label": calendar_label,
+                "text": calendar_text,
+                "fact_ids": ["fact.calendar.us.pce_20260729"],
+                "source_ref_ids": ["src-calendar-1"],
+            }
+        ],
+    }
+    duplicate_source = {
+        **payload["sections"]["source_references"]["items"][0],
+        "source_ref_id": "src-cn-market-duplicate",
+        "provider_record_id": "cn-market:duplicate",
+        "checksum_sha256": "a" * 64,
+    }
+    payload["sections"]["source_references"]["items"].append(duplicate_source)
+    fallback_report = report.model_copy(update={"payload": payload})
+
+    card = FeishuCardRenderer().render(fallback_report)
+    contents = [
+        element["content"] for element in card["body"]["elements"] if element["tag"] == "markdown"
+    ]
+
+    assert contents[0] == (
+        "**摘要**\n"
+        "• 中国内地：沪深300 收盘 4525.16 CNY。\n"
+        "• 香港：HSI 收盘 25602.76 HKD。\n"
+        "• 美国：SPX 收盘 6389.77 USD。\n"
+        "• 未来日程：美国 PCE（US）：计划于 2026-07-30 发布。"
+    )
+    assert contents[2] == "**香港**\n• HSI 收盘 25602.76 HKD。"
+    assert contents[4] == "**未来日程**\n• 美国 PCE（US）：计划于 2026-07-30 发布。"
+    source_content = contents[6]
+    assert source_content.count("CN market daily fixture") == 1
+
+
 async def test_report_delivery_dry_run_has_no_side_effect() -> None:
     report = _report()
     store = _Store(report)
